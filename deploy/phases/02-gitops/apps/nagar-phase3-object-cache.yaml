@@ -15,8 +15,6 @@ spec:
     repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
     targetRevision: HEAD
     path: deploy/phases/03-object-cache
-    kustomize:
-      buildOptions: "--load-restrictor LoadRestrictionsNone"
   destination:
     server: https://kubernetes.default.svc
     namespace: nagar-platform

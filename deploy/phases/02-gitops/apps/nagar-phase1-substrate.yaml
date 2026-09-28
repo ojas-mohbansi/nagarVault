@@ -17,9 +17,6 @@ spec:
     repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
     targetRevision: HEAD
     path: deploy/phases/01-substrate
-    kustomize:
-      # phase trees reference deploy/third_party/ across roots (ADR-002 layout)
-      buildOptions: "--load-restrictor LoadRestrictionsNone"
   destination:
     server: https://kubernetes.default.svc
     namespace: nagar-system
