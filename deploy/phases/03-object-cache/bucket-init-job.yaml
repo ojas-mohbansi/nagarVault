@@ -50,10 +50,6 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           command: ["sh", "-c", "until nc -z minio 9000; do echo waiting for minio; sleep 3; done"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { cpu: 100m, memory: 32Mi }
