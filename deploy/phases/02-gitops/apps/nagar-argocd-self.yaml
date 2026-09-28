@@ -1,0 +1,49 @@
+# Argo CD manages its own control plane (the GitOps endgame: even Argo's deployment is
+# a git artifact). ignoreDifferences keeps Argo from fighting its own runtime state:
+# argocd-secret holds the generated admin password hash + TLS signing keys that the
+# controllers mutate at runtime; argocd-initial-admin-secret is generator-created.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-argocd-self
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/02-gitops/argocd
+    kustomize:
+      buildOptions: "--load-restrictor LoadRestrictionsNone"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-system
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: argocd-secret
+      jsonPointers:
+        - /data
+        - /stringData
+    - group: ""
+      kind: Secret
+      name: argocd-initial-admin-secret
+      jsonPointers:
+        - /data
+        - /stringData
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - ServerSideApply=true

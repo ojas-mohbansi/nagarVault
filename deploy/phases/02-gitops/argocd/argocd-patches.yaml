@@ -1,0 +1,161 @@
+# Patches onto the vendored Argo CD bundle (third_party stays pristine; ADR-002).
+# 1) Pod templates gain a pod-level securityContext (runAsNonRoot + RuntimeDefault
+#    seccomp) — the require-pod-security-context policy demands it even though the
+#    upstream containers are individually compliant.
+# 2) Pod-template part-of label flips argocd -> nagarvault (map-merge overrides the
+#    single key; other upstream labels preserved) per CONVENTIONS §5.
+# 3) Minimal resources for the ~8 GB Docker allocation (risk R1).
+# 4) The 3 ClusterRoleBindings carry subject namespaces hardcoded to `argocd`;
+#    kustomize transformers do not rewrite RBAC subjects, so they are pinned here.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: argocd-application-controller
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: argocd-application-controller
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-applicationset-controller
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: argocd-applicationset-controller
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: argocd-repo-server
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-server
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: argocd-server
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-redis
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: 200m
+              memory: 192Mi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  # bundle sets metadata.namespace explicitly; match it (the kustomization `namespace:`
+  # transformer rewrites both object and subject namespace afterward)
+  namespace: argocd
+  name: argocd-application-controller
+subjects:
+  - kind: ServiceAccount
+    name: argocd-application-controller
+    namespace: nagar-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  namespace: argocd
+  name: argocd-applicationset-controller
+subjects:
+  - kind: ServiceAccount
+    name: argocd-applicationset-controller
+    namespace: nagar-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  namespace: argocd
+  name: argocd-server
+subjects:
+  - kind: ServiceAccount
+    name: argocd-server
+    namespace: nagar-system

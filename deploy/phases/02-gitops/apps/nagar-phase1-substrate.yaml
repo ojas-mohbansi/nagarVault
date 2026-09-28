@@ -1,0 +1,39 @@
+# Phase 1 substrate under Argo ownership. The resources are ALREADY live (Phase 1
+# applied them imperatively); the first sync must adopt them in place — Argo's
+# server-side apply merges into the existing objects rather than re-creating, so
+# pod-template hashes (and therefore pods) must not churn. Adoption proof: pod UIDs
+# captured pre/post sync (mission log G2.1).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-phase1-substrate
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/01-substrate
+    kustomize:
+      # phase trees reference deploy/third_party/ across roots (ADR-002 layout)
+      buildOptions: "--load-restrictor LoadRestrictionsNone"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - ServerSideApply=true
+      - PruneLast=true

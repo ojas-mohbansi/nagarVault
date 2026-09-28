@@ -1,0 +1,4 @@
+# Regeneration scratch is not part of the vendored artifact
+upstream-install.yaml
+__pycache__/
+*.pyc

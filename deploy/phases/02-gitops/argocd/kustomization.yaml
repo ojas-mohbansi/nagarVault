@@ -1,0 +1,17 @@
+# Argo CD control plane. The vendored bundle was filtered at vendor time (no Namespace
+# doc, dex + notifications Deployments removed — see ../../../third_party/argo-cd/v3.5.3/
+# filter.py docstring) and is relocated to nagar-system with CRB-subject rewrites and
+# restricted-context/resource patches (argocd-patches.yaml). Apply server-side: Argo's
+# Application CRDs exceed the 256 KB last-applied-configuration limit (same as Phase 1's
+# kyverno CRDs).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Cross-root reference to deploy/third_party/ (ADR-002 layout): build with
+# `kustomize build --load-restrictor LoadRestrictionsNone` (see phase README).
+namespace: nagar-system
+resources:
+  - ../../../third_party/argo-cd/v3.5.3/install.yaml
+patches:
+  - path: argocd-patches.yaml
+components:
+  - ../digest-pins

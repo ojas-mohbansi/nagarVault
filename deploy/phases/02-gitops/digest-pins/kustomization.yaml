@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for images referenced by deploy/third_party/argo-cd/v3.5.3/install.yaml
+# (invariant I-5). Resolution: docker manifest inspect <image:tag> -v (first digest =
+# index manifest as served by the source registry), 2026-09-29. Dex remains pinned even
+# though its Deployment was filtered out (ADR-008): its Service/RBAC references stay in
+# the bundle and a future re-vendor must not resurrect an unpinned reference.
+images:
+  - name: quay.io/argoproj/argocd
+    digest: sha256:5a7367b15ab5c9fcce917954ec74527c8e401671756611654a9d998d9fff0662
+  - name: ghcr.io/dexidp/dex
+    digest: sha256:f5f9fb373188b0f701b80edd68b3f4745ced69306c9d382999f11b7774335a98
+  - name: public.ecr.aws/docker/library/redis
+    digest: sha256:e499175dfb27569cd40010c2eee346113db95fdd0efc88ab9fd70a9e807f4542

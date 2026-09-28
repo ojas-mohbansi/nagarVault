@@ -1,0 +1,63 @@
+# AppProject + app-of-apps (ADR-003). The git source is the local git-daemon transport
+# (git://k3d-nagar.localhost) serving THIS repository's working tree — the air-gap-dev
+# equivalent of the origin remote, per ADR-014. On a real deployment repoURL becomes the
+# authenticated internal git remote; nothing else changes.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: nagar
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  description: NagarVault mission — all phase Applications
+  sourceRepos:
+    - git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: nagar-platform
+    - server: https://kubernetes.default.svc
+      namespace: nagar-app
+    - server: https://kubernetes.default.svc
+      namespace: nagar-observability
+    - server: https://kubernetes.default.svc
+      namespace: nagar-system
+    - server: https://kubernetes.default.svc
+      namespace: cert-manager
+    - server: https://kubernetes.default.svc
+      namespace: kyverno
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-mission-root
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/02-gitops/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true

@@ -1,0 +1,13 @@
+# Phase 2 — GitOps control plane (PHASES.md §2). The child-Application resources are
+# ALSO the app-of-apps source directory (apps/ doubles as the root Application's path),
+# so a plain kustomize apply of this tree bootstraps the entire GitOps graph once; after
+# that, git is the only input. The git-mirror Deployment is the cluster-reachable git
+# transport on this disposable substrate (ADR-014) — on a production cluster it is
+# omitted (sourceRepos/repoURL point at the real internal git remote).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - argocd
+  - git-mirror
+  - root.yaml
+  - apps

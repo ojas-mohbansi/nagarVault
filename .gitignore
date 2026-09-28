@@ -16,6 +16,10 @@ agentic/tmp/
 .k3d/
 kubeconfig-*
 
+# git-mirror payload is built at package time, never committed (contains a full copy
+# of this repo's object database; committing it would fork history)
+deploy/phases/02-gitops/git-mirror/payload/
+
 # --- OS / editor noise ---
 Thumbs.db
 Desktop.ini

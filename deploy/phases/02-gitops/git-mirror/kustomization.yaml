@@ -1,0 +1,10 @@
+# In-cluster git transport (ADR-014): serves the bare mission repo to Argo CD.
+# The image is rebuilt+pushed by the operator whenever Argo must see new commits —
+# the git-native equivalent of the production "push to internal git remote" step.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - git-mirror.yaml
+images:
+  - name: k3d-nagar.localhost:5000/mission/git-repo-mirror
+    newTag: phase2

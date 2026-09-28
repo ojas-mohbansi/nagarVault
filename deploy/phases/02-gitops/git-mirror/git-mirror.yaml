@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-repo-mirror
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/name: git-repo-mirror
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: git-repo-mirror
+      app.kubernetes.io/component: edge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: git-repo-mirror
+        app.kubernetes.io/component: edge
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "2"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: git-daemon
+          image: k3d-nagar.localhost:5000/mission/git-repo-mirror:phase2
+          ports:
+            - containerPort: 9418
+              name: git
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          livenessProbe:
+            tcpSocket:
+              port: 9418
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: 9418
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-repo-mirror
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/name: git-repo-mirror
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  selector:
+    app.kubernetes.io/name: git-repo-mirror
+    app.kubernetes.io/component: edge
+  ports:
+    - name: git
+      port: 9418
+      targetPort: 9418

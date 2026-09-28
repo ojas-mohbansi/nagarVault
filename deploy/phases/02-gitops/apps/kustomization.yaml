@@ -1,0 +1,10 @@
+# The app-of-apps source directory: each file here is one child Application owned by
+# nagar-mission-root. Adding a phase = adding a file in a phase commit; the root syncs
+# it automatically (ADR-003).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - nagar-phase1-substrate.yaml
+  - nagar-argocd-self.yaml
+  - nagar-phase3-object-cache.yaml
+  - nagar-phase4-messaging.yaml
