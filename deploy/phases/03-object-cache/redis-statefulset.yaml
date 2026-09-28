@@ -54,12 +54,18 @@ spec:
         nagar.io/tier: "1"
     spec:
       securityContext:
+        # redis:7-alpine ships a `redis` user (uid 999) and its entrypoint drops
+        # privileges; the explicit runAsUser satisfies both PSA and the require-pod-
+        # security-context policy under containerd's uid verification.
         runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: redis
-          image: registry.nagar.internal:5000/redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          image: registry.nagar.internal:5000/redis@sha256:ca0acbb137c1dc3339c8b147a58fd6f42775d4599327b50e7b116c23de501af2
           args: ["--save", "", "--appendonly", "no"]
           securityContext:
             allowPrivilegeEscalation: false

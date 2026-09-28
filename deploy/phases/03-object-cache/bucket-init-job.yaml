@@ -38,6 +38,17 @@ spec:
       initContainers:
         - name: wait-for-minio
           image: registry.nagar.internal:5000/busybox@sha256:REPLACED-BY-TRANSFORMER
+          # busybox has no non-root user by default; uid 1000 is explicit (PSA
+          # restricted verifies the effective uid, not just the intent).
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           command: ["sh", "-c", "until nc -z minio 9000; do echo waiting for minio; sleep 3; done"]
           securityContext:
             allowPrivilegeEscalation: false

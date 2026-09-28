@@ -22,4 +22,7 @@ images:
     # in-cluster by tag AND digest
     digest: sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
   - name: registry.nagar.internal:5000/redis
-    digest: sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    # redis:7-alpine staged into the local registry; registry-stored manifest digest
+    # (queried from the registry, not local metadata — Day 0 G0.3 note 3)
+    newName: k3d-nagar.localhost:5000/mission/redis
+    digest: sha256:ca0acbb137c1dc3339c8b147a58fd6f42775d4599327b50e7b116c23de501af2
