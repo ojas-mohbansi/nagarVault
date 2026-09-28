@@ -1,0 +1,6 @@
+# Placeholder (2026-09-29): Phase 4's manifests land in its own phase commit
+# (PHASES.md §2 Phase 4). This file exists only so the forward-declared child
+# Application `nagar-phase4-messaging` has a valid empty app path in the meantime.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []
