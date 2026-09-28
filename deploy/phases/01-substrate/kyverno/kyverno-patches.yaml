@@ -1,0 +1,16 @@
+# The kyverno bundle's own Namespace gains the PSS restricted labels so the gate
+# "every namespace PSS-restricted" holds uniformly. Its Deployment pods already carry
+# full restricted security contexts (see ../../../third_party/README.md audit).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kyverno
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "1"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: v1.31
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: v1.31
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: v1.31

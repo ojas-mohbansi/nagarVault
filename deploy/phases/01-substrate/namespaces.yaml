@@ -1,0 +1,64 @@
+# The mission namespaces (ARCHITECTURE.md §1), Pod Security Standards restricted
+# (SECURITY.md §5). PSA labels are enforced by the built-in Pod Security admission
+# controller; drift is guarded by Kyverno (Phase 1 baseline policies).
+#
+# Layout note: the `cert-manager` and `kyverno` namespaces ship inside their vendored
+# bundles (../../third_party/) and are PSS-labeled by patches in this phase instead of
+# being created here — see cert-manager/cert-manager-patches.yaml and
+# kyverno/kyverno-patches.yaml. Gate evidence therefore shows six namespaces with
+# enforce=restricted: the four below plus those two.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "1"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: v1.31
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: v1.31
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: v1.31
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "1"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: v1.31
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: v1.31
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: v1.31
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "1"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: v1.31
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: v1.31
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: v1.31
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "1"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: v1.31
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: v1.31
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: v1.31

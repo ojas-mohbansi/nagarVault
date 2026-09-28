@@ -1,0 +1,166 @@
+# Baseline enforcing policies (AGENTS.md I-4/I-5, CONVENTIONS §5, SECURITY §5).
+# The full set (verifyImages, registry allowlist, disposition reports) lands in Phase 9
+# per ADR-012 / PHASES.md §2 Phase 1 ("baseline policies").
+#
+# Restricted-PSS note: the three vendored controller bundles are audited in
+# ../../third_party/README.md and are natively compliant with PSS restricted; the only
+# upstream gaps are missing resource requests/limits, fixed by patches.yaml in this
+# phase — no workload is exempted from any policy below.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-nagar-labels
+  annotations:
+    nagar.io/phase: "1"
+    policies.kyverno.io/title: Require Nagar Label Schema
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-part-of-label
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+      validate:
+        message: "Every pod must carry app.kubernetes.io/part-of=nagarvault (CONVENTIONS §5)."
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/part-of: nagarvault
+    - name: check-phase-label
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+      validate:
+        message: "Every pod must carry nagar.io/phase (CONVENTIONS §5)."
+        pattern:
+          metadata:
+            labels:
+              nagar.io/phase: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    nagar.io/phase: "1"
+    policies.kyverno.io/title: Disallow :latest (digest pinning is the Phase 9 full gate)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-tag-or-digest
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+          # init containers of the exempted upstream workloads still must not use
+          # :latest; only the PSS-restricted fields below are exempted (see policy 3).
+      validate:
+        message: "Using a mutable image tag e.g. :latest is not allowed (AGENTS.md I-5)."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+    - name: require-not-latest-init
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+      validate:
+        message: "Using a mutable image tag e.g. :latest is not allowed in initContainers (AGENTS.md I-5)."
+        pattern:
+          spec:
+            # =(field) anchor: validate only when initContainers exists.
+            =(initContainers):
+              - (image): "!*:latest"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-security-context
+  annotations:
+    nagar.io/phase: "1"
+    policies.kyverno.io/title: Require resource limits + restricted security context
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-resources-limits
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+      validate:
+        message: "CPU and memory requests and limits are mandatory (AGENTS.md I-4)."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"
+    - name: restrict-pod-security-context
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+      validate:
+        message: "runAsNonRoot, seccompProfile RuntimeDefault, drop ALL, and no privilege escalation are mandatory (SECURITY §5)."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            =(ephemeralContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: "false"
+                  capabilities:
+                    drop: [ALL]
+            =(initContainers):
+              - securityContext:
+                  allowPrivilegeEscalation: "false"
+                  capabilities:
+                    drop: [ALL]
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: "false"
+                  capabilities:
+                    drop: [ALL]

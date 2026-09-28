@@ -1,0 +1,15 @@
+# sealed-secrets-controller: relocated from the bundle's default `kube-system` to
+# nagar-system (ARCHITECTURE.md §1). The namespace transformer rewrites metadata
+# namespaces; the RBAC *subject* namespaces (which kustomize does not touch) are fixed
+# explicitly in sealed-secrets-patches.yaml. Digest pins come from the shared component.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Cross-root reference to deploy/third_party/ (ADR-002 layout): build with
+# `kustomize build --load-restrictor LoadRestrictionsNone` (see phase README).
+namespace: nagar-system
+resources:
+  - ../../../third_party/sealed-secrets/v0.28.0/controller.yaml
+patches:
+  - path: sealed-secrets-patches.yaml
+components:
+  - ../digest-pins

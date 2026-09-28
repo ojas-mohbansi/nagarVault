@@ -202,3 +202,138 @@ controller-version check happens at that gate).
 (observable), R4 host ports occupied (mitigated: no host NodePorts; Phase 8 edge via LB
 mappings outside 3000–4005), R5 CPU inference latency (expected), R6 kubeseal/controller drift
 (gated in Phase 1).
+
+---
+
+## Phase 1 — Cluster substrate (2026-09-29)
+
+**Entry checklist (PHASES.md §2 Phase 1):** hardware/registry per OPERATIONS §1 — satisfied on the
+k3d local substrate (Day 0 gates G0.1–G0.3); build host tooling verified.
+
+### Deliverables (subtree: `deploy/phases/01-substrate/` + `deploy/third_party/`)
+
+- **Vendored static manifests (ADR-002):** cert-manager v1.16.4 (986,843 B, `HTTP 200` verified),
+  sealed-secrets v0.28.0 (`controller.yaml` asset; the `sealed-secrets-controller.yaml` name 404s
+  on this release), kyverno v1.13.4 (3,388,412 B). Provenance + image-pin method:
+  `deploy/third_party/README.md`.
+- **Digest pins (I-5):** all 9 image references resolved via `docker manifest inspect -v` and
+  pinned in `deploy/phases/01-substrate/digest-pins/` (kustomize Component). Built output:
+  9/9 images `@sha256:`, 0 unpinned.
+- **Five mission namespaces** (`nagar-platform`, `nagar-app`, `nagar-observability`, `nagar-system`
+  + the bundles' `cert-manager`/`kyverno` namespaces PSS-labeled by patch) — all six enforce
+  PSS **restricted v1.31** (enforce/audit/warn).
+- **Baseline Kyverno policies** (validationFailureAction: Enforce, background: true):
+  `require-nagar-labels`, `disallow-latest-tag` (incl. `=(initContainers)` conditional anchor),
+  `require-pod-security-context` (pod-level runAsNonRoot + seccomp, container-level drop-ALL/no-PE,
+  requests+limits).
+- **SealedSecrets (I-3):** `nagar-jwt`, `nagar-postgres-app`, `nagar-minio` — sealed offline with
+  `kubeseal --cert` against the controller cert; plaintext generated outside git, shredded after
+  the round-trip (only SHA-256 hashes survive in `agentic/tmp/`).
+
+### Layout decisions (documented, reviewer-facing)
+
+1. Kyverno runs in its **upstream-native `kyverno` namespace** (35 hardcoded namespace refs +
+   admission webhook clientConfig; relocation risk >> benefit). Deviation from ARCHITECTURE §1 —
+   flagging now; if a maintainer wants nagar-system placement, it needs an ADR + upstream-issue check.
+2. Sealed-secrets relocated to `nagar-system` (per ARCHITECTURE §1) — required explicit patches to
+   RBAC **subject** namespaces (kustomize transformers do not rewrite subjects).
+3. cert-manager stays in its native namespace (bundle ships Namespace + webhook wiring).
+4. No PSS exemptions were needed: the three bundles are natively restricted-compliant except for
+   missing resources, patched in (see `third_party/README.md` audit).
+
+### Toolchain note (R3 update)
+
+The `~/bin/kustomize` shim hit its limit: kubectl's embedded kustomize refuses cross-root loads
+(security loader, not overridable — `loadRestrictions` field itself is rejected by both kubectl's
+embedded and the standalone v5.8.1 binary). **winget install Kubernetes.Kustomize → v5.8.1
+standalone** succeeded; builds require
+`kustomize build --load-restrictor LoadRestrictionsNone <tree>` for the `deploy/third_party/`
+references (commented in each kustomization.yaml). Shim removed from the critical path.
+
+### Gate evidence
+
+**G1.1 — five namespaces live with PSS enforced:**
+
+```
+$ kubectl get ns --show-labels (abridged)
+cert-manager          Active   app.kubernetes.io/part-of=nagarvault,nagar.io/phase=1,pod-security.kubernetes.io/enforce=restricted,...
+kyverno               Active   app.kubernetes.io/part-of=nagarvault,nagar.io/phase=1,pod-security.kubernetes.io/enforce=restricted,...
+nagar-app             Active   app.kubernetes.io/part-of=nagarvault,nagar.io/phase=1,pod-security.kubernetes.io/enforce=restricted,...
+nagar-observability   Active   app.kubernetes.io/part-of=nagarvault,nagar.io/phase=1,pod-security.kubernetes.io/enforce=restricted,...
+nagar-platform        Active   app.kubernetes.io/part-of=nagarvault,nagar.io/phase=1,pod-security.kubernetes.io/enforce=restricted,...
+nagar-system          Active   app.kubernetes.io/part-of=nagarvault,nagar.io/phase=1,pod-security.kubernetes.io/enforce=restricted,...
+
+$ kubectl apply --dry-run=server  # bare busybox pod in nagar-app (no securityContext)
+Error from server (Forbidden): pods "psa-deny-proof" is forbidden: violates PodSecurity
+"restricted:v1.31": allowPrivilegeEscalation != false ... runAsNonRoot != true ... seccompProfile ...
+```
+
+**G1.2 — sealed-secret round-trip (encrypt → apply → controller unseal → private-key recovery):**
+
+```
+$ openssl rand -hex 32|16|16|32            # 4 values, written only outside git
+$ kubeseal --format yaml --cert ss-cert.crt < plain.yaml > sealed.yaml   # x3, offline
+$ kubectl apply -f deploy/phases/01-substrate/secrets/
+sealedsecret.bitnami.com/nagar-jwt created | nagar-minio created | nagar-postgres-app created
+$ kubectl get secret -n nagar-app
+nagar-jwt Opaque 1 · nagar-minio Opaque 2 · nagar-postgres-app Opaque 1   # controller-unsealed
+$ kubectl get sealedsecret -n nagar-app -o jsonpath=...conditions
+nagar-jwt: Synced=True · nagar-minio: Synced=True · nagar-postgres-app: Synced=True
+$ kubectl get secret -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > key-backup.yaml   # OPERATIONS §7 drill artifact
+$ kubeseal --recovery-unseal --recovery-private-key key-backup.yaml < sealed.yaml
+$ python: base64-decode each data key → sha256 → compare to generation-time hashes
+jwtSecret: HASH MATCH · databaseUrl: HASH MATCH · accessKey: HASH MATCH · secretKey: HASH MATCH
+ROUND-TRIP-VERIFIED: 4/4
+```
+
+Notes: v0.28.0 kubeseal has no `--recover`; recovery = `--recovery-unseal` + exported controller
+key, which doubles as the §7 key-backup drill. Plaintext, cert, and backup shredded post-verify
+(`agentic/tmp/` retains only the 4 SHA-256 hashes). Key backup was ephemeral for this disposable
+cluster — production posture: encrypted offline vault (documented risk in the handover report).
+
+**G1.3 — Kyverno actively enforcing:**
+
+```
+$ kubectl get cpol
+disallow-latest-tag            true   true   True   Ready
+require-nagar-labels           true   true   True   Ready
+require-pod-security-context   true   true   True   Ready
+
+$ # deny-proof: compliant securityContext but NO nagar labels → BLOCKED
+Error from server: admission webhook "validate.kyverno.svc-fail" denied the request:
+require-nagar-labels: check-part-of-label ... check-phase-label ...
+require-pod-security-context: restrict-pod-security-context failed at /spec/securityContext/runAsNonRoot/
+
+$ # allow-proof: labels + full restricted context + resources → server dry run ACCEPTED
+pod/kyverno-allow-proof created (server dry run)
+
+$ kubectl get pods -A (substrate controllers)
+cert-manager ×3 1/1 Running · kyverno ×4 1/1 Running · sealed-secrets-controller 1/1 Running
+```
+
+**Policy iteration honesty note:** the allow-proof initially failed through
+`require-not-latest-init` (my pattern made `initContainers` effectively mandatory); fixed with the
+`=(initContainers)` conditional anchor and re-proven. The deny-proof fired on exactly the intended
+policies after the fix.
+
+### Phase 1 exit criteria — met
+
+- [x] `kubectl get ns` shows the five mission namespaces (+ bundle namespaces) with PSS restricted
+- [x] Kyverno reports the baseline policies active (Ready=True, admission+background)
+- [x] A sealed secret round-trips (cryptographically verified 4/4)
+- [x] `kustomize build` clean on every tree (3 subtrees + phase root, 126 docs)
+- [x] `kubectl apply --dry-run=client` equivalent-or-stronger: live apply succeeded on k3d-nagar
+- [x] Docs updated in same change (`third_party/README.md`, ledger below)
+- [x] No files outside the phase subtree + third_party + docs/ledger touched (I-9)
+
+### Incidents (this phase)
+
+- **k3s server container died mid-apply** (WSL2 cgroup flake: "unable to apply cgroup
+  configuration: device or resource busy", ExitCode 128, not OOMKilled). `docker start` recovered
+  it with state intact; cluster had nothing applied yet. Logged as **R7** (WSL2 flakiness); if it
+  recurs before the WSL restart is approved, escalate.
+- **CRD annotation limit:** kyverno's 2 large CRDs exceed 256 KB when kubectl client-apply
+  duplicates them into `last-applied-configuration`; applied via **server-side apply**
+  (`--force-conflicts`) — recorded for Phase 2+ (Argo uses SSA-compatible merge).
+
+---

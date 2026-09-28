@@ -18,6 +18,11 @@
 
 Cross-namespace traffic is default-deny and opened by named NetworkPolicies only (SECURITY §8).
 
+> **Phase 1 note (2026-09-29):** the Kyverno controllers run in their upstream-native `kyverno`
+> namespace instead of `nagar-system` — the static bundle hardcodes its namespace and admission
+> webhook wiring (see `deploy/third_party/README.md` and the mission log). All other placements
+> follow this table.
+
 ## 2. High-level topology (target state)
 
 ```mermaid

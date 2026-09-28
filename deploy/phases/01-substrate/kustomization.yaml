@@ -1,0 +1,11 @@
+# Phase 1 — Cluster substrate (PHASES.md §2). Order matters: namespaces and policies
+# first, then the vendored controllers. Kyverno policies apply before the controllers'
+# pods exist, so every controller pod is admitted THROUGH the enforcing policies.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - policies.yaml
+  - cert-manager
+  - kyverno
+  - sealed-secrets

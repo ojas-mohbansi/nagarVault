@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for every image referenced by deploy/third_party/* (invariant I-5).
+# Single source of truth: phases reference this component; resolution method and
+# date are recorded in ../../third_party/README.md. Digests are the digest of the
+# index manifest as served by the source registry (docker manifest inspect -v,
+# first digest entry) on 2026-09-29.
+images:
+  # cert-manager v1.16.4
+  - name: quay.io/jetstack/cert-manager-controller
+    digest: sha256:d284d5a3bfc12effdd1ce9a3906533c490574d7badbc0eef2af47c1330a4ec7c
+  - name: quay.io/jetstack/cert-manager-cainjector
+    digest: sha256:2c5510c44b5df3611d04c7141900cb849ab970ec74c23a4c1738f6a549ed3447
+  - name: quay.io/jetstack/cert-manager-webhook
+    digest: sha256:4b6fe829ae591067fc677523b68edcb47a2b801b355266d466618412f1569271
+  # sealed-secrets-controller v0.28.0
+  - name: docker.io/bitnami/sealed-secrets-controller
+    digest: sha256:e9cfac47694bfd4483dcf031b7e9df2ffa2d7585b4a4bb6203bbcf7c4297b9a3
+  # kyverno v1.13.4
+  - name: ghcr.io/kyverno/kyverno
+    digest: sha256:3e44e482efe0d851bc877e006a51ec4a4cf3399d7f6ee7dffc9c0bef2970ddbf
+  - name: ghcr.io/kyverno/kyvernopre
+    digest: sha256:0f8481537385f2c8cae800e8a8117c01926e59d00e972577bb3a6a695c0e436f
+  - name: ghcr.io/kyverno/background-controller
+    digest: sha256:6b2f22b9e7a200e382b75509593e4325d7e472dfc0fd238dbb4964425473b918
+  - name: ghcr.io/kyverno/cleanup-controller
+    digest: sha256:5321dbcb781246383cded1fcde95836b351b99755733a956c5b4029d969d4c87
+  - name: ghcr.io/kyverno/reports-controller
+    digest: sha256:d85779bb4d60ee878ad0602f6d125f2470bc86b1cc02529bcd5c579c4f3a9166
