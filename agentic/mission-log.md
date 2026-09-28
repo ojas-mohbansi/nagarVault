@@ -337,3 +337,96 @@ policies after the fix.
   (`--force-conflicts`) — recorded for Phase 2+ (Argo uses SSA-compatible merge).
 
 ---
+
+## Phase 2 — GitOps control plane (2026-09-29)
+
+**Entry checklist (PHASES.md §2 Phase 2):** substrate healthy from Phase 1; Argo CD vendored
+static (ADR-002); app-of-apps owns all phase trees.
+
+### Deliverables (subtree: `deploy/phases/02-gitops/` + `deploy/third_party/argo-cd/`)
+
+- **Vendored Argo CD v3.5.3** (tag-pinned static manifest from `raw.githubusercontent.com/
+  argoproj/argo-cd/v3.5.3/manifests/install.yaml`, upstream sha256 recorded in
+  `install-upstream.sha256`). Vendor-time filter (`filter.py`, documented in its docstring):
+  removed the bundle Namespace doc and the dex + notifications Deployments (ADR-008 no-IdP,
+  ADR-011 no-tracing/notifications) — 59→57 docs, no duplicates (verified by parse).
+- **Digest pins (I-5):** `quay.io/argoproj/argocd@sha256:5a7367b1…`, `ghcr.io/dexidp/dex@sha256:
+  f5f9fb37…`, `public.ecr.aws/docker/library/redis@sha256:e499175d…` (component `digest-pins/`).
+- **Relocation to nagar-system:** namespace transformer + explicit CRB-subject rewrites
+  (transformers do not touch RBAC subjects); pod-level securityContext + `part-of: nagarvault`
+  + `nagar.io/phase` pod-template labels (Kyverno autogen evaluates pod templates) + minimal
+  resources on all five workloads.
+- **GitOps graph:** AppProject `nagar` (destinations limited to the six mission namespaces),
+  root `nagar-mission-root` (auto-sync/selfHeal/prune/allowEmpty, ServerSideApply), children:
+  `nagar-phase1-substrate` (ADOPTION of live Phase 1), `nagar-argocd-self` (self-managed,
+  `ignoreDifferences` on argocd runtime secrets), forward-declared `nagar-phase3-object-cache`
+  and `nagar-phase4-messaging` (empty placeholder kustomizations until their phases).
+- **git-repo-mirror (ADR-014):** the cluster-reachable git transport (host daemon unreachable
+  from the k3d network — probed). Bare repo staged into an image (registry staging model),
+  served read-only by git-daemon (alpine `git-daemon` package — the base git package lacks the
+  subcommand) as uid 1000 with owner-writable objects (`COPY --chown` + `chmod -R u+rwX`).
+  Smoke-proven in-container and in-cluster (`git ls-remote` → HEAD). Immutable tags per cycle:
+  phase2 → phase2-2 → … → phase2-5 (node image cache ignores re-pushed same tags — demonstrated
+  why I-5 wants immutable references).
+- **Kustomize build options:** Argo v3.5 removed `Application...buildOptions` (schema rejects)
+  AND has no repo-server `--kustomize-build-options` flag (`Error: unknown flag`, observed live);
+  the supported override is `argocd-cm: kustomize.buildOptions` — verified end-to-end inside the
+  repo-server pod: bundled kustomize v5.8.1, phase-1 tree builds (126 docs) ONLY with the flag.
+
+### Gate evidence
+
+**G2.1 — adoption in place (zero churn):**
+
+```
+$ kubectl get pods … (cert-manager, kyverno, nagar-system) → agentic/tmp/pre-sync-uids.txt   # 8 pods
+… Argo first sync of nagar-phase1-substrate (ServerSideApply; comparison succeeded, 69ms manifest gen) …
+$ diff pre-sync-uids.txt post-sync-uids.txt
+> nagar-system/argocd-* (6 lines: the NEW argo/mirror pods — expected)
+ADOPTION-IN-PLACE-VERIFIED: every pre-existing pod UID byte-identical; zero recreation
+$ kubectl get applications -n nagar-system
+nagar-argocd-self           Synced   Healthy
+nagar-mission-root          Synced   Healthy
+nagar-phase1-substrate      Synced   Healthy
+nagar-phase3-object-cache   Synced   Healthy
+nagar-phase4-messaging      Synced   Healthy
+```
+
+**G2.2 — self-heal demonstrably reverts a manual mutation:**
+
+```
+$ kubectl scale deploy/cert-manager -n cert-manager --replicas=2
+after-mutation replicas=2
+$ watch loop (10s)
+t+10s: replicas=2
+t+20s: replicas=2
+t+30s: replicas=1   ← argo self-heal restored git state
+SELF-HEAL-VERIFIED at t+30s  (app: Synced/Healthy)
+```
+
+### Failures → fixes (all evidenced above)
+
+1. Kyverno autogen rejected the first argo apply (missing `nagar.io/phase` on pod templates) —
+   proof the policies gate even their own control plane; fixed in `argocd-patches.yaml`.
+2. git-mirror CrashLoop #1: alpine `git` lacks the `daemon` subcommand → add `git-daemon` pkg.
+3. git-mirror CrashLoop #2: upload-pack needs owner-writable object dirs for uid 1000 →
+   `COPY --chown` + `chmod -R u+rwX`.
+4. Tag-reuse trap: rollout restart picked the cached OLD `:phase2` image → immutable per-cycle
+   tags (`phase2-N`) thereafter.
+5. AppProject missing after the first partial bootstrap (`InvalidSpecError: referencing project
+   nagar which does not exist`) → root.yaml re-applied; lesson: bootstrap is one SSA of the
+   whole phase tree, partially-failed applies must be re-run as a unit.
+6. Permanent OutOfSync on the 3 ClusterPolicies: the kyverno webhook server-side-defaults
+   `emitWarning/admission/skipBackgroundRequests/allowExistingViolations`; declared the defaults
+   in git (ce2fef91) rather than masking with ignoreDifferences. Also verified the `\ufffd` in
+   console output was pipe-decoding, NOT file corruption (raw bytes are correct UTF-8 `§`).
+
+### Phase 2 exit criteria — met
+
+- [x] app-of-apps shows child Applications (5/5 Synced/Healthy at rev 5536f6fe)
+- [x] a test change propagates via git push only (mirror cycles phase2-2…phase2-5 each landed
+      via image refresh; live cluster otherwise untouched by hand)
+- [x] self-heal reverts a manual mutation (~30 s — G2.2; the zero-maintenance proof)
+- [x] Phase 1 substrate ADOPTED in place: zero pod churn (G2.1)
+- [x] `kustomize build` clean across the phase trees; no files outside the phase subtree +
+      third_party/argo-cd + docs ledger touched (I-9)
+- [x] ADR-014 written (transport + Argo v3.5 settings facts); PHASES ledger flipped

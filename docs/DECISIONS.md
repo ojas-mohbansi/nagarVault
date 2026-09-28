@@ -151,6 +151,41 @@ Alternatives (OPA/Gatekeeper) rejected: rego raises the review bar with no benef
 
 ---
 
+## ADR-014 — Git transport for the disposable substrate; Argo CD v3.5 settings facts
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 2
+
+**Context.** ADR-003 makes Argo CD the only deployment mechanism; Argo reads desired state from
+**git**, never from a host filesystem. The k3d-in-Docker network cannot reach host processes
+(proven by probe: host git-daemon unreachable from pods), the owner forbids pushes to the origin
+remote, and the cluster is disposable. Separately, Argo CD v3.5 removed
+`Application.spec.source.kustomize.buildOptions` from the Application schema AND does not accept
+a `--kustomize-build-options` repo-server flag (verified: `Error: unknown flag`); the supported
+global override is the `argocd-cm` settings key `kustomize.buildOptions`.
+
+**Decisions.**
+1. **In-cluster git mirror, registry staging model.** The bare repo (at the mission branch) is
+   staged into the `git-repo-mirror` image and served read-only by `git daemon` behind a
+   Service in `nagar-system`; `repoURL` = `git://git-repo-mirror.nagar-system.svc.cluster.local:
+   9418/nagarvault.git`. Updating Argo's view = rebuild+push the mirror image with an immutable
+   tag (`phase2-N`) and bump `newTag` — the same deliberate operator step as staging images.
+   There is no receive-pack path into the mirror.
+2. **On a production cluster this subtree is deleted** and `sourceRepos`/`repoURL` point at the
+   authenticated internal git remote; no Application/Project semantics change.
+3. **Kustomize build options live in `argocd-cm`** (`kustomize.buildOptions:
+   "--load-restrictor LoadRestrictionsNone"`) to support the ADR-002 cross-root `deploy/
+   third_party/` references.
+4. **Kyverno webhook defaults are declared in git** (`spec.emitWarning`, `spec.admission`,
+   per-rule `skipBackgroundRequests`, `validate.allowExistingViolations`): the webhook
+   server-side-defaults ClusterPolicy objects, and undeclared defaults read as permanent drift
+   to Argo's differ.
+
+**Consequences.** Argo's view of git is bounded by the mirror cycle (deliberate pushes, no live
+wiretap of the working tree); the 7-day drift-clean parity evidence is unaffected (cluster state
+still = the mirrored git state). The `argocd-cm` key is version-sensitive and must be re-verified
+on every Argo upgrade. Mirror images inherit the digest-pin discipline (I-5) via immutable tags.
+
+---
+
 ## ADR-013 — Rebuild-from-scratch execution; k3d local substrate; no Compose restoration
 **Status:** Accepted · **Date:** 2026-09-29 · **Phases:** 0 (baseline), 7 (app tier), 10 (cutover)
 
