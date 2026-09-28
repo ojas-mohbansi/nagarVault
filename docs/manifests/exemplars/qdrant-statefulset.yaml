@@ -1,0 +1,89 @@
+# Exemplar: Qdrant vector store (ADR-005: StatefulSet, no operator). Single node per ADR-006.
+# The nagar_schema collection is rebuildable at any time by schemaIndexer (OPERATIONS §8), so the
+# PVC is a cache of an idempotent computation, not a system of record.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  selector:
+    app.kubernetes.io/name: qdrant
+  ports:
+    - name: http
+      port: 6333
+      targetPort: 6333
+    - name: grpc
+      port: 6334
+      targetPort: 6334
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  serviceName: qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qdrant
+        app.kubernetes.io/component: ai
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+      containers:
+        - name: qdrant
+          image: registry.nagar.internal:5000/qdrant@sha256:REPLACE_WITH_DIGEST
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 6333
+            - containerPort: 6334
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet: { path: /healthz, port: 6333 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /livez, port: 6333 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 2Gi }
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi

@@ -1,0 +1,74 @@
+# Exemplar: Idempotent schema migration Job (invariant I-2)
+# Runs enrichWorker/migrations/*.sql in order; every statement is IF NOT EXISTS, so re-runs are no-ops.
+# Copy into deploy/phases/05-postgres/. Re-run policy: delete Job, Argo recreates (OPERATIONS §8).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nagar-db-migrate
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: nagar-db-migrate
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "05"
+    nagar.io/tier: "3"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-db-migrate
+        app.kubernetes.io/component: init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # Digest pin mandatory (I-5); REPLACE_WITH_DIGEST documented at copy time.
+          image: registry.nagar.internal:5000/postgres@sha256:REPLACE_WITH_DIGEST # postgres:15-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          workingDir: /migrations
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              # Idempotent driver: psql applies each file; SQL is IF NOT EXISTS-only (I-2).
+              for f in /migrations/*.sql; do
+                echo "applying $f"
+                psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+              done
+              echo "migrations complete"
+          env:
+            - name: DATABASE_URL
+              value: postgresql://nagar:$(PGPASSWORD)@postgres-rw.nagar-platform.svc.cluster.local:5432/nagardb
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nagar-postgres-app
+                  key: password
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: migrations
+          configMap:
+            name: nagar-db-migrations   # ConfigMap generated from enrichWorker/migrations/ in the live tree
+        - name: tmp
+          emptyDir: {}

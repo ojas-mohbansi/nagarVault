@@ -1,7 +1,0 @@
-fastapi==0.115.12
-uvicorn[standard]==0.34.3
-python-dotenv==1.1.0
-PyJWT==2.10.1
-httpx==0.28.1
-qdrant-client[async]==1.19.0
-pydantic==2.11.4

@@ -1,0 +1,58 @@
+# Exemplar: Idempotent topic creation Job (invariant I-2)
+# Creates the six frozen topics (ARCHITECTURE §4.2). Re-runs are no-ops (--if-not-exists).
+# Copy into deploy/phases/04-messaging/. Hook: init container pattern also valid; Job chosen so
+# Argo surfaces failure visibly and OPERATIONS §8 "force re-run" applies uniformly.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nagar-kafka-topics
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: nagar-kafka-topics
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "3"
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-kafka-topics
+        app.kubernetes.io/component: init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: topics
+          image: registry.nagar.internal:5000/apache-kafka@sha256:REPLACE_WITH_DIGEST # apache/kafka:4.2.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              BOOTSTRAP=kafka-bootstrap.nagar-platform.svc.cluster.local:29092
+              create() {
+                /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
+                  --create --if-not-exists --topic "$1" --partitions 1 --replication-factor 1
+              }
+              create health.camps.raw.v1
+              create nmc.complaints.raw.restricted.v1
+              create traffic.events.raw.v1
+              create water.sensors.raw.v1
+              create ev.bus.telemetry.raw.v1
+              create nmc.complaints.dlq.v1
+              echo "topics ready"
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }

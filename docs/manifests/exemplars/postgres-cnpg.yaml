@@ -1,0 +1,62 @@
+# Exemplar: PostgreSQL via CloudNativePG (ADR-005/006)
+# Docs artifact — copy into deploy/phases/05-postgres/ and adapt digests/names.
+# HA: 2 replicas. Backups: WAL + weekly base to MinIO bucket pg-backups.
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "05"
+    nagar.io/tier: "2"
+spec:
+  instances: 2
+  imageName: registry.nagar.internal:5000/ghcr-cloudnative-pg-postgresql@sha256:REPLACE_WITH_DIGEST  # postgres:15 line, vendored air-gap
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "512MB"
+  bootstrap:
+    initdb:
+      database: nagardb
+      owner: nagar
+  storage:
+    sizeClass: local-path
+    size: 20Gi
+  monitoring:
+    enablePodMonitor: true
+  backup:
+    target: prefer-standby
+    barmanObjectStore:
+      destinationPath: s3://pg-backups/
+      endpointURL: http://minio.nagar-platform.svc.cluster.local:9000
+      s3Credentials:
+        accessKeyId:
+          name: nagar-minio
+          key: accessKey
+        secretAccessKey:
+          name: nagar-minio
+          key: secretKey
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "14d"
+  affinity:
+    podAntiAffinityType: required   # spread replicas across nodes when >1 node exists
+---
+apiVersion: v1
+kind: Secret
+# Placeholder ONLY to document the shape; committed secrets must be SealedSecrets (SECURITY §6).
+# In deploy/, replace with a SealedSecret named nagar-postgres-app containing key: databaseUrl.
+metadata:
+  name: nagar-postgres-app
+  namespace: nagar-app
+  annotations:
+    docs.nagar.io/placeholder: "use SealedSecret in live tree"
+type: Opaque

@@ -1,0 +1,90 @@
+# Exemplar: Ollama LLM serving (ADR-005: StatefulSet, no operator). Single node, CPU-first per
+# ADR-006; GPU optional via documented nodeSelector (OPERATIONS §12.8). Models live on a shared PVC
+# populated by the nagar-ollama-models Job (ollama-model-job.yaml).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  selector:
+    app.kubernetes.io/name: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  serviceName: ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ollama
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ollama
+        app.kubernetes.io/component: ai
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+      # GPU option (optional, documented deviation — uncomment on GPU nodes):
+      # nodeSelector:
+      #   accelerator: nvidia-gpu
+      containers:
+        - name: ollama
+          image: registry.nagar.internal:5000/ollama@sha256:REPLACE_WITH_DIGEST
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 11434
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet: { path: /api/tags, port: 11434 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/tags, port: 11434 }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits: { cpu: "4", memory: 8Gi }
+            # GPU option:
+            # nvidia.com/gpu: 1
+  volumeClaimTemplates:
+    - metadata:
+        name: models
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi

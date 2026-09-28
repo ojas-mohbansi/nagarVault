@@ -1,0 +1,75 @@
+# Exemplar: Redis (ADR-005: StatefulSet, no operator). Ephemeral by design — upload intents and
+# dedup keys are TTL-managed, so no persistence, no backups (OPERATIONS §7). Rollback = delete
+# manifests; PVC intentionally absent.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "1"
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "1"
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: storage
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: registry.nagar.internal:5000/redis@sha256:REPLACE_WITH_DIGEST # redis:7-alpine
+          args: ["--save", "", "--appendonly", "no"]   # explicitly ephemeral (doc'd deviation from defaults)
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }

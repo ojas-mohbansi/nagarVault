@@ -1,74 +1,42 @@
-# Environment variables and secrets
-.env
-.env.local
-.env.development
-.env.test
-.env.production
-*.env
-secrets/
-*.pem
-*.key
-*.p12
-*.pfx
+# NagarVault — mission baseline ignores (phase/00-mission-baseline, ADR-013)
+# docker-compose*, per-service Dockerfiles, and legacy .env paths are NOT ignored:
+# their deletion/audit is part of the mission record (ADR-004 as amended by ADR-013).
 
-# Python
+# --- secrets: plaintext secret material never enters git (invariant I-3) ---
+*.plaintext.yaml
+*.plain.yaml
+jwt-secret*.yaml
+kubeseal-*.yaml
+*secret*plain*
+
+# --- agent / tooling workspace ---
+.freebuff/
+agentic/tmp/
+*.local.yaml
+.k3d/
+kubeconfig-*
+
+# --- OS / editor noise ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+*~
+
+# --- python (rebuild phases) ---
 __pycache__/
 *.py[cod]
-*.class
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-dist/
-build/
-.eggs/
 .venv/
-venv/
-env/
-*.pytest_cache/
-.coverage
-htmlcov/
+.pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-# Node.js
+# --- node (rebuild phases) ---
 node_modules/
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-.pnp
-.pnp.js
-.yarn/install-state.gz
+.eslintcache
 
-# Build outputs
+# --- next.js / vite build output ---
 .next/
 out/
 dist/
-build/
-*.tsbuildinfo
-
-# YAML secrets
-*.secret.yml
-*.secret.yaml
-
-# Editor directories and files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Kiro IDE
-.kiro/
-
-# Logs
-*.log
-logs/
-coverage/

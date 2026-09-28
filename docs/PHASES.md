@@ -1,0 +1,142 @@
+# Phases — NagarVault Implementation Plan
+
+> The build order. Each phase is **isolated**: its own directory, charter, entry/exit criteria,
+> rollback, and skip-consequence. Hub: [AGENTS.md](../AGENTS.md). Layout rules: [CONVENTIONS.md](CONVENTIONS.md) §1.
+
+## 0. Isolation contract (applies to every phase)
+
+1. **Subtree ownership.** Phase NN owns `deploy/phases/NN-*/` and nothing else. Cross-phase edits
+   are forbidden (I-9). App code changes happen only in Phase 7 micro-phases, one service each.
+2. **Independent reviewability.** Each phase merges as one self-contained PR set; the cluster stays
+   healthy (or unaffected) with any subset of phases applied.
+3. **Rollback.** `git revert` the phase's merge commits → Argo sync. Ownership labels
+   (`nagar.io/phase`) make the blast radius greppable. Data-plane deletions never take PVCs with
+   them (documented per phase below).
+4. **Skip rule.** A phase may be skipped iff its "skip-consequence" is "none beyond lost capability."
+   Phases 1, 7a, and 10 have mandatory-status; see their entries.
+5. **Status ledger.** The table below is the single source of truth for phase status. Update it in
+   the same PR that changes the phase.
+   > **Rebuild deviation (2026-09-29, ADR-013):** Phase 7 re-implements every service from
+   > scratch against the frozen registries; Phase 10 verifies the absence of Compose remnants
+   > instead of deleting them, and retains the NEW per-service Dockerfiles as build recipes.
+
+## 1. Phase status ledger
+
+| # | Phase | Status | Charter (one line) | Skip-consequence |
+|---|---|---|---|---|
+| 0 | Documentation suite | **Done (2026-09-29)** | This suite | impossible (foundation) |
+| 1 | Cluster substrate | Not started | k3s + namespaces + cert-manager + Sealed Secrets + Kyverno/PSS | **mandatory** (all K8s phases need it) |
+| 2 | GitOps control plane | Not started | Argo CD app-of-apps + `deploy/` skeleton | self-heal/prune lost; manual `kustomize apply` fallback documented |
+| 3 | Object store & cache | Not started | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
+| 4 | Messaging | Not started | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
+| 5 | Relational store | Not started | CNPG + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
+| 6 | Vector & LLM tier | Not started | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
+| 7a–7g | App tier (per service) | Not started | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
+| 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
+| 9 | Observability & hardening | Not started | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
+| 10 | Parity cutover & cleanup | Not started | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
+
+## 2. Phase charters
+
+### Phase 1 — Cluster substrate
+- **Files:** `deploy/phases/01-substrate/` (namespaces, SealedSecrets `nagar-jwt` etc., Kyverno
+  baseline policies, cert-manager manifests, PSS labels).
+- **Entry:** hardware/registry per OPERATIONS §1. **Exit:** `kubectl get ns` shows the five
+  namespaces; Kyverno reports the baseline policies active; a sealed secret round-trips.
+- **Rollback:** delete namespaces (nothing else exists yet). **Notes:** k3s install itself is
+  documented in OPERATIONS §2 (host-level, outside git except a bootstrap script).
+
+### Phase 2 — GitOps control plane
+- **Files:** `deploy/phases/02-gitops/` (argocd manifests, app-of-apps, `deploy/third_party/` for
+  vendored operator charts per ADR-002).
+- **Exit:** app-of-apps shows child Applications; a test change propagates via git push only;
+  self-heal reverts a manual mutation within ~1 sync period (this is the zero-maintenance proof).
+- **Rollback:** delete Argo Applications (workloads keep running); revert to `kustomize apply` mode
+  (documented degraded mode).
+
+### Phase 3 — Object store & cache
+- **Files:** `deploy/phases/03-object-cache/` — MinIO & Redis StatefulSets (exemplars:
+  `minio-statefulset.yaml`, `redis-statefulset.yaml`), bucket init Job, NetworkPolicies.
+- **Exit:** buckets `raw-media` + `raw-sensitive-media` exist; Redis passes ping; PVCs bound.
+- **Rollback:** scale to zero / delete manifests. **PVC safety:** deleting the StatefulSet does not
+  delete PVCs (k8s semantics); phase docs restate this.
+
+### Phase 4 — Messaging
+- **Files:** `deploy/phases/04-messaging/` — Strimzi `Kafka` CR (KRaft single node, ADR-005/006),
+  topics Job (`kafka-topics-job.yaml`), DLQ topic, NetworkPolicies.
+- **Exit:** six topics exist with correct names (ARCHITECTURE §4.2); a test event round-trips.
+- **Rollback:** delete Kafka resource; producers/consumers of phases not yet deployed are unaffected.
+
+### Phase 5 — Relational store
+- **Files:** `deploy/phases/05-postgres/` — CNPG `Cluster` (2 replicas, ADR-006), migration Job
+  (`postgres-migration-job.yaml`), scheduled backups to MinIO `pg-backups` bucket, restore test.
+- **Exit:** `001_create_tables.sql` applied; `SELECT 1` via `postgres-rw`; a backup completed; a
+  restore drill into a scratch cluster succeeded.
+- **Rollback:** CNPG finalizers documented — deleting the Cluster CR does not delete PVCs; use
+  cnpg tooling if a real teardown is intended.
+
+### Phase 6 — Vector & LLM tier
+- **Files:** `deploy/phases/06-vector-llm/` — Qdrant + Ollama StatefulSets, model Job
+  (`ollama-model-job.yaml`, ADR-010), schemaIndexer Job + Deployment, NetworkPolicies.
+- **Exit:** `ollama list` shows both models; Qdrant `nagar_schema` holds 40 vectors; `/reindex`
+  idempotent re-run works.
+
+### Phase 7 — App tier (one service per micro-phase, isolated rollbacks)
+Order follows ARCHITECTURE §4.4 dependency graph; each micro-phase is its own PR with its own
+rollback:
+
+| Micro | Service | Deps | Exit criterion |
+|---|---|---|---|
+| 7a | authService | PG | seeded admin; `/login` E2E via cluster-internal curl (**exemplar parity check** vs `auth-service-deployment.yaml`) |
+| 7b | queryService | PG, auth | `/query` executes + RBAC blocks correctly; audit row written |
+| 7c | enrichWorker | Kafka, PG | events flow topic→table; DLQ on malformed input |
+| 7d | slmService | Ollama, Qdrant, query | `/ask` returns SQL + rows |
+| 7e | ingestion backend | MinIO, Redis, Kafka, auth | presign→PUT→event→Kafka E2E |
+| 7f | adminService | PG, Kafka, schemaIndexer | `/health/cluster` all-up; `/dlq`, `/audit-logs` live |
+| 7g | frontend + vault-ui | 7a–7f endpoints | browser E2E: login, dashboard, ask |
+
+### Phase 8 — Edge & TLS
+- **Files:** `deploy/phases/08-edge/` — Traefik IngressRoutes (port map: `/`→frontend, `/api`→
+  ingestion, `/auth`→auth, `/admin`→admin), cert-manager internal-CA `Certificate`s, CORS
+  middleware (replaces per-bucket MinIO CORS), rate-limit middleware (defense-in-depth).
+- **Exit:** OPERATIONS §11 smoke steps 1–2 pass over HTTPS; browser presigned PUT works from the
+  frontend origin.
+- **Rollback:** edge-only; in-cluster paths unaffected.
+
+### Phase 9 — Observability & hardening
+- **Files:** `deploy/phases/09-observability/` + NetworkPolicy completion + full Kyverno set
+  (SECURITY §5/§8) + alert rules with runbook anchors (OPERATIONS §10).
+- **Exit:** dashboards populated; one alert intentionally fired and linked to its runbook; restore
+  drill evidence recorded.
+
+### Phase 10 — Parity cutover & cleanup (mandatory)
+- **Entry:** OPERATIONS §11 smoke script green on K8s; parity checklist below signed.
+- **Actions:** delete `docker-compose.yml`, `docker-compose.dev.yml`, all per-service `Dockerfile`s
+  and `.dockerignore`s (ADR-004); audit stray tracked `.env` files (several per-service `.env`
+  files exist today — review and remove); resolve the nested `frontend/frontend/Dockerfile`
+  duplicate; rewrite README; flip PHASES.md ledger to "Complete."
+- **Parity checklist:** all 6 topics consumed; all 5 dept tables written; RBAC matrix enforced;
+  PII denylist enforced; DLQ inspectable; backups restore; smoke test green over HTTPS; Kyverno
+  clean; no drift in Argo for 7 consecutive days.
+- **Rebuild deviation (2026-09-29, ADR-013):** Compose files are already absent from the tree —
+  this phase VERIFIES their absence instead of deleting them, keeps the NEW per-service
+  Dockerfiles as operator build recipes, and includes the `docker-compose.yml` the legacy stack
+  left inside `nagar-vault-backend/` in the audit scope.
+
+## 3. Rollback doctrine (all phases)
+
+1. `git revert` the phase merge(s) — never hand-edit live state (I-1).
+2. Argo sync. Prune removes what git no longer declares.
+3. PVCs and CNPG/Strimzi finalizers are the only dangerous edges; both are documented per phase
+   (Phase 3/5/6) and deletion of data requires an explicit, reviewed, typed command — it is never a
+   side effect of a rollback.
+4. If a rollback itself fails: `argocd app history` + last-known-good git tag
+   (`release/YYYY-MM-DD`), then escalate to a human. A degraded cluster that matches git is
+   preferable to a "fixed" cluster that doesn't.
+
+## 4. Verification gates (every phase)
+
+- `kustomize build` clean (I-12); `kubectl --dry-run=client` clean on changed files.
+- `nagar.io/phase` + `nagar.io/tier` labels present (CONVENTIONS §5).
+- No plaintext secrets in the diff (I-3) — CI greps for `stringData:`/`data:` on Secret kinds.
+- Docs updated in the same PR (AGENTS.md §6.2).

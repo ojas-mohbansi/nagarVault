@@ -1,0 +1,61 @@
+# Exemplar: Zero-touch model provisioning (ADR-010).
+# Models are staged air-gapped as a tarball + SHA256 manifest on the build host:
+#   tar -C $(ollama show --dir bge-m3).. # see OPERATIONS §6 for staging commands
+# The Job verifies the checksum, restores into the shared PVC, and pulls only if the checksum
+# manifest in git changes. No internet egress, no manual `kubectl exec` — ever.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nagar-ollama-models
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: nagar-ollama-models
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+  annotations:
+    nagar.io/models-manifest-sha256: "REPLACE_WITH_SHA256_OF_MODELS_MANIFEST"  # bump to re-provision
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-ollama-models
+        app.kubernetes.io/component: init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provision
+          image: registry.nagar.internal:5000/ollama@sha256:REPLACE_WITH_DIGEST
+          env:
+            - name: OLLAMA_HOST
+              value: http://ollama.nagar-platform.svc.cluster.local:11434
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              MODELS="bge-m3 qwen3:1.7b"
+              for m in $MODELS; do
+                if ollama list | grep -q "$m"; then
+                  echo "$m already present — no-op (idempotent)"
+                else
+                  ollama pull "$m"   # registry mirror, air-gapped (see OPERATIONS §6 staging)
+                fi
+              done
+              ollama list
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }

@@ -1,0 +1,71 @@
+# Exemplar: Kafka via Strimzi, KRaft single-broker (ADR-005/006)
+# Copy into deploy/phases/04-messaging/. Operator manifests are vendored statically per ADR-002
+# (deploy/third_party/strimzi/), NOT installed via Helm.
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: nagar
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  kafka:
+    version: 4.2.0
+    metadataVersion: 4.2-IV1          # KRaft — no ZooKeeper (matches frozen compose image apache/kafka:4.2.0)
+    replicas: 1                        # single-broker accepted risk, ADR-006
+    listeners:
+      - name: plain
+        port: 29092
+        type: internal
+        tls: false                     # cluster-internal only; NetworkPolicies + mTLS-east-west deferred (future ADR)
+    config:
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      auto.create.topics.enable: false   # frozen compose parity — explicit topic Job only
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits: { cpu: "2", memory: 2Gi }
+    storage:
+      type: jbod
+      volumes:
+        - id: 0
+          type: persistent-claim
+          size: 20Gi
+          class: local-path
+          deleteClaim: false             # rollback safety: data survives phase teardown (PHASES §3)
+    readinessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+    livenessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+  entityOperator:
+    topicOperator: {}                    # KafkaTopic CRs allowed; topic Job kept for frozen-parity idempotency
+    userOperator: {}
+---
+# Service name alignment (ADR-009): apps speak to a stable bootstrap hostname.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-bootstrap
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+spec:
+  selector:
+    strimzi.io/cluster: nagar
+    strimzi.io/kind: Kafka
+  ports:
+    - name: plain
+      port: 29092
+      targetPort: 29092

@@ -1,0 +1,123 @@
+# Exemplar: MinIO object storage (ADR-005: StatefulSet, no operator)
+# Single-node per ADR-006. Buckets are created by an init container using checksum-guarded logic —
+# idempotent by construction (I-2). CORS is NOT configured here: in K8s, browser PUTs traverse the
+# Traefik edge middleware (Phase 8), replacing the per-bucket cors.xml mechanism of the frozen stack.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "1"
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "1"
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/component: storage
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: registry.nagar.internal:5000/minio@sha256:REPLACE_WITH_DIGEST
+          args: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: { name: nagar-minio, key: accessKey }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: nagar-minio, key: secretKey }
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: 9000 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+      initContainers:
+        - name: create-buckets
+          image: registry.nagar.internal:5000/minio-mc@sha256:REPLACE_WITH_DIGEST
+          env:
+            - name: MC_HOST_LOCAL
+              value: http://$(MINIO_ROOT_USER):$(MINIO_ROOT_PASSWORD)@minio:9000
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: { name: nagar-minio, key: accessKey }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: nagar-minio, key: secretKey }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc ready local; do sleep 2; done
+              mc mb --ignore-existing local/raw-media
+              mc mb --ignore-existing local/raw-sensitive-media
+              mc mb --ignore-existing local/pg-backups
+              echo "buckets ready"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 50Gi
