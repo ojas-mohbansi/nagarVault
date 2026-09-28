@@ -19,6 +19,10 @@ metadata:
 spec:
   validationFailureAction: Enforce
   background: true
+  # declared explicitly so the kyverno webhook's server-side defaults never drift from
+  # git (Argo compares byte-for-byte; undeclared defaults read as drift)
+  emitWarning: false
+  admission: true
   rules:
     - name: check-part-of-label
       match:
@@ -29,7 +33,9 @@ spec:
         any:
           - resources:
               namespaces: [kube-system, kube-public, kube-node-lease]
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "Every pod must carry app.kubernetes.io/part-of=nagarvault (CONVENTIONS §5)."
         pattern:
           metadata:
@@ -44,7 +50,9 @@ spec:
         any:
           - resources:
               namespaces: [kube-system, kube-public, kube-node-lease]
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "Every pod must carry nagar.io/phase (CONVENTIONS §5)."
         pattern:
           metadata:
@@ -63,6 +71,10 @@ metadata:
 spec:
   validationFailureAction: Enforce
   background: true
+  # declared explicitly so the kyverno webhook's server-side defaults never drift from
+  # git (Argo compares byte-for-byte; undeclared defaults read as drift)
+  emitWarning: false
+  admission: true
   rules:
     - name: require-tag-or-digest
       match:
@@ -75,7 +87,9 @@ spec:
               namespaces: [kube-system, kube-public, kube-node-lease]
           # init containers of the exempted upstream workloads still must not use
           # :latest; only the PSS-restricted fields below are exempted (see policy 3).
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "Using a mutable image tag e.g. :latest is not allowed (AGENTS.md I-5)."
         pattern:
           spec:
@@ -90,7 +104,9 @@ spec:
         any:
           - resources:
               namespaces: [kube-system, kube-public, kube-node-lease]
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "Using a mutable image tag e.g. :latest is not allowed in initContainers (AGENTS.md I-5)."
         pattern:
           spec:
@@ -110,6 +126,10 @@ metadata:
 spec:
   validationFailureAction: Enforce
   background: true
+  # declared explicitly so the kyverno webhook's server-side defaults never drift from
+  # git (Argo compares byte-for-byte; undeclared defaults read as drift)
+  emitWarning: false
+  admission: true
   rules:
     - name: require-resources-limits
       match:
@@ -120,7 +140,9 @@ spec:
         any:
           - resources:
               namespaces: [kube-system, kube-public, kube-node-lease]
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "CPU and memory requests and limits are mandatory (AGENTS.md I-4)."
         pattern:
           spec:
@@ -141,7 +163,9 @@ spec:
         any:
           - resources:
               namespaces: [kube-system, kube-public, kube-node-lease]
+      skipBackgroundRequests: true
       validate:
+        allowExistingViolations: true
         message: "runAsNonRoot, seccompProfile RuntimeDefault, drop ALL, and no privilege escalation are mandatory (SECURITY §5)."
         pattern:
           spec:
