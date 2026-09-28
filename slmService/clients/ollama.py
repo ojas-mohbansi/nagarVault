@@ -6,7 +6,7 @@ load_dotenv()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL = "bge-m3"
-GENERATE_MODEL = "qwen3:2b"
+GENERATE_MODEL = "qwen3:1.7b"
 
 
 async def embed(text: str) -> list[float]:

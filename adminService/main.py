@@ -132,17 +132,22 @@ async def list_dlq(limit: int = Query(50, le=200)):
         bootstrap_servers=BOOTSTRAP_SERVERS,
         auto_offset_reset="earliest",
         group_id=None,
-        consumer_timeout_ms=2000,
     )
     await consumer.start()
     try:
-        async for msg in consumer:
-            try:
-                messages.append(json.loads(msg.value.decode("utf-8")))
-            except Exception:
-                messages.append({"raw": msg.value.decode("utf-8", errors="replace")})
-            if len(messages) >= limit:
+        # Poll with a timeout instead of using an async iterator + consumer_timeout_ms;
+        # getmany() returns empty batches when no records arrive, so the endpoint always
+        # returns promptly even when the DLQ is empty.
+        while len(messages) < limit:
+            batch = await consumer.getmany(timeout_ms=3000, max_records=limit - len(messages))
+            if not batch:
                 break
+            for _tp, msgs in batch.items():
+                for msg in msgs:
+                    try:
+                        messages.append(json.loads(msg.value.decode("utf-8")))
+                    except Exception:
+                        messages.append({"raw": msg.value.decode("utf-8", errors="replace")})
     finally:
         await consumer.stop()
     return {"dlq_topic": DLQ_TOPIC, "count": len(messages), "items": messages}

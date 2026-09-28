@@ -69,10 +69,14 @@ async def run_index() -> int:
         for idx, doc in enumerate(docs)
     ]
 
-    await client.upload_points(
-        collection_name=COLLECTION_NAME,
-        points=points,
-        wait=True,
+    # qdrant-client 1.19: bulk upload methods are sync (return a parallel task handle);
+    # call inside a worker thread so the FastAPI event loop is not blocked.
+    await asyncio.to_thread(
+        lambda: client.upload_points(
+            collection_name=COLLECTION_NAME,
+            points=points,
+            wait=True,
+        )
     )
     print(f"Indexed {len(points)}/{len(docs)} chunks into Qdrant collection '{COLLECTION_NAME}'")
     return len(points)

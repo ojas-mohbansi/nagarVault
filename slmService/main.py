@@ -12,7 +12,7 @@ from schemas import AskRequest, AskResponse, HealthResponse
 app = FastAPI()
 
 JWT_SECRET = os.getenv("JWT_SECRET")
-GENERATE_MODEL = "qwen3:2b"
+GENERATE_MODEL = "qwen3:1.7b"
 
 EXCLUDED_PATHS = ["/", "/health", "/docs", "/openapi.json"]
 

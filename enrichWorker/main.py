@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime
+
 import asyncpg
 from aiokafka import AIOKafkaConsumer
 from dotenv import load_dotenv
@@ -21,6 +23,18 @@ TOPICS = [
     "ev.bus.telemetry.raw.v1",
 ]
 
+
+def _ts(value):
+    """Parse an ISO-8601 timestamp string into a datetime for asyncpg."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
 async def insert_nmc(conn, event):
     payload = event.get("payload", {})
     await conn.execute("""
@@ -30,7 +44,7 @@ async def insert_nmc(conn, event):
         event.get("eventId"), event.get("location", {}).get("wardId", "UNKNOWN"),
         payload.get("category", "unknown"), payload.get("description"),
         payload.get("status", "open"), event.get("sourceRecordId"),
-        event.get("sourceSystem"), event.get("sensitivity", "restricted"), event.get("receivedAt"),
+        event.get("sourceSystem"), event.get("sensitivity", "restricted"), _ts(event.get("receivedAt")),
     )
 
 async def insert_traffic(conn, event):
@@ -42,7 +56,7 @@ async def insert_traffic(conn, event):
         event.get("sourceRecordId"), event.get("location", {}).get("wardId", "UNKNOWN"),
         payload.get("junction"), payload.get("severity", "low"), event.get("eventType"),
         payload.get("averageSpeedKmph"), payload.get("vehicleCount"), payload.get("cameraId"),
-        bool(payload.get("rainDetected", False)), event.get("occurredAt"), event.get("receivedAt"),
+        bool(payload.get("rainDetected", False)), _ts(event.get("occurredAt")), _ts(event.get("receivedAt")),
     )
 
 async def insert_water(conn, event):
@@ -55,7 +69,7 @@ async def insert_water(conn, event):
         event.get("sourceRecordId"), payload.get("sensorId", "UNKNOWN"), payload.get("assetName"),
         event.get("location", {}).get("wardId", "UNKNOWN"), payload.get("pressureBar"),
         payload.get("flowLpm"), payload.get("levelCm"), payload.get("status", "normal"),
-        alert, event.get("eventType"), event.get("occurredAt"), event.get("receivedAt"),
+        alert, event.get("eventType"), _ts(event.get("occurredAt")), _ts(event.get("receivedAt")),
     )
 
 async def insert_health(conn, event):
@@ -71,7 +85,7 @@ async def insert_health(conn, event):
         event.get("location", {}).get("wardId", "UNKNOWN"), services,
         payload.get("capacity"), payload.get("registeredPatients"), payload.get("waitingPatients"),
         payload.get("averageWaitMinutes"), payload.get("campStatus", "active"),
-        event.get("eventType"), event.get("occurredAt"), event.get("receivedAt"),
+        event.get("eventType"), _ts(event.get("occurredAt")), _ts(event.get("receivedAt")),
     )
 
 async def insert_transport(conn, event):
@@ -84,7 +98,7 @@ async def insert_transport(conn, event):
         event.get("location", {}).get("wardId", "UNKNOWN"), payload.get("speedKmph"),
         payload.get("batterySoc"), payload.get("passengerCount"),
         payload.get("status", "in-service"), event.get("eventType"),
-        event.get("occurredAt"), event.get("receivedAt"),
+        _ts(event.get("occurredAt")), _ts(event.get("receivedAt")),
     )
 
 TOPIC_HANDLERS = {

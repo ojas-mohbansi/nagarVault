@@ -77,7 +77,7 @@ def validate_sql_ast(sql: str, user_role: str):
                 detail=f"Access Denied: Query requests protected PII column '{column.name}'.",
             )
     tables = [table.name.lower() for table in parsed.find_all(exp.Table)]
-    if "health_records" in tables and user_role != "ROLE_HEALTH_OFFICER":
+    if "health_camp_records" in tables and user_role != "ROLE_HEALTH_OFFICER":
         raise HTTPException(status_code=403, detail="not allowed")
     return True
 
@@ -96,12 +96,28 @@ async def querydb(request: Request, db: Session = Depends(get_db)):
     try:
         validate_sql_ast(sql_query, role)
     except HTTPException as e:
+        # Record blocked queries in the audit log before rejecting them
+        try:
+            async with request.app.state.db_pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO audit_logs (username, user_id, role, sql_query, status, block_reason, ip_address)
+                       VALUES ($1, $2, $3, $4, 'BLOCKED', $5, $6)""",
+                    username, user_id, role, sql_query, e.detail,
+                    request.client.host if request.client else None,
+                )
+        except Exception:
+            pass  # auditing must never mask the original 4xx
         raise e
 
     async with request.app.state.db_pool.acquire() as conn:
         try:
             results = await conn.fetch(sql_query)
             data = [dict(record) for record in results]
+            await conn.execute(
+                """INSERT INTO audit_logs (username, user_id, role, sql_query, status, row_count, ip_address)
+                   VALUES ($1, $2, $3, $4, 'ALLOWED', $5, $6)""",
+                username, user_id, role, sql_query, len(data), request.client.host if request.client else None,
+            )
         except Exception as db_err:
             raise HTTPException(status_code=500, detail=f"Database execution error: {str(db_err)}")
 
