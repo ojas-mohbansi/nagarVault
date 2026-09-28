@@ -2,8 +2,8 @@
 # 1) Pod templates gain a pod-level securityContext (runAsNonRoot + RuntimeDefault
 #    seccomp) — the require-pod-security-context policy demands it even though the
 #    upstream containers are individually compliant.
-# 2) Pod-template part-of label flips argocd -> nagarvault (map-merge overrides the
-#    single key; other upstream labels preserved) per CONVENTIONS §5.
+# 2) Pod-template labels align to CONVENTIONS §5 (part-of: nagarvault) AND carry
+#    nagar.io/phase — Kyverno autogen evaluates policy patterns against Pod templates.
 # 3) Minimal resources for the ~8 GB Docker allocation (risk R1).
 # 4) The 3 ClusterRoleBindings carry subject namespaces hardcoded to `argocd`;
 #    kustomize transformers do not rewrite RBAC subjects, so they are pinned here.
@@ -17,6 +17,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "2"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -41,6 +42,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "2"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -65,6 +67,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "2"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -89,6 +92,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "2"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -113,6 +117,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "2"
     spec:
       securityContext:
         runAsNonRoot: true
