@@ -1,0 +1,82 @@
+# Idempotent bucket-init Job (exemplar behavior, standalone per minio-statefulset.yaml
+# note 2). Creates the three frozen buckets (ARCHITECTURE §4.3 storage registry).
+# I-2: `mc mb --ignore-existing` is naturally idempotent; the /tasks marker short-circuits
+# a fully-successful prior run. Re-run = delete the Job (OPERATIONS §8 pattern); Argo/SSA
+# recreates it per its sync policy. ttlSecondsAfterFinished keeps history for evidence
+# without clogging the namespace.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bucket-init
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: minio-bucket-init
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "3"
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio-bucket-init
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: init
+        app.kubernetes.io/managed-by: argocd
+        nagar.io/phase: "03"
+        nagar.io/tier: "3"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-minio
+          image: registry.nagar.internal:5000/busybox@sha256:REPLACED-BY-TRANSFORMER
+          command: ["sh", "-c", "until nc -z minio 9000; do echo waiting for minio; sleep 3; done"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 32Mi }
+      containers:
+        - name: create-buckets
+          image: registry.nagar.internal:5000/minio-mc@sha256:REPLACED-BY-TRANSFORMER
+          env:
+            - name: MC_HOST_LOCAL
+              valueFrom:
+                secretKeyRef:
+                  name: nagar-minio-server
+                  key: mcHostLocal
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ -f /tasks/done ]; then echo "buckets already created (marker)"; exit 0; fi
+              until mc ready local; do sleep 2; done
+              mc mb --ignore-existing local/raw-media
+              mc mb --ignore-existing local/raw-sensitive-media
+              mc mb --ignore-existing local/pg-backups
+              mc ls local
+              touch /tasks/done && echo "buckets ready"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tasks
+              mountPath: /tasks
+          resources:
+            requests: { cpu: 25m, memory: 48Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: tasks
+          emptyDir: {}

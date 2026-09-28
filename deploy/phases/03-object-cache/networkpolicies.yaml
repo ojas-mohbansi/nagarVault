@@ -1,0 +1,115 @@
+# NetworkPolicies per SECURITY §8: default-deny in nagar-platform, then explicit
+# least-privilege allows. Port scope follows CONVENTIONS §4 (5432→pg, 6333→qdrant,
+# 6379 redis "nagar-platform + ingestion only", 9000 MinIO "namespace + edge upload
+# route", 29092 Kafka). Note: ClusterPolicy rules (Phase 1) evaluate pods, not
+# policies; these objects carry no pod template and are admitted freely.
+---
+# 1. Default deny all ingress + egress in the namespace (the base posture).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "03"
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# 2. DNS egress for every pod in the namespace (SECURITY §8: "always include it or
+#    everything breaks").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "03"
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3. MinIO: ingress on 9000 only, from future in-namespace consumers (Jobs in this
+#    namespace: bucket-init now, topics/migration later) and from nagar-app (ingestion
+#    backend per CONVENTIONS §4) + nagar-system (admin). Edge browser PUT arrives in
+#    Phase 8 (CONVENTIONS §4 "edge upload route") and widens this then.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-minio-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "03"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# 4. Redis: ingress on 6379 only, from this namespace (Jobs) and nagar-app (ingestion
+#    backend only per CONVENTIONS §4).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "03"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# 5. MinIO + Redis pods: no egress needed beyond DNS (data plane services).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-storage-egress-dns-only
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "03"
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [minio, redis]
+  policyTypes: ["Egress"]
+  egress: []

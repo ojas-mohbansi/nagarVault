@@ -1,0 +1,112 @@
+# Exemplar-shaped MinIO (docs/manifests/exemplars/minio-statefulset.yaml): single node
+# (ADR-006), StatefulSet (ADR-005), buckets via idempotent init container (`mc mb
+# --ignore-existing`, I-2). Deviations from the exemplar, all documented:
+# 1. Server credentials come from a dedicated `nagar-minio-server` SealedSecret in
+#    nagar-platform (SECURITY §6.2's `nagar-minio` is scoped to nagar-app consumers;
+#    a namespace cannot read another namespace's Secrets). Same values, separate seal.
+# 2. Bucket creation moved OUT of the StatefulSet init container into a standalone
+#    idempotent Job (`bucket-init`): the pod must become ready without the Job, and
+#    the Job is independently re-runnable (delete it to force re-run — OPERATIONS §8).
+# 3. Images: locally source-built minio/mc (ADR-015) staged into the internal-registry
+#    path; the digest-pins component rewrites to the k3d registry for this substrate.
+# 4. Minimal resources for the ~8 GB allocation (risk R1); console port exposed on the
+#    pod but not via a Service (no UI consumption before Phase 9 dashboards).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "1"
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: storage
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "03"
+    nagar.io/tier: "1"
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+      app.kubernetes.io/component: storage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: storage
+        app.kubernetes.io/managed-by: argocd
+        nagar.io/phase: "03"
+        nagar.io/tier: "1"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: registry.nagar.internal:5000/minio@sha256:REPLACED-BY-TRANSFORMER
+          args: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: { name: nagar-minio-server, key: accessKey }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: nagar-minio-server, key: secretKey }
+          ports:
+            - containerPort: 9000
+              name: s3
+            - containerPort: 9001
+              name: console
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: 9000 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 150m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi

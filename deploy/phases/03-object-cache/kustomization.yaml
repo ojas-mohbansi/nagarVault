@@ -1,6 +1,14 @@
-# Placeholder (2026-09-29): Phase 3's manifests land in its own phase commit
-# (PHASES.md §2 Phase 3). This file exists only so the forward-declared child
-# Application `nagar-phase3-object-cache` has a valid empty app path in the meantime.
+# Phase 3 — Object store & cache (PHASES.md §2). MinIO + Redis StatefulSets (ADR-005/006),
+# idempotent bucket-init Job (three frozen buckets), default-deny NetworkPolicies
+# (SECURITY §8). Consumes the nagar-minio-server SealedSecret (nagar-platform copy of the
+# MinIO credentials — see sealed-secret note in minio-statefulset.yaml header).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources: []
+resources:
+  - minio-statefulset.yaml
+  - redis-statefulset.yaml
+  - bucket-init-job.yaml
+  - networkpolicies.yaml
+  - secrets
+components:
+  - digest-pins
