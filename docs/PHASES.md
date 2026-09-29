@@ -31,7 +31,7 @@
 | 4 | Messaging | **Done (2026-09-29, k3d substrate)** | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
 | 5 | Relational store | **Done (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
 | 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
-| 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b–7g not started** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
+| 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c–7g not started** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
 | 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
 | 9 | Observability & hardening | Not started | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
 | 10 | Parity cutover & cleanup | Not started | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
@@ -105,7 +105,7 @@ rollback:
 | Micro | Service | Deps | Exit criterion |
 |---|---|---|---|
 | 7a | authService | PG | seeded admin; `/login` E2E via cluster-internal curl (**exemplar parity check** vs `auth-service-deployment.yaml`) — **Done 2026-09-30** (fresh rebuild in `deploy/phases/07-app-auth/`, G7a.1–G7a.7 in the mission log; 17/17 E2E checks, parity 11/11) |
-| 7b | queryService | PG, auth | `/query` executes + RBAC blocks correctly; audit row written |
+| 7b | queryService | PG, auth | `/query` executes + RBAC blocks correctly; audit row written — **Done 2026-09-30** (fresh rebuild in `deploy/phases/07-app-query/`, G7b.1–G7b.7 in the mission log; 13/13 gate matrix, 11/11 audit rows, cross-service jti denylist) |
 | 7c | enrichWorker | Kafka, PG | events flow topic→table; DLQ on malformed input |
 | 7d | slmService | Ollama, Qdrant, query | `/ask` returns SQL + rows |
 | 7e | ingestion backend | MinIO, Redis, Kafka, auth | presign→PUT→event→Kafka E2E |

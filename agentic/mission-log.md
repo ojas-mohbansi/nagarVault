@@ -1298,3 +1298,109 @@ registry.nagar.internal:5000 only. **I-12** — all trees build.
 - [x] `/login` E2E via cluster-internal curl — G7a.6 (17/17 PASS, `E2E-AUTH-OK`)
 - [x] Exemplar parity check — G7a.7 (11/11 shapes, deviations documented)
 - [x] 8/8 Applications Synced/Healthy; all trees build; resources re-checked — G7a.7
+
+---
+
+## Phase 7b — queryService (2026-09-30)
+
+**Scope:** `deploy/phases/07-app-query/` (fresh code per ADR-013) + app-of-apps registration.
+Mirror `phase7b-1`; Application `nagar-phase7b-query` Synced/Healthy. No pushes to any remote.
+
+### G7b.1 — Contracts read before code
+
+`POST /query` (JWT + role RBAC) from ARCHITECTURE §4.1; guardrails from §3.4 (SELECT-only
+sqlglot AST, per-role table RBAC, PII denylist `name, phone, email, address, aadhaar`, full
+audit); SECURITY §3 layered enforcement + admin's no-warehouse-tables rule; the Phase-5 DDL
+grants (`nmc_officer`/`health_officer` NOLOGIN projection roles, `nagar` member of both —
+`SET ROLE` wall) and `audit_logs` shape from `deploy/phases/05-postgres/migrations/
+001_create_tables.sql`. Environment at start: 8/8 Applications green, node 5.5/13.65 GiB.
+
+### G7b.2 — TDD: 27 hermetic tests, red → green
+
+`query/tests/test_query.py` written first (collection error = red), then `app.py`. Final:
+**27 passed**. Coverage: token absence/garbage/wrong-aud/denylisted-jti; single-SELECT AST
+(SELECT/UNION pass; INSERT/UPDATE/DELETE/CREATE/DROP/TRUNCATE/GRANT, multi-statement ->
+`non-select`; unparseable -> `parse-error`); table matrix incl. admin=none and unknown-role
+fail-closed and users/sessions/audit_logs never queryable; PII columns blocked in select, alias
+and WHERE, plus **star-expansion over a PII table**; `SET ROLE`/`RESET` wall ordering; audit on
+allowed AND blocked with reason; 500-row cap; DB failure -> 503. Suite-driven fixes: truthful
+`non-select` for DML sqlglot cannot parse (first-keyword fallback), semicolon stripped for the
+wall-wrap subquery only (audit keeps SQL verbatim), stray argon2 import removed.
+
+### G7b.3 — Image + pin
+
+`mission/nagar-query-service:phase7b-1` (python:3.12-slim, uid 1000, tests not shipped).
+Registry header `sha256:19133331732e656cbfc1d2f12186a830adf7f23f8c4006a71657db76e68186ee`
+-> `digest-pins/` component -> **`PIN-MATCHES-REGISTRY`** string equality. Rendered tree
+carries the pin; all 5 docs admitted by `kubectl apply --dry-run=client`.
+
+### G7b.4 — Landing + the DB wall, proven from the database side
+
+Commit `2f40f219` (code + manifests + Application + registration, one commit), mirror
+`phase7b-1`, **9/9 Applications Synced/Healthy**. Before any E2E, the Phase-5 grant wall was
+exercised directly on the primary:
+
+```
+SET ROLE nmc_officer;
+ civic_visible = 2   (nmc_complaints readable)
+SELECT count(*) FROM users;
+ ERROR: permission denied for table users
+```
+
+### G7b.5 — E2E across service boundaries (contract-correct choreography)
+
+First harness attempt failed with `Connection refused` from the query pod to auth-service —
+**the NetworkPolicy was right and the harness was wrong**: queryService validates JWTs locally
+(shared `nagar-jwt`, `sessions` denylist) and never calls auth; SECURITY §8 lists auth/admin/query
+-> Postgres only. Re-choreographed: tokens minted via the real auth Service from an auth pod,
+staged ephemerally into a query pod, gate matrix run there, `/logout` replayed cross-service.
+Results:
+
+```
+GATE-MATRIX-OK (13/13 PASS)
+  officer SELECT nmc_complaints -> 200 + rows (rows=2, incl. fixture)
+  nmc_officer blocked from health table      | table-rbac
+  health officer reads health table -> 200
+  admin has NO warehouse tables              | table-rbac
+  officer blocked from users                 | table-rbac
+  PII name / phone blocked                   | pii-column
+  star-expansion on PII table blocked        | pii-column
+  UPDATE / DROP blocked                      | non-select
+  unparseable blocked                        | parse-error
+  no token -> 401        garbage token -> 401
+JTI-DENYLIST-OK: logout at authService -> same token replayed at queryService -> 401
+```
+
+Audit evidence (audit_logs, source=queryService): **11 rows — 2 allowed, 3 table-rbac,
+3 pii-column, 2 non-select, 1 parse-error** — every E2E attempt recorded with its verdict.
+
+### G7b.6 — Cleanup
+
+E2E fixtures (`source_system='e2e'` complaint + health row) and the two officer test users
+deleted (`DELETE 1/1/2`); bootstrap admin + officer7a remain as documented artifacts. All
+staged token/password files shredded in every auth and query pod (`/tmp` verified empty);
+host scratch removed. Admin re-seed followed the established idempotent delete+seed pattern.
+
+### G7b.7 — Platform gates
+
+All **8 phase trees** build (LoadRestrictionsNone); **9/9 Applications Synced/Healthy**;
+node **5.85/13.65 GiB (43%)**, disk 389G. New OPERATIONS §12.26 documents the
+service-isolation E2E trap (mint tokens at auth; never widen the policy).
+
+### Invariants touched
+
+**I-1** — mirror/Argo only; out-of-band: §9.4 advance, admin re-seed (§9.1), and deletion of my
+own E2E fixtures/test users. **I-2** — fresh connection + SET ROLE/RESET per request; re-runnable
+gate. **I-3** — no secrets in git; tokens staged ephemerally and shredded. **I-4** — probes,
+resources, PDB, NetworkPolicy enumerated to the letter of SECURITY §8. **I-5** — registry-header
+digest, machine-verified. **I-6** — 4003 unchanged. **I-7** — Phase 9. **I-8** — no ADR: the
+service-isolation behavior is the documented contract (SECURITY §8), not a deviation; §12.26
+captures the operational lesson. **I-9** — scope: `deploy/phases/07-app-query/**` + two
+app-of-apps files + mirror tag + docs. **I-11/I-12** — internal registry only; all trees build.
+
+### Phase 7b exit criteria — met
+
+- [x] `/query` executes (officer SELECT -> 200 + rows through the wall) — G7b.5
+- [x] RBAC blocks correctly (health table, admin tables, auth tables) — G7b.5
+- [x] Audit row written for every attempt, with reasons — G7b.5 (11/11 verified)
+- [x] Bonus proofs: DB-side SET ROLE wall, cross-service jti denylist — G7b.4/G7b.5
