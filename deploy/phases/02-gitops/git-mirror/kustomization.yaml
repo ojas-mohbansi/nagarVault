@@ -7,4 +7,4 @@ resources:
   - git-mirror.yaml
 images:
   - name: k3d-nagar.localhost:5000/mission/git-repo-mirror
-    newTag: phase3-11
+    newTag: phase3-12
