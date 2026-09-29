@@ -1,0 +1,35 @@
+# Phase 6 child Application (app-of-apps). Destination is nagar-platform — no new namespace this
+# phase, so no AppProject change (unlike Phase 5's cnpg-system addition). Registered in
+# apps/kustomization.yaml in the SAME commit (the Phase-5 lesson: an Application file that is
+# never listed ships nothing, and a phase that ships no Application syncs nothing).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-phase6-vector-llm
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/06-vector-llm
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
