@@ -1404,3 +1404,92 @@ app-of-apps files + mirror tag + docs. **I-11/I-12** — internal registry only;
 - [x] RBAC blocks correctly (health table, admin tables, auth tables) — G7b.5
 - [x] Audit row written for every attempt, with reasons — G7b.5 (11/11 verified)
 - [x] Bonus proofs: DB-side SET ROLE wall, cross-service jti denylist — G7b.4/G7b.5
+
+---
+
+## Phase 7c — enrichWorker (2026-09-30)
+
+**Scope:** `deploy/phases/07-app-worker/` (fresh code per ADR-013) + app-of-apps registration.
+Mirror `phase7c-1`; Application `nagar-phase7c-worker` Synced/Healthy. No pushes to any remote.
+
+### G7c.1 — Contracts + the undocumented piece, resolved
+
+ARCHITECTURE §3.3 (five raw topics → normalize → upsert; malformed → `nmc.complaints.dlq.v1`),
+§3.2 invariants (duplicates answered idempotently on `sourceSystem + sourceRecordId`; Kafka
+carries bucket/objectKey references, never bytes), §4.2 topic registry (frozen names; DLQ's
+consumer is adminService 7f — the worker is its producer). The wire envelope itself was never
+specified, so it is derived from the migration-001 column contract + §3.2 field names and now
+documented in `worker/enrich.py` as the canonical contract for the 7e ingestion producer —
+a discrepancy recorded here rather than assumed away. Kafka topology verified live: Strimzi
+cluster `nagar`, plaintext listener, `nagar-kafka-bootstrap:29092`, topics pre-existing from
+Phase 4.
+
+### G7c.2 — TDD: 21 hermetic tests, red → green
+
+`worker/tests/test_enrich.py` first (red), then `worker/enrich.py` as a **pure handler**
+(`handle_message` → Outcomes) + thin confluent-kafka loop with commit-after-processing — no
+broker needed for the suite. Coverage: per-topic table mapping; envelope validation (invalid
+JSON / non-object / missing envelope fields / bad payload types / missing required fields /
+unknown topic → DLQ with reason, never an exception); int/float coercion; camelCase→snake
+mapping; upsert SQL shape (ON CONFLICT dedup key, enrichment refresh on conflict, identity
+columns untouched); media refs carried, bytes never. Two test-authoring bugs (index-coupled
+asserts, wrong tuple unpack) were fixed by making asserts column-name-derived — the
+implementation itself needed no change. Final: **21 passed**.
+
+### G7c.3 — Image + pin
+
+`mission/nagar-enrich-worker:phase7c-1` (python:3.12-slim, uid 1000, tests not shipped,
+confluent-kafka 2.11.1 + psycopg 3.2.9 pinned). Registry header
+`sha256:81825d4745452c2d1fbd1da0a5a2d0449376304ec247a71bc20d078dd56bc7d2` → `digest-pins/`
+component → **`PIN-MATCHES-REGISTRY`**. Worker manifests: NO Service and NO HTTP port
+(CONVENTIONS §4 lists none for the worker), exec-based startup/liveness probes (a consumer has
+no HTTP surface), replicas 1 (single consumer per group; ADR-006 substrate), egress exactly
+Kafka 29092 + Postgres 5432 + DNS, §12.23 labels, writable /tmp (7a lesson).
+
+### G7c.4 — Landing + live E2E (`topic→table`, `DLQ`, idempotent replay)
+
+Commit `002f645b` (code + manifests + Application + registration, one commit), mirror
+`phase7c-1`, **9/9 Applications Synced/Healthy**, pod 1/1 Running, subscribed to all five
+topics. A transient bootstrap `Connection refused` (Strimzi listener still settling) was
+absorbed by librdkafka retries — and produced the first accidental DLQ proof: a Phase-4-era
+message on the topic was routed `-> dlq` (`invalid-envelope: missing or non-string
+sourceSystem`) without crashing the loop. Deliberate E2E produced 3 messages to
+`traffic.events.raw.v1`:
+
+```
+worker log:  -> upserted   (valid)
+             -> upserted   (duplicate: same sourceSystem+sourceRecordId, severity low→high)
+             -> dlq        (malformed {"broken":)
+DB:  traffic_events | e2e | 7c-1 | severity=high | 1 ROW ONLY (redelivery refreshed, not duplicated)
+DLQ-INSPECT-OK (consumer group dlq-inspect-7c):
+  DLQ entry: invalid-json | body is not valid UTF-8 JSON | originalTopic: traffic.events.raw.v1
+```
+
+All three charter behaviors proven on the real surfaces: enrichment landed in the target table,
+the at-least-once duplicate upserted (severity=high proves latest-wins), malformed input in the
+DLQ with reason/detail/originalTopic/raw for adminService (7f) inspection.
+
+### G7c.5 — Cleanup + platform gates
+
+E2E fixture row deleted (`DELETE 1`); DLQ entries intentionally kept (that is the DLQ's
+purpose); producer/consumer scratch files shredded from the pod and host. All **9 phase
+trees** build; **9/9 Applications Synced/Healthy**; node **5.94/13.65 GiB (43.5%)**, disk 387G.
+
+### Invariants touched
+
+**I-1** — mirror/Argo only; out-of-band: §9.4 advance + deletion of my own fixture row.
+**I-2** — upsert-on-conflict is the core design; commit-after-processing; redelivery proven
+idempotent live. **I-3** — no secrets in git; DATABASE_URL via secretKeyRef. **I-4** — probes
+(exec, worker-appropriate), resources, PDB, NetworkPolicy enumerated to real flows (§12.26
+choreography applied: producer ran inside the worker pod, which owns the Kafka flow).
+**I-5** — registry-header digest, machine-verified. **I-6** — 29092 unchanged. **I-7** —
+Phase 9. **I-8** — no ADR: the envelope derivation is recorded as the 7e producer contract in
+code + mission log; DLQ consumer/producer split is §4.2 verbatim. **I-9** — scope:
+`deploy/phases/07-app-worker/**` + two app-of-apps files + mirror tag + docs. **I-11/I-12** —
+internal registry only; all trees build.
+
+### Phase 7c exit criteria — met
+
+- [x] Events flow topic→table — G7c.4 (real produce, real upsert, DB row verified)
+- [x] DLQ on malformed input — G7c.4 (`invalid-json` + accidental Phase-4-era
+      `invalid-envelope`, both routed without crashing the loop)
