@@ -41,6 +41,11 @@ spec:
   # Rewritten by ../digest-pins to the internal-registry reference pinned by digest (I-5/I-11).
   imageName: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
   enableSuperuserAccess: true
+  postgresql:
+    parameters:
+      # Explicit, so the resources-vs-shared_buffers webhook validation can never trip on an
+      # operator default changing under a future CNPG bump (192Mi request below).
+      shared_buffers: "128MB"
   storage:
     storageClass: local-path
     size: 5Gi

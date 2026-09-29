@@ -40,6 +40,12 @@ images:
   - name: registry.nagar.internal:5000/cnpg-postgresql
     newName: k3d-nagar.localhost:5000/mission/cnpg-postgresql
     digest: sha256:0e1a5a4e65577e0a7f2036b397e248db142a9645a51962fccb6a6a0fc1b2e9c9
+# CloudNativePG validates the Cluster's imageName itself and refuses a bare digest: "Can't use
+# just the image sha as we can't detect upgrades" — the operator parses the tag to detect major-
+# version upgrades. The pin therefore keeps the tag AND the digest (tag: 15.17-system-trixie);
+# the digest is still what kubelet resolves, so I-5 holds, and the tag is frozen to the same
+# immutable artifact.
+#
 # The operand pin is selected by label rather than by name so that it covers every PostgreSQL
 # Cluster in a build: the production Cluster and the restore drill's scratch cluster
 # (restore-drill/). A name-based target would silently pin only the first, and a silently unpinned
@@ -53,4 +59,4 @@ patches:
     patch: |-
       - op: replace
         path: /spec/imageName
-        value: k3d-nagar.localhost:5000/mission/cnpg-postgresql@sha256:0e1a5a4e65577e0a7f2036b397e248db142a9645a51962fccb6a6a0fc1b2e9c9
+        value: k3d-nagar.localhost:5000/mission/cnpg-postgresql:15.17-system-trixie@sha256:0e1a5a4e65577e0a7f2036b397e248db142a9645a51962fccb6a6a0fc1b2e9c9

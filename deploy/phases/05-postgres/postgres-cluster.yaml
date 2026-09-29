@@ -78,9 +78,11 @@ spec:
     topologyKey: kubernetes.io/hostname
     podAntiAffinityType: preferred
   resources:
+    # CloudNativePG validates that the memory request is >= shared_buffers (512MB below), which
+    # the operator enforces with a webhook: a request below the working-set size would invite OOM.
     requests:
       cpu: 200m
-      memory: 256Mi
+      memory: 1Gi
     limits:
       cpu: "1"
       memory: 1Gi
