@@ -1,0 +1,9 @@
+# queryService runtime dependencies — pinned (CONVENTIONS §8).
+# Same FastAPI/uvicorn/psycopg pins as authService (7a) for a uniform app tier;
+# sqlglot pinned at the version the AST gate's behavior is tested against.
+fastapi==0.115.14
+uvicorn==0.35.0
+starlette==0.46.2
+psycopg[binary]==3.2.9
+sqlglot==27.2.0
+PyJWT==2.10.1

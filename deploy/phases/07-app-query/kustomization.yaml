@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Phase 7b — queryService (charter: PHASES.md §2 micro-phase 7b). Phase boundary = directory
+# boundary (I-9); nothing outside this subtree is touched except the app-of-apps registration.
+resources:
+  - query-service.yaml
+  - networkpolicy.yaml
+components:
+  - digest-pins

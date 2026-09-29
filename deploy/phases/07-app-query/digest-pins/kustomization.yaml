@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pin for the Phase 7b queryService image (invariant I-5).
+#
+# Resolution 2026-09-30: built on the host from this tree (python:3.12-slim; G0.3 daemon
+# alias limitation), pushed via localhost:35000, digest read from the registry header
+# (Docker-Content-Digest) and machine-compared against this file before landing.
+#   mission/nagar-query-service:phase7b-1
+#     sha256:19133331732e656cbfc1d2f12186a830adf7f23f8c4006a71657db76e68186ee
+images:
+  - name: registry.nagar.internal:5000/nagar-query-service
+    newName: k3d-nagar.localhost:5000/mission/nagar-query-service
+    digest: sha256:19133331732e656cbfc1d2f12186a830adf7f23f8c4006a71657db76e68186ee

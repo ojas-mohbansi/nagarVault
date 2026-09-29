@@ -11,3 +11,4 @@ resources:
   - nagar-phase5-postgres.yaml
   - nagar-phase6-vector-llm.yaml
   - nagar-phase7a-auth.yaml
+  - nagar-phase7b-query.yaml
