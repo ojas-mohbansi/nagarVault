@@ -5,6 +5,17 @@
 # 2) The three deployments ship without resource requests/limits — the
 #    require-pod-security-context policy (I-4) would deny admission. Values are
 #    minimal single-node sizing for the current ~8 GB Docker allocation (risk R1).
+# 3) The pod templates gain the mission labels `require-nagar-labels` evaluates
+#    (app.kubernetes.io/part-of + nagar.io/phase). This patch is a 2026-09-29 Phase-5-era
+#    repair of a latent Phase-1 flaw, kept honest in the mission log: the original Phase-1
+#    tree patched only the Namespace labels, so the first pods were admitted BEFORE the
+#    ClusterPolicies went live and kept running; Argo saw no drift because git itself never
+#    declared the labels. The Docker-VM restart forced pod re-creation against the now-live
+#    policy, which denied every pod (`check-part-of-label` + `check-phase-label`) and left
+#    cert-manager with zero replicas. Every other mission namespace's patches carried these
+#    template labels from day one — this file was the only gap. Lesson (same class as the
+#    Phase-4 silent selector failure): a policy that only ever evaluated pre-existing pods
+#    proves nothing; the negative test must create a pod.
 ---
 apiVersion: v1
 kind: Namespace
@@ -27,6 +38,10 @@ metadata:
   name: cert-manager
 spec:
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "1"
     spec:
       containers:
         - name: cert-manager-controller
@@ -45,6 +60,10 @@ metadata:
   name: cert-manager-cainjector
 spec:
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "1"
     spec:
       containers:
         - name: cert-manager-cainjector
@@ -63,6 +82,10 @@ metadata:
   name: cert-manager-webhook
 spec:
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "1"
     spec:
       containers:
         - name: cert-manager-webhook
