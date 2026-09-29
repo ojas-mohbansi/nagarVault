@@ -575,3 +575,41 @@ schema, the canary, and that the SECURITY §3.3 grant matrix survived the round 
 drill runs outside Argo, its objects are not pruned automatically — the documented procedure ends
 with an explicit delete, and a forgotten drill is visible as two Clusters in
 `kubectl get cluster -n nagar-platform`.
+
+## ADR-021 — Ollama model provisioning: shared PVC staged by a checksum-gated Job
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 6
+
+**Context.** Phase 6 needs 2.52 GB of model weights (bge-m3, qwen3:1.7b) inside an air-gapped
+cluster (ADR-010 forbids runtime pulls), delivered to an ollama StatefulSet. The natural
+StatefulSet shape — a `volumeClaimTemplate` — creates the volume *with* the pod, but the volume
+is empty on first start: nothing can populate it before the StatefulSet exists, and a Job cannot
+mount a claim that does not yet exist. A weight-download sidecar violates ADR-010 at runtime, and
+a per-model PVC multiplies the seeding problem.
+
+**Decision.** Provision models as a **Job that populates a standalone shared PVC**
+(`ollama-models`, RWO, 10 Gi) which the ollama StatefulSet then mounts. The payload image
+`mission/ollama-models` carries the weights copied from the host (where they were pulled once,
+online) plus a `models-manifest.sha256` committed to git; the image build runs `sha256sum -c` as
+a gate, and the in-cluster Job verifies the checksums a second time before restoring them into
+the PVC and probing the live server's `/api/tags`. Idempotent by construction: re-running the
+Job re-verifies and re-copies over itself. Ordering needs no init-container chain — the Job
+completes long before the StatefulSet's first start in practice, and ollama handles an empty
+models dir gracefully if the ordering is ever inverted.
+
+**Alternatives rejected.**
+1. *`volumeClaimTemplate` + first-boot model pull:* breaks the air gap (ADR-010) — the pod would
+   need internet exactly once, which is the one time the guarantee must hold.
+2. *Weights baked into the ollama image itself:* conflates the upstream server image with a
+   2.5 GB payload; every model change would rebuild and re-verify the server layer (I-5's
+   provenance story becomes one blob), and the pinned upstream digest stops meaning anything.
+3. *Retain/preload via an init container on the StatefulSet:* a pod template mount cannot
+   reference a claim created by that same StatefulSet, and the init container would re-run on
+   every ollama restart for no benefit.
+
+**Consequences.** Model payload provenance lives in git (`models/models-manifest.sha256`) and the
+registry digest pin records what the cluster actually serves; the Job is the single writer of the
+PVC (ollama mounts it read-write for its own runtime state under `/models`, `OLLAMA_KEEP_ALIVE`
+keeps the session warm), so a compromised model file is detectable by re-running the checksum
+gate. RWO is sufficient on a single-node substrate; if the platform ever spans nodes, this is the
+surface to revisit (RWX or per-node staging). The manifests reference this ADR at the point of
+deviation.

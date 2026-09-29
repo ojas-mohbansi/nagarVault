@@ -1044,3 +1044,133 @@ Trees build clean (I-12): phase-1 125 docs, phase-2 64, phase-3 10, phase-4 31, 
 - [x] All six Applications Synced/Healthy — G5.6
 - [x] ADR-019 + ADR-020 written; PHASES ledger flipped; OPERATIONS §7/§9.5/§12.20–12.23 added;
       ARCHITECTURE §3.3 schema path corrected; `third_party/README.md` registry completed
+
+---
+
+## Phase 6 — Vector & LLM tier (2026-09-29)
+
+**Scope:** `deploy/phases/06-vector-llm/` + app-of-apps registration. Mirrors `phase6-1` →
+`phase6-5`; Argo Application `nagar-phase6-vector-llm` Synced/Healthy. No pushes to any remote.
+
+### G6.1 — Environment re-verified
+
+- `docker 29.8.1`; `k3d cluster list` → `nagar 1/1` (server + LB + registry up 7h+). LB port
+  re-checked after the Docker restart trap: `6443/tcp -> 0.0.0.0:57306`.
+- Session lesson recorded: `k3d kubeconfig write` takes the **cluster name** (`nagar`), not the
+  `k3d-nagar` context alias; the written kubeconfig is at `%TEMP%/kubeconfig`.
+- Baseline before the phase: 6/6 Applications Synced/Healthy; node 13.65 GiB.
+
+### G6.2 — Model gate (`MODEL-JOB-OK`, live)
+
+Models staged host-side (R3 flake worked around with persistent short-retry pulls), only the two
+mission models shipped — the host's unrelated 9.6 GB gemma4 excluded:
+
+| model | size | digest (ollama) |
+|---|---|---|
+| `bge-m3` | 1.2 GB | `790764642607…` |
+| `qwen3:1.7b` | 1.4 GB | `8f68893c685c…` |
+
+Payload `mission/ollama-models:phase6-1` (8 blobs, 2.52 GB), build-time `sha256sum -c` gate
+against `models/models-manifest.sha256` (committed). In-cluster Job re-verified the checksums,
+restored into the `ollama-models` PVC, then probed `http://ollama:11434/api/tags` with busybox
+wget (the payload image has no ollama binary — `ollama list` was never an option inside the Job):
+`MODEL-JOB-OK`, server lists both models. ADR-021 records the shared-PVC provisioning decision.
+
+### G6.3 — Qdrant up (three-part fix, each proven before landing)
+
+1. **Env override ineffective.** `QDRANT__STORAGE__STORAGE_DIR` did not take effect in 1.15.1;
+   pod panicked on `./storage` vs the read-only root. Fixed via `workingDir: /qdrant` so the
+   upstream relative defaults land on the PVC (landed `phase6-3`, previous turn).
+2. **Snapshots path.** Still fatal: `Panic occurred in file src/actix/mod.rs at line 73 …
+   Failed to create snapshots temp directory at ./snapshots/tmp: ReadOnlyFilesystem` (upstream
+   also defaults `snapshots_path: ./snapshots`). **Verified on the host first** with the exact
+   pinned digest, `--read-only`, uid 1000, and a writable `./snapshots`: qdrant serves, `/healthz`
+   200, `/readyz` "all shards are ready"; the `Failed to create init file indicator` WARN and the
+   `Filesystem check failed` ERROR are both non-fatal by the same run. Fix: `snapshots` emptyDir
+   at `/qdrant/snapshots` (`phase6-4`) — snapshots of a rebuildable cache need no PVC.
+3. **Rollout deadlock.** After `phase6-4` the STS template was correct but the pod stayed on the
+   old revision: with `replicas: 1`, the crash-looping ordinal-0 pod blocks its own replacement
+   (rolling update waits for N-1…0 Ready before touching N). Deleted the dead pod once —
+   controller recreated it from `updateRevision` immediately (§9.3 class); qdrant-0 Ready,
+   endpoints populated. Recorded as §12.24.
+
+### G6.4 — Index Job (`INDEX-SYNC-OK`, live)
+
+Connectivity restored, the Job then failed with `400 … value -8967166598452498473 is not a valid
+point ID, valid values are either an unsigned integer or a UUID`. Reproduced from the indexer
+Deployment pod with the Job's exact batch (40/40 embedded, dim 1024) to capture the error body:
+the signed sha256 fold produced negative ids. Fix: unsigned u64 fold (`phase6-5`), digest
+re-pinned from the registry header and **machine-compared** against the pin file (`PIN-MATCHES-
+REGISTRY`) after two manual transcription slips earlier in the session — never retype a digest.
+
+```
+[indexer] loaded 40 schema documents
+[indexer] embedded 40 documents (dim=1024)
+[indexer] collection 'nagar_schema' exists with dim=1024 — keeping it (idempotent re-run)
+[indexer] upserted 40 points; collection now reports points_count=40
+SUMMARY documents=40 upserted=40 points_count=40 dim=1024
+INDEX-SYNC-OK
+```
+
+Job `succeeded=1`. A leftover probe point (id 1, "probe") from the diagnosis was removed by
+dropping and letting the Job rebuild the collection — the 40/40 count above is post-rebuild.
+
+### G6.5 — Retrieval round-trip (`RETRIEVAL-ROUNDTRIP-OK`, live)
+
+Query `which table stores citizen complaint records and their status?` → bge-m3 embed (dim 1024)
+→ qdrant search, top hits:
+
+```
+GATE count: status=green points_count=40 dim=1024 distance=Cosine
+GATE embed: model=bge-m3 dim=1024
+GATE hit: score=0.6736 doc_id=table-nmc_complaints-01 table=nmc_complaints
+GATE hit: score=0.5661 doc_id=overview-01
+GATE hit: score=0.5340 doc_id=table-nmc_complaints-03
+RETRIEVAL-ROUNDTRIP-OK
+```
+
+The top hit is the correct table doc — retrieval quality, not just plumbing, is evidenced.
+
+### G6.6 — Idempotent `/reindex` + platform gates
+
+- `POST /reindex` twice from the indexer Deployment: `{"status":"ok","documents":40,
+  "upserted":40,"points_count":40,"dim":1024}` both times; `points_count` 40 after each —
+  deterministic ids make re-runs no-ops. Charter exit criterion met.
+- Applications: **7/7 Synced/Healthy** (`nagar-argocd-self`, `nagar-mission-root`, phases 1,
+  3, 4, 5, 6).
+- `kustomize build` all six phase trees (LoadRestrictionsNone — the vendored third_party refs are
+  intentional air-gap staging; the default restrictor blocks only those): **all OK**.
+- Node: `8.073 GiB / 13.65 GiB (59%)` after phase 6; disk 392G free; no MemoryPressure.
+- NetworkPolicies present: `default-deny`, `allow-dns-egress`, `allow-ollama-ingress`,
+  `allow-qdrant-ingress`, `allow-schema-indexer-ingress`, intra-namespace egress (+ phases 1–5 set).
+
+### Corrections / lessons this phase
+
+- The app-of-apps registration lesson (§12.20 tail) was **hit a second time** (phase 6 Application
+  existed as a file but shipped nothing until registered). The rule is now self-enforcing: the
+  registration is part of the same commit as the Application file.
+- Digest handling tightened after two retyping slips: digest pins are now verified by string-
+  comparing the pin file against the registry's `Docker-Content-Digest` header, never by eye.
+- The `qdrant-probe` debug pod was correctly rejected by PSA restricted — diagnosis ran via
+  `kubectl exec` into the existing indexer Deployment instead (no privileged pod, no exceptions).
+
+### Invariants touched
+
+**I-1** — all workload changes through mirror/Argo; out-of-band ops: §9.4 transport advances
+(×3) and the single §9.3 pod deletion. **I-2** — Job re-verify+restore, unsigned-id upserts,
+`/reindex` ×2 no-op. **I-3** — no secrets in the phase (none needed). **I-4** — probes/resources/
+NetworkPolicies/PDB-equivalent single-replica note on all new workloads (Kyverno-enforced).
+**I-5** — 5 images, all registry-header digests, pinned `tag@sha256` where operand webhooks matter.
+**I-6** — 6333/6334/11434/4005 unchanged. **I-7** — no new alert (Phase 9). **I-8** — ADR-021
+written; earlier manifest references now resolve. **I-9** — scope: `deploy/phases/06-vector-llm/**`,
+`deploy/phases/02-gitops/apps/` (new Application + registration), mirror tag, docs.
+**I-11** — no manifest references an upstream registry. **I-12** — all trees build.
+
+### Phase 6 exit criteria — met
+
+- [x] `ollama list` equivalent shows both models (MODEL-JOB-OK; `/api/tags` listed bge-m3 +
+      qwen3:1.7b) — G6.2
+- [x] Qdrant `nagar_schema` holds exactly 40 vectors — G6.4/G6.5 (count via qdrant API)
+- [x] `/reindex` idempotent re-run works — G6.6 (twice, 40/40 stable)
+- [x] All Applications Synced/Healthy; every tree builds; resources re-checked — G6.6
+- [x] ADR-021 written; PHASES ledger flipped; OPERATIONS §12.24/12.25 added

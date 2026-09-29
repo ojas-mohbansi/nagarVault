@@ -30,7 +30,7 @@
 | 3 | Object store & cache | **Done (2026-09-29, k3d substrate)** | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
 | 4 | Messaging | **Done (2026-09-29, k3d substrate)** | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
 | 5 | Relational store | **Done (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
-| 6 | Vector & LLM tier | Not started | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
+| 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
 | 7a–7g | App tier (per service) | Not started | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
 | 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
 | 9 | Observability & hardening | Not started | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
@@ -90,6 +90,13 @@
   (`ollama-model-job.yaml`, ADR-010), schemaIndexer Job + Deployment, NetworkPolicies.
 - **Exit:** `ollama list` shows both models; Qdrant `nagar_schema` holds 40 vectors; `/reindex`
   idempotent re-run works.
+- **Implementation notes (2026-09-29, ADR-021):** models are staged into a shared RWX PVC by the
+  checksum-verified Job (`MODEL-JOB-OK`) instead of a StatefulSet volumeClaimTemplate, so the Job
+  can populate the volume before ollama-0 ever starts. Two upstream-behavior fixes are documented
+  in manifest comments: qdrant 1.15.1 ignores the storage-dir env override (fixed via
+  `workingDir: /qdrant` + a `snapshots` emptyDir — under `readOnlyRootFilesystem` the actix init
+  panics on `./snapshots/tmp` otherwise), and qdrant point ids must be **unsigned** integers
+  (indexer folds doc-id sha256 prefixes as u64). Evidence: G6.1–G6.6 in the mission log.
 
 ### Phase 7 — App tier (one service per micro-phase, isolated rollbacks)
 Order follows ARCHITECTURE §4.4 dependency graph; each micro-phase is its own PR with its own
