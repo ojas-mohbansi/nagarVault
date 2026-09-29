@@ -27,6 +27,8 @@ spec:
       namespace: cert-manager
     - server: https://kubernetes.default.svc
       namespace: kyverno
+    - server: https://kubernetes.default.svc
+      namespace: cnpg-system
   clusterResourceWhitelist:
     - group: "*"
       kind: "*"
