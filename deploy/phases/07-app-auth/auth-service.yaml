@@ -97,6 +97,11 @@ spec:
             capabilities:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
+          # Writable scratch (uvicorn/stdlib temp needs). EmptyDir, not a PVC: ephemeral by
+          # design, nothing durable is written at runtime (I-2; SECURITY §5 hardening).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           ports:
             - containerPort: 4000
               name: http
@@ -121,6 +126,9 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
