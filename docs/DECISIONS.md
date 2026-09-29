@@ -369,7 +369,28 @@ appear once the Cluster Operator reconciles on a live cluster.
    exactly the two API ports (443 ClusterIP form, 6443 post-DNAT) and relies on the air gap plus
    `default-deny` for every other port; the rationale for not naming the API server by `ipBlock`
    is recorded in the manifest.
-6. **A failed pod-create is not retried by the pod-set controller.** When Kyverno denied the broker
+6. **A server-pruned schema node is declared, not masked.** The vendored Kafka CRD ships an empty
+   `…/status/properties/clusterSecurity/properties: {}`, and the API server prunes empty
+   `properties` nodes from a structural CRD schema on write. The live object therefore never
+   contains the key and Argo — which cannot distinguish "the server dropped this" from "a human
+   changed this" — reported that one CRD `OutOfSync` after every sync, forever, while the other
+   eleven CRDs from the same file converged. Per ADR-016's rule, the fix declares the stored form:
+   a JSON 6902 patch in this phase removes the empty node from the vendored document, so
+   `deploy/third_party/` stays pristine (ADR-002). `ignoreDifferences` was rejected: on a CRD it
+   would hide genuine schema drift, and the Kafka schema is the one most likely to move under a
+   Strimzi upgrade. The method that found it is worth reusing — `argocd app diff` rendered the
+   entire discrepancy as a single line (`> properties: {}`), which is the signature of server
+   normalization rather than drift.
+7. **Every listener the operator actually runs gets an ingress rule, scoped to its real users.**
+   The tier's NetworkPolicy was originally written for the one documented client port. Strimzi 1.x
+   also runs `REPLICATION-9091` — which is what the Cluster Operator's AdminClient uses — and
+   `CONTROLPLANE-9090` for the KRaft quorum. The result was a broker that started, served clients
+   and ran the topics Job perfectly while every operator reconciliation stalled on `Error getting
+   broker config: TimeoutException`, i.e. the platform worked and the control plane did not.
+   Ingress is now one rule per listener: 29092 from in-namespace + `nagar-app`, 9091 from
+   in-namespace + `nagar-system`, 9090 from broker pods only. The ports were confirmed by probing
+   them from the operator pod rather than read off a diagram.
+8. **A failed pod-create is not retried by the pod-set controller.** When Kyverno denied the broker
    Pod, `StrimziPodSet/nagar-dual-role` recorded the error and then did nothing further: the
    controller reconciles on StrimziPodSet change events, and the desired pod-set content was
    unchanged, so there was no event to react to. The un-wedge is to delete the StrimziPodSet (the

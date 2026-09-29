@@ -1,0 +1,24 @@
+# JSON 6902 patch (kustomize applies this as a JSON patch, not a strategic merge — the file
+# starts with `op:` entries).
+#
+# Removes ONE empty schema node from the vendored Kafka CRD so the desired manifest matches what
+# the API server actually stores.
+#
+# Why this is necessary rather than cosmetic: the upstream CRD ships
+#   …/status/properties/clusterSecurity/properties: {}       (an empty object)
+# and the API server PRUNES empty `properties: {}` from a structural CRD schema on write. The
+# live object therefore never contains that key, and Argo's differ — which cannot know the field
+# was dropped by the server rather than by a human — reports
+# `CustomResourceDefinition/kafkas.kafka.strimzi.io` as OutOfSync after every single sync,
+# forever, while all eleven sibling CRDs in the same vendored file converge. `argocd app diff`
+# showed the entire drift as one line (`> properties: {}`), which is how it was localized;
+# nothing else in the CRD differs.
+#
+# This follows ADR-016's rule for server-normalized fields — declare what the server stores,
+# never mask the comparison. `ignoreDifferences` was rejected here: it would also hide future real
+# drift in the Kafka schema, which is the one CRD most likely to change under us on an upgrade.
+# The vendored bundle in deploy/third_party/ stays pristine (ADR-002); the correction lives here,
+# in the phase that consumes it. If a future Strimzi release ships this CRD without the empty
+# node, this patch fails loudly on a missing path — which is the correct signal to delete it.
+- op: remove
+  path: /spec/versions/0/schema/openAPIV3Schema/properties/status/properties/clusterSecurity/properties

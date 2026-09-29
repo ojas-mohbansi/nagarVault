@@ -38,25 +38,42 @@ spec:
       strimzi.io/name: nagar-kafka
   policyTypes: ["Ingress"]
   ingress:
-    # 29092 is the frozen listener port (CONVENTIONS §4, ADR-009). Sources, each named for a
-    # concrete flow rather than widened "just in case":
-    #   podSelector {}        → in-namespace clients: the topics Job (tier 3) and, in Phase 5+,
-    #                           any init Job that needs a topic.
-    #   nagar-app             → producers/consumers: ingestion backend (7e) and enrichWorker (7c).
-    #   nagar-system          → the Strimzi Cluster Operator itself, which reconciles the Kafka CR
-    #                           from the control-plane namespace (see ../strimzi/kustomization.yaml
-    #                           for why it lives there rather than here).
+    # Three rules, one per listener, each with the minimum sources that actually use it. Strimzi
+    # 1.x runs more than the client listener (see the broker's own
+    # `listeners=CONTROLPLANE-9090://…,REPLICATION-9091://…,PLAIN-29092://…` line), and getting
+    # this wrong is silent: the broker starts and serves clients perfectly while the operator's
+    # admin client quietly times out. Measured, not assumed — probing 9090/9091/29092 from the
+    # operator pod gave BLOCKED/BLOCKED/OPEN with only 29092 allowed, which is exactly why every
+    # reconciliation was stuck on `Error getting broker config: TimeoutException`.
+    #
+    #   PLAIN-29092 (frozen client port, CONVENTIONS §4 / ADR-009) — in-namespace clients (the
+    #     topics Job now; migration Jobs in Phase 5) and nagar-app producers/consumers (ingestion
+    #     backend 7e, enrichWorker 7c).
+    #   REPLICATION-9091 (broker-to-broker + the Cluster Operator's AdminClient) — in-namespace
+    #     pods and nagar-system, where the operator runs.
+    #   CONTROLPLANE-9090 (KRaft quorum, TLS) — broker pods only. The operator has no business
+    #     on the metadata quorum, so it is NOT in this rule even though it is in the one above.
     - from:
         - podSelector: {}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: nagar-app
+      ports:
+        - protocol: TCP
+          port: 29092
+    - from:
+        - podSelector: {}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: nagar-system
       ports:
         - protocol: TCP
-          port: 29092
+          port: 9091
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9090
 ---
 # Brokers must reach the Kubernetes API (egress).
 #
