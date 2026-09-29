@@ -9,6 +9,14 @@ kind: Job
 metadata:
   name: bucket-init
   namespace: nagar-platform
+  # A Job's pod template is immutable, so Argo CD's default (server-side) apply cannot
+  # land a changed spec — it fails with "field is immutable" and the app wedges.
+  # Force=true,Replace=true is Argo's documented option for exactly this case
+  # ("job resources that should run every time when syncing"): the sync deletes and
+  # recreates the Job instead of patching it. Safe here because the Job is idempotent
+  # by construction (I-2): `mc mb --ignore-existing` is a no-op on a second run.
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
   labels:
     app.kubernetes.io/name: minio-bucket-init
     app.kubernetes.io/part-of: nagarvault
@@ -57,7 +65,12 @@ spec:
         - name: create-buckets
           image: registry.nagar.internal:5000/minio-mc@sha256:REPLACED-BY-TRANSFORMER
           env:
-            - name: MC_HOST_LOCAL
+            # mc derives the alias name from the env-var SUFFIX VERBATIM: MC_HOST_LOCAL
+            # registers the alias `LOCAL`, while this script (and every operator muscle
+            # memory) calls `local`. Unmatched, mc silently falls back to its built-in
+            # alias `local` -> http://localhost:9000 and loops on "cluster unreachable".
+            # Verified live: `MC_HOST_local` resolves `mc ready local` against the Service.
+            - name: MC_HOST_local
               valueFrom:
                 secretKeyRef:
                   name: nagar-minio-server
