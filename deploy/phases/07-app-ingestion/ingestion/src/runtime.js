@@ -43,7 +43,12 @@ globalThis.__ingestion = {
   async redisGet(key) { return redis.get(key); },
   async redisExpire(key, ttlSeconds) { await redis.expire(key, ttlSeconds); },
   async kafkaSend(topic, key, value) { await producer.send({ topic, messages: [{ key: Buffer.from(key), value: Buffer.from(value) }] }); },
-  async minioOk() { return (await fetch(process.env.MINIO_URL || 'http://minio.nagar-platform.svc.cluster.local:9000/minio/health/live')).ok; },
+  // NB: MinIO's bare base URL answers 403 (S3 auth); the health gate must use the
+  // /minio/health/live path in BOTH branches, not just the env-less fallback (G7e.2).
+  async minioOk() {
+    const base = process.env.MINIO_URL || 'http://minio.nagar-platform.svc.cluster.local:9000';
+    return (await fetch(`${base}/minio/health/live`)).ok;
+  },
   async kafkaOk() {
     const admin = kafka.admin();
     try { await admin.connect(); await admin.fetchTopicMetadata({ topics: ['nmc.complaints.raw.restricted.v1'] }); return true; }

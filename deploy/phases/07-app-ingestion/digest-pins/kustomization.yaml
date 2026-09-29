@@ -9,7 +9,9 @@ kind: Component
 #     sha256:ecd0ad621c1874f0ab134a34bb901ac8655d9675169b33f14334e09303f46148
 #   mission/nagar-ingestion:phase7e-2  (NaN-port fix: INGESTION_HTTP_PORT, G7e.1)
 #     sha256:5384c153ff486e0c4227576866766518d2bddc0154d2c020617399232f2144a8
+#   mission/nagar-ingestion:phase7e-3  (minioOk must use /minio/health/live path, G7e.2)
+#     sha256:ac905eee1c81eb985c282bb743d44dd5f4bf76cd6725f6d5ca5589389e30a3c9
 images:
   - name: registry.nagar.internal:5000/nagar-ingestion
     newName: k3d-nagar.localhost:5000/mission/nagar-ingestion
-    digest: sha256:5384c153ff486e0c4227576866766518d2bddc0154d2c020617399232f2144a8
+    digest: sha256:ac905eee1c81eb985c282bb743d44dd5f4bf76cd6725f6d5ca5589389e30a3c9
