@@ -13,6 +13,13 @@
 #      `nmc_officer` must NOT be able to read health records, `health_officer` must;
 #   4. it can connect at all as `nagar`, i.e. the password Phase 1 sealed into the app tier
 #      authenticates against the restored copy.
+#
+# The wait-for-restore init container exists because the drill was applied once without it and the
+# verify pod raced the recovery: it started while `postgres-restore-drill` was still replaying WAL
+# and burned its backoffLimit before the `-rw` service had endpoints (first run: FailureTarget on
+# "timed out waiting for the condition"; the re-run after the cluster went healthy passed — the
+# check itself was correct, only the ordering was). Same gate as the migration Job's
+# wait-for-postgres, pointed at the drill cluster instead.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -45,6 +52,26 @@ spec:
         fsGroup: 26
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: wait-for-restore
+          image: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              until pg_isready -h postgres-restore-drill-rw.nagar-platform.svc.cluster.local -p 5432 -t 5; do
+                echo "waiting for postgres-restore-drill-rw to accept connections"
+                sleep 5
+              done
+              echo "restore cluster is accepting connections"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
       containers:
         - name: verify
           image: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
