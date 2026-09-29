@@ -1,0 +1,52 @@
+# NetworkPolicy: ONLY the flows enrichWorker needs (SECURITY §8).
+#   ingress: NONE — a consumer exposes nothing.
+#   egress: Kafka 29092 in nagar-platform (Strimzi cluster 'nagar', §4.2 backbone),
+#           postgres-rw :5432 (enrichment target), kube-dns :53. Nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: enrich-worker
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-enrich-worker
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-enrich-worker
+      app.kubernetes.io/component: worker
+  policyTypes: ["Ingress", "Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              strimzi.io/cluster: nagar
+      ports:
+        - protocol: TCP
+          port: 29092
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:                          # DNS — always present (SECURITY §8)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

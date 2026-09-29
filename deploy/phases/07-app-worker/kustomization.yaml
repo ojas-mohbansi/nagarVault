@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Phase 7c — enrichWorker (charter: PHASES.md §2 micro-phase 7c). Phase boundary = directory
+# boundary (I-9); nothing outside this subtree is touched except the app-of-apps registration.
+resources:
+  - enrich-worker.yaml
+  - networkpolicy.yaml
+components:
+  - digest-pins

@@ -12,3 +12,4 @@ resources:
   - nagar-phase6-vector-llm.yaml
   - nagar-phase7a-auth.yaml
   - nagar-phase7b-query.yaml
+  - nagar-phase7c-worker.yaml

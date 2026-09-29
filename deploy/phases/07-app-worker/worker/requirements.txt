@@ -1,0 +1,4 @@
+# enrichWorker runtime dependencies — pinned (CONVENTIONS §8).
+# confluent-kafka bundles librdkafka wheels; psycopg3 as the rest of the app tier.
+confluent-kafka==2.11.1
+psycopg[binary]==3.2.9
