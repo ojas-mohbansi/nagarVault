@@ -89,7 +89,7 @@ spec:
       containers:
         - name: query-service
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
-          image: registry.nagar.internal:5000/nagar-query-service:phase7b-1
+          image: registry.nagar.internal:5000/nagar-query-service:phase7b-2
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
