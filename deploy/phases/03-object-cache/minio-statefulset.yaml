@@ -101,12 +101,23 @@ spec:
           resources:
             requests: { cpu: 150m, memory: 256Mi }
             limits: { cpu: "1", memory: 768Mi }
+  # Server-side defaults declared on purpose (Phase-2 precedent: declare, never mask with
+  # ignoreDifferences). The API server defaults `apiVersion`, `kind` and `spec.volumeMode`
+  # INSIDE volumeClaimTemplates, and Argo CD's client-side differ does not normalize that
+  # subtree — so omitting them left the whole app permanently OutOfSync after every sync,
+  # which in turn made self-heal run partial per-resource syncs that starved full syncs
+  # (see ADR-016). Proof: `kubectl diff --server-side -f <this STS>` reports exactly one
+  # conflict, on .spec.volumeClaimTemplates; the redis StatefulSet — identical shape but no
+  # volumeClaimTemplates — stays Synced with the same class of pod-spec defaults omitted.
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: local-path
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 20Gi
