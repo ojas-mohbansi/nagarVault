@@ -83,11 +83,15 @@ spec:
             - containerPort: 6334
               name: grpc
           env:
-            # Storage under /qdrant/storage (exemplar path); tmp under the writable emptyDir.
-            - name: QDRANT__STORAGE__STORAGE_DIR
-              value: /qdrant/storage
+            # workingDir below points the upstream default `./storage` at the PVC mount. The
+            # env-var override path (QDRANT__STORAGE__STORAGE_DIR) did NOT take effect in
+            # 1.15.1 — the first pod panicked with "Filesystem check failed for storage path
+            # ./storage … Unrecognized filesystem" against the read-only overlay root. Rather
+            # than guess another env spelling, the container starts IN /qdrant so every
+            # relative path the upstream config assumes lands on the writable volume.
             - name: TMPDIR
               value: /tmp
+          workingDir: /qdrant
           volumeMounts:
             - name: storage
               mountPath: /qdrant/storage
