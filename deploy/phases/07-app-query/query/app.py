@@ -193,9 +193,15 @@ def check_pii(tree, tables: set[str]) -> None:
     for column in tree.find_all(exp.Column):
         if column.name and column.name.lower() in PII_COLUMNS:
             raise GateBlock("pii-column")
-    # Star-expansion must not smuggle denylisted columns past the column scan.
-    if tree.find(exp.Star) and (tables & PII_TABLES):
-        raise GateBlock("pii-column")
+    # A star must not project PII columns past the column scan. A star in a SELECT list
+    # projects every column (blocked over PII tables); a star as an aggregate argument
+    # (COUNT(*)) projects nothing and is allowed — the denylist is about COLUMNS
+    # (ARCHITECTURE §3.4), refined after the live Phase-7d E2E caught COUNT(*) blocked.
+    if tables & PII_TABLES:
+        for star in tree.find_all(exp.Star):
+            sel = star.find_ancestor(exp.Select)
+            if sel is not None and any(star is e for e in sel.expressions):
+                raise GateBlock("pii-column")
 
 
 class QueryBody(BaseModel):

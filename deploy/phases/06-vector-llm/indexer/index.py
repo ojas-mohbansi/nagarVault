@@ -110,8 +110,11 @@ def upsert_points(docs: list[dict], vectors: list[list[float]]) -> int:
     # Batch in chunks of 32 to keep request bodies small on the in-cluster link.
     for i in range(0, len(points), 32):
         chunk = points[i : i + 32]
+        # wait=true: qdrant upserts are async by default; without this the post-sync
+        # points_count witness can read stale and a successful reindex reports a false
+        # mismatch (found by the Phase-7d E2E: rebuild landed 40 while /reindex returned 500).
         httpx.put(
-            f"{QDRANT_URL}/collections/{COLLECTION}/points",
+            f"{QDRANT_URL}/collections/{COLLECTION}/points?wait=true",
             json={"points": chunk},
             timeout=120,
         ).raise_for_status()

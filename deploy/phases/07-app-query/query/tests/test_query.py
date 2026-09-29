@@ -207,6 +207,21 @@ def test_pii_blocked_in_where(client):
     assert r.status_code == 403
 
 
+def test_count_star_allowed_on_pii_table(client):
+    """COUNT(*) projects no columns — the denylist is about columns (ARCH §3.4).
+    Refined after the Phase-7d live E2E showed the model's COUNT(*) gate-blocked."""
+    r = client.post("/query", json={"sql": "SELECT COUNT(*) FROM nmc_complaints"},
+                    headers=auth_header(token()))
+    assert r.status_code == 200
+
+
+def test_select_star_still_blocked(client):
+    r = client.post("/query", json={"sql": "SELECT * FROM nmc_complaints"},
+                    headers=auth_header(token()))
+    assert r.status_code == 403
+    assert r.json()["detail"]["reason"] == "pii-column"
+
+
 # --------------------------------------------------------------------------- wall + audit
 
 
