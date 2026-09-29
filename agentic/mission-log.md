@@ -1174,3 +1174,127 @@ written; earlier manifest references now resolve. **I-9** — scope: `deploy/pha
 - [x] `/reindex` idempotent re-run works — G6.6 (twice, 40/40 stable)
 - [x] All Applications Synced/Healthy; every tree builds; resources re-checked — G6.6
 - [x] ADR-021 written; PHASES ledger flipped; OPERATIONS §12.24/12.25 added
+
+---
+
+## Phase 7a — authService (2026-09-30)
+
+**Scope:** `deploy/phases/07-app-auth/` (fresh code per ADR-013; the legacy top-level
+`authService/` path stays deleted until Phase 10 rules on final layout) + app-of-apps
+registration. Mirrors `phase7a-1`, `phase7a-2`; Application `nagar-phase7a-auth` Synced/Healthy.
+No pushes to any remote.
+
+### G7a.1 — Environment re-verified
+
+docker 29.8.1; `k3d cluster list` → nagar 1/1; LB `6443->57306`; 7/7 Applications green at
+start; node 5.5/13.65 GiB, disk 396G. Live-state contract checks before writing code:
+`nagar-app` already in AppProject destinations (no §12.20 gate); `nagar-jwt` key `jwtSecret`
+and `nagar-postgres-app` key `databaseUrl` exist from Phase 1 (SECURITY §6.2 key map — the
+exemplar's `$(PGPASSWORD)` interpolation predates the live secret shape; no new SealedSecret);
+CNPG owner `nagar`; `allow-postgres-ingress` already admits nagar-app→5432; `postgres-rw`
+selector `cnpg.io/cluster=postgres, instanceRole=primary`.
+
+### G7a.2 — TDD: 22 hermetic tests, red → green
+
+Tests written first (`auth/tests/test_auth.py`), watched fail (`ModuleNotFoundError: app`),
+then implemented. Final: **22 passed, 1 warning in 1.64s**. Coverage: JWT claim set incl.
+`exp-iat == 3600` and aud/iss validation; cookie flags (httponly/samesite=lax/secure per env);
+wrong-password 401; unknown-user 401 (timing-equalized against a dummy argon2 hash — no user
+enumeration); admin gate on /create (401/403); unknown role 422; duplicate username 409;
+logout denylist → /whoami 401; rate limit 429 on 6th attempt; seed idempotency. The suite
+caught a real contract subtlety: logout must consult token validity but NOT the revocation
+list (a revoked-token replay logout stays 200 — idempotent), while /whoami must 401 on the
+same token. Implementation split `claims_from_request` (no denylist) from
+`identity_from_request` (denylist) accordingly.
+
+### G7a.3 — Image + pin
+
+`mission/nagar-auth-service:phase7a-1` built on the host from the phase subtree
+(python:3.12-slim; uid 1000; test files NOT shipped). Registry header digest
+`sha256:adf0ff3c3154a605c71cf4f5931cce611668e6fbb10d84deedabc9cab820832a` → pinned in
+`digest-pins/` component → **machine-verified `PIN-MATCHES-REGISTRY`** (string equality vs
+`Docker-Content-Digest`, per the Phase-6 lesson).
+
+### G7a.4 — Landing
+
+Commit `949bf6ee` carries code + manifests + Application `nagar-phase7a-auth` AND its
+`apps/kustomization.yaml` registration in one commit (the twice-bitten Phase-5/6 lesson).
+Mirror cycle `phase7a-1` (§9.4); Argo created the app and synced; **8/8 Applications
+Synced/Healthy**; both replicas 1/1 Running with `/dbcheck` readiness proving DB reachability
+through the NetworkPolicy before any E2E.
+
+### G7a.5 — Fix under fire: writable /tmp
+
+The in-pod E2E transfer failed with `cannot create /tmp/pw: Read-only file system` — the
+hardened `readOnlyRootFilesystem: true` (correctly) leaves no scratch. Added an `emptyDir` at
+`/tmp` (nothing durable is written at runtime), landed as `phase7a-2`; rollout zero-downtime
+(maxUnavailable 0); `TMP-OK` probe on the new ReplicaSet.
+
+### G7a.6 — Seeded admin + cluster-internal E2E (`E2E-AUTH-OK`, 17/17 PASS)
+
+Seed per OPERATIONS §5 (`seed_admin.py --username admin --user-id admin-001`, §9.1; password
+28 chars, captured ephemerally, never logged, shredded with the E2E files — pod and host).
+Seed idempotency proven live afterwards: `user 'admin' already exists — no-op`.
+E2E ran from inside pod `auth-service-68669cb78c-22hb7` with stdlib-only urllib (the runtime
+image deliberately has no test deps), against the **Service** URL for contract paths and a
+direct pod IP for the per-IP limiter:
+
+```
+PASS liveness GET / -> 200          PASS dbcheck SELECT 1 -> 200
+PASS whoami without token -> 401    PASS login wrong password -> 401
+PASS login seeded admin -> 200      PASS Set-Cookie httponly / samesite=lax / not secure
+PASS whoami echoes admin identity   {"sub":"admin-001","role":"admin","jti":"744da7e3…"}
+PASS POST /create as admin -> 200   {"username":"officer7a","role":"nmc_officer"}
+PASS new officer can login -> 200   PASS POST /create as officer -> 403
+PASS officer whoami role echo       PASS 6th login within a minute -> 429 (5 req/min/IP)
+PASS bearer token valid pre-logout -> 200
+PASS logout -> 200
+PASS same token after logout -> 401 (jti denylist)
+E2E-AUTH-OK
+```
+
+DB evidence (primary pod, no secrets printed): `users` = admin(admin) + officer7a(nmc_officer),
+both `$argon2id$…`, **0 rows with non-argon2id hash**; `sessions` = `744da7e3…` `revoked = t`
+(the E2E logout), officer session live. Duplicate-row guards before each re-seed attempt kept
+the ritual idempotent (`DELETE 1` of mission-created test users only).
+
+### G7a.7 — Parity + platform gates
+
+Exemplar parity vs `docs/manifests/exemplars/auth-service-deployment.yaml` — all 11 probed
+shapes present (replicas 2, maxUnavailable 0, PDB minAvailable 1, :4000, /dbcheck + / probes,
+no SA token automount, 128Mi/256Mi, phase "07", readOnlyRootFilesystem). Documented deviations
+(live-state corrections, in manifest headers): `databaseUrl` secretKeyRef; `COOKIE_SECURE=false`
+until Phase 8 TLS; pod-template mission labels (§12.23); writable /tmp emptyDir.
+`kustomize build` — **all 7 phase trees OK** (LoadRestrictionsNone, vendored third_party refs).
+Node after 7a: 6.45/13.65 GiB (47%), disk 388G, no pressure conditions.
+
+### Session lessons (host quirks, not platform issues)
+
+MSYS path conversion struck in three new flavors this phase: (1) a bare pod-absolute argument
+(`/tmp/e2e7a.py`) is rewritten to a host path — wrap the remote invocation in `sh -c '…'`;
+(2) `export KUBECONFIG=x MSYS_NO_PATHCONV=1` in one statement disables conversion of the
+KUBECONFIG value itself, breaking kubectl — set them as separate statements; (3) dict-based
+header access is case-sensitive where `resp.headers` iteration is not (E2E harness bug, fixed
+same-run). Secret material was never exposed by any of these failures (cleanup ran
+unconditionally; affected seeds were deleted and re-performed).
+
+### Invariants touched
+
+**I-1** — workload changes via mirror/Argo only; out-of-band: §9.4 advances ×2, §9.1 seed,
+and `DELETE` of two mission-created E2E test users (data cleanup of my own artifacts, idempotent
+re-seed after). **I-2** — seed re-run no-op; /create duplicate 409; JWTs verified against live
+env per request. **I-3** — password printed once to the operator's ephemeral capture only;
+DB stores argon2id hashes (0 plaintext rows verified); no secrets in git. **I-4** — probes,
+resources, PDB, NetworkPolicy, non-root read-only container. **I-5** — image digest pinned from
+the registry header, machine-verified. **I-6** — 4000 unchanged. **I-7** — none (Phase 9).
+**I-8** — no new ADR: every deviation is a live-state reconciliation of ADR-013/SECURITY §6.2/
+§12.23, documented in manifest headers and here. **I-9** — scope: `deploy/phases/07-app-auth/**`
++ the two app-of-apps files + mirror tag + docs. **I-11** — base manifest references
+registry.nagar.internal:5000 only. **I-12** — all trees build.
+
+### Phase 7a exit criteria — met
+
+- [x] Seeded admin user — G7a.6 (OPERATIONS §5 ritual, idempotency proven)
+- [x] `/login` E2E via cluster-internal curl — G7a.6 (17/17 PASS, `E2E-AUTH-OK`)
+- [x] Exemplar parity check — G7a.7 (11/11 shapes, deviations documented)
+- [x] 8/8 Applications Synced/Healthy; all trees build; resources re-checked — G7a.7
