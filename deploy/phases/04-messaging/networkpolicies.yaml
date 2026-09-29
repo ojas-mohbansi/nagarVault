@@ -57,3 +57,53 @@ spec:
       ports:
         - protocol: TCP
           port: 29092
+---
+# Brokers must reach the Kubernetes API (egress).
+#
+# Strimzi 1.x no longer mounts the cluster CA / trust bundle as a volume: the broker loads it
+# through Kafka's `KubernetesSecretConfigProvider`, i.e. it reads Secret `nagar-trustbundle`
+# over the API server *before it can start*. Upstream states the requirement plainly ("to use
+# the Kubernetes Configuration Provider plugin, you must set up access rights to..."), and
+# there is no feature gate to switch back to volume-mounted secrets — checked the operator's
+# live feature-gate set, not just its docs. Without this rule the broker CrashLoopBackOffs on
+# `Failed to retrieve Secret nagar-trustbundle ... java.net.ConnectException`, which is what the
+# namespace-wide `default-deny` from Phase 3 does to it by design.
+#
+# Why the rule is port-scoped instead of peer-scoped: a NetworkPolicy peer must be a pod
+# selector, a namespace selector, or an ipBlock, and the API server is none of those here (in
+# k3s it is a host process, not a pod and not in any namespace). Naming it by ipBlock would mean
+# hard-coding a substrate address, and the address a rule would have to match is ambiguous
+# anyway — the ClusterIP form (443) is rewritten by service DNAT to the node's API port (6443)
+# before egress policy is evaluated on most CNIs, so any single CIDR guess is a coin flip. The
+# rule therefore allows exactly the two API ports to any destination and relies on two bounds:
+# the cluster has no route off-box (I-11), and every other port stays denied by `default-deny`.
+# A real deployment replaces this with its control-plane ipBlock per the Kubernetes NetworkPolicy
+# guidance; the port list is the portable part.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka-api-egress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  podSelector:
+    matchLabels:
+      strimzi.io/broker-role: "true"
+      strimzi.io/cluster: nagar
+      strimzi.io/kind: Kafka
+      strimzi.io/name: nagar-kafka
+  policyTypes: ["Egress"]
+  egress:
+    - ports:
+        # `kubernetes` Service ClusterIP form
+        - protocol: TCP
+          port: 443
+        # post-DNAT form (the k3s API server port)
+        - protocol: TCP
+          port: 6443

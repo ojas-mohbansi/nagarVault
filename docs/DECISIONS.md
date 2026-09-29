@@ -306,3 +306,122 @@ host and never needed in-cluster.
 annotation or a spec edit silently wedges the app; and the failure mode *OutOfSync forever →
 self-heal partial syncs → auto-sync starvation* is documented with its diagnostic
 (OPERATIONS §12.13–12.14).
+
+---
+
+## ADR-017 — Strimzi 1.2.0 as the messaging substrate: API shape, label ownership, and API access
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 4
+
+**Context.** Phase 4 could only reach Strimzi **1.2.0** from this network. That version is a
+generational break from the shape the Phase-0 exemplar (`docs/manifests/exemplars/
+kafka-strimzi.yaml`) and ADR-005/006 were written against, and three separate facts about it
+each cost a failed deploy to find. All three are upstream-documented but counter-intuitive, and
+all three are invisible to `kustomize build` and `kubectl apply --dry-run=server` — they only
+appear once the Cluster Operator reconciles on a live cluster.
+
+1. **The node pool is a separate, mandatory object.** Since Strimzi 0.42 the node count, storage,
+   resources and JVM options live on a `KafkaNodePool` CR, the API version is `kafka.strimzi.io/v1`
+   (`v1beta2` is gone), and a Kafka CR alone has **zero** nodes.
+2. **Pods carry the operator's labels, not ours.** Upstream: "These labels cannot be overridden
+   through template configuration of Strimzi resources." Measured on the real pod, the operator
+   rewrites `app.kubernetes.io/part-of` to `strimzi-nagar`, `managed-by` to
+   `strimzi-cluster-operator`, `instance` to `nagar`, sets `name` to `kafka`, and **drops**
+   `app.kubernetes.io/component` entirely.
+3. **Brokers need the Kubernetes API.** Strimzi 1.x loads the cluster CA / trust bundle through
+   Kafka's `KubernetesSecretConfigProvider` instead of volume mounts, so a broker pod reads Secret
+   `nagar-trustbundle` over the API server *before it can start*.
+
+**Decisions.**
+1. **The messaging tier follows 1.2.0's actual contract, and the exemplar is treated as a shape
+   reference, not a spec.** `Kafka` + `KafkaNodePool` (dual-role single node, ADR-006 unchanged),
+   `apiVersion: kafka.strimzi.io/v1`, storage/roles/resources/JVM on the pool. The head of
+   `deploy/phases/04-messaging/kafka.yaml` carries the deviation list so the next reader does not
+   rediscover it. **ADR-005 and ADR-006 are unchanged in substance**: the operator still owns the
+   Kafka lifecycle and the single-node risk acceptance stands. The Entity Operator stays
+   undeployed (documented reason: it buys nothing this phase consumes and costs two JVMs against
+   the binding memory constraint, risk R1).
+2. **A node pool is adopted by a label + an annotation, and both are declared in git.** The Kafka
+   CR carries `strimzi.io/node-pools: enabled`; the pool carries `strimzi.io/cluster: <kafka-name>`
+   (upstream: the label "must be set to the name of the Kafka custom resource"). Missing either
+   half yields `InvalidConfigurationException: No KafkaNodePools found for Kafka cluster nagar`
+   and **no pods at all** — the operator refuses the entire CR, so the symptom is a `Degraded`
+   Application over an empty `Kafka` status, not an obvious error.
+3. **Pod selectors bind to Strimzi's label set, and git does not declare labels the operator will
+   discard.** Every NodePolicy/Service selector in this phase targets `strimzi.io/cluster` /
+   `strimzi.io/kind` / `strimzi.io/name` / `strimzi.io/broker-role` — the same selector Strimzi
+   puts on its own `<cluster>-kafka-bootstrap` and `<cluster>-kafka-brokers` Services. The pod
+   templates declare only the labels the operator does not reserve (`nagar.io/phase`,
+   `nagar.io/tier`). This is a correctness rule, not tidiness: a selector on
+   `app.kubernetes.io/component: broker` matches **no pod at all** and fails silently — a Service
+   with no endpoints and a NetworkPolicy with no subject, both of which look healthy in git.
+4. **`require-nagar-labels` gets one scoped operator carve-out, and only for `part-of`.** The
+   `check-part-of-label` rule excludes pods labeled `app.kubernetes.io/managed-by:
+   strimzi-cluster-operator`. Alternatives were worse: relaxing the pattern for every pod would
+   weaken the rule globally, and the label genuinely is not ours to set. `check-phase-label` still
+   applies in full to those pods, so the operational purpose of the schema — enumerate every pod
+   by mission phase — survives intact. This is a Phase-1 file amended by a Phase-4 finding, the
+   same way ADR-015/016 amended the docs suite; the carve-out is in git and scoped by the
+   operator's own self-declared label.
+5. **Broker API access is granted by an explicit, port-scoped egress NetworkPolicy** the phase
+   owns (`allow-kafka-api-egress`), rather than by re-enabling Strimzi's runtime policy
+   generation — which would put objects in the cluster that git does not declare (I-1) and add an
+   allow-from-anywhere listener rule that widens SECURITY §8's default-deny. The rule allows
+   exactly the two API ports (443 ClusterIP form, 6443 post-DNAT) and relies on the air gap plus
+   `default-deny` for every other port; the rationale for not naming the API server by `ipBlock`
+   is recorded in the manifest.
+6. **A failed pod-create is not retried by the pod-set controller.** When Kyverno denied the broker
+   Pod, `StrimziPodSet/nagar-dual-role` recorded the error and then did nothing further: the
+   controller reconciles on StrimziPodSet change events, and the desired pod-set content was
+   unchanged, so there was no event to react to. The un-wedge is to delete the StrimziPodSet (the
+   operator regenerates it from the Kafka CR in git, which is what it did on the next periodic
+   reconciliation). Documented in OPERATIONS §12.15 because the symptom — "operator waits 300 s
+   for a pod that does not exist" — points at the wrong layer.
+
+**Consequences.** Phase 4's shape is pinned to 1.2.0's contract; a later Strimzi upgrade is a
+deliberate change to `deploy/third_party/strimzi/` plus this ADR's review, not a drift. Any future
+Strimzi-managed tier (Connect, MirrorMaker, Cruise Control) inherits decisions 3–5 verbatim: use
+the operator's selectors, assume it owns `app.kubernetes.io/*` on its pods, and expect its pods to
+need API access. The `component: broker` selector is now a documented trap; Phase 9's policy work
+should consider an `ipBlock`-based replacement for `allow-kafka-api-egress` when the real
+deployment's control-plane range is known.
+
+---
+
+## ADR-018 — Advancing the git transport is an out-of-band operator step, not a cluster mutation
+**Status:** Accepted · **Date:** 2026-09-29 · **Phases:** 2 (mechanism), 4 (first documented use)
+
+**Context.** ADR-014 made Argo CD read desired state from an in-cluster git mirror image, with a
+mirror cycle = "rebuild+push the mirror image with an immutable tag and bump `newTag`". Phase 4
+exposed that this description is incomplete, because it is circular: Argo learns the new tag
+**from the mirror pod**, and the mirror pod is itself an Argo-managed Deployment. A pod running
+tag `phaseN-x` serves a tree that declares `phaseN-x`, so Argo reads it as `Synced` and never
+learns that `phaseN-(x+1)` exists. Every phase so far advanced only because an out-of-band step
+was performed, and I-1 read narrowly would make that step illegal → the mission would deadlock on
+its own GitOps rule.
+
+**Decisions.**
+1. **The mirror advance is declared a sanctioned transport step**, in the same class as staging an
+   image into the registry or pushing to a production git remote (ADR-014): the operator applies
+   the mirror subtree once per cycle with
+   `kustomize build deploy/phases/02-gitops/git-mirror | kubectl apply --server-side --force-conflicts -f -`.
+   Applying the *same git tree Argo reads* keeps the strongest available form of I-1 — the live
+   object is byte-identical to the declared one, so there is nothing to self-heal back. It is
+   recorded as exception 4 in OPERATIONS §9.
+2. **The cycle order is content → tag bump → payload → push → transport apply.** The payload is
+   cloned *after* the commit that declares its own tag, so the served tree and the running pod
+   agree; and it carries **both** the content change and the bump, which is why one cycle lands
+   both. Getting this order wrong is a hard deadlock (proved: the first `phase4-2` build served a
+   tree declaring `phase4-1`, so Argo would have self-healed the transport backwards to a mirror
+   that never contained the fix).
+3. **A mirror tag is never re-pushed under the same name.** `phase4-2` was pushed from a
+   pre-bump commit and abandoned unread; the corrected cycle used a fresh `phase4-3`. This is the
+   node image cache lesson from Phase 2 (G0.3 note 3 / the `:phase2` tag-reuse trap) applied
+   deliberately rather than rediscovered.
+
+**Consequences.** Cluster state remains equal to the mirrored git state at all times, and the
+one step that cannot be expressed as "change git, let Argo converge" is now written down with its
+exact command instead of being improvised per phase. The honest residual gap is that a fresh
+operator must perform this step by hand: the structural fix — moving `git-mirror` out of the
+Argo-managed tree so that updating the transport is ordinary bootstrap (like the k3s install in
+OPERATIONS §2) rather than an exception to I-1 — is recorded here as the recommended Phase-9/10
+cleanup, not silently deferred. Until it lands, this ADR is the authority for the step.

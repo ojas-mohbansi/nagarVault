@@ -126,6 +126,10 @@ The only permitted out-of-band `kubectl` mutations, all documented here:
 2. Emergency secret rotation while a git fix is prepared (must be followed by a git commit that
    reconciles state within one business day).
 3. Deleting a stuck Job/PVC under Argo's ownership to unblock reconciliation (then let Argo recreate).
+4. Advancing the git transport (ADR-018): once per mirror cycle, after pushing the new mirror image,
+   apply the mirror subtree with the exact command in §12.16. This is the "push to the git remote"
+   step, not a workload edit — the cluster has no way to learn about a new mirror tag otherwise.
+   Apply the same git tree Argo reads; never hand-edit the live Deployment.
 
 Everything else: change git, let Argo converge.
 
@@ -169,6 +173,9 @@ Phase 10 exit requires this script green on the Kubernetes stack.
 | 12.12 | Upload PUT fails from browser | CORS/edge route misconfig | verify Traefik middleware origins match frontend origin (Phase 8 config) |
 | 12.13 | A changed **Job** spec never lands: sync errors with `spec.template: Invalid value: … field is immutable`, then `Skipping auto-sync: already attempted sync …` for that revision | a Job pod template is immutable, so Argo cannot apply or diff the change; the failed revision is not retried until a new one arrives | declare `argocd.argoproj.io/sync-options: Force=true,Replace=true` on the Job (ADR-016). To un-wedge now: delete the Job (§9.3) and let Argo recreate it, then re-arm auto-sync with a new revision (mirror tag bump) |
 | 12.14 | One StatefulSet is `OutOfSync` after every sync while its siblings are `Synced` | API-server defaults inside `spec.volumeClaimTemplates` (`apiVersion`, `kind`, `spec.volumeMode`) are not normalized by Argo's client-side differ; self-heal then runs *partial* syncs that consume the auto-sync attempt for each revision (it can starve a pending change elsewhere) | `kubectl diff --server-side --force-conflicts -f <sts>` (read-only) to isolate it; declare the defaulted fields in git (ADR-016). Never mask with `ignoreDifferences` |
+| 12.15 | Strimzi operator logs `Exceeded timeout of 300000ms while waiting for Pods resource … to be ready` and **no such Pod exists**; `StrimziPodSet` reports `pods: 0` with a stale error condition | the pod-set controller reconciles on `StrimziPodSet` **change** events. If the last pod-create failed (e.g. an admission policy denied it) and the desired pod-set content has not changed since, nothing re-triggers it — the operator then waits out its 5-minute timeout for a pod nobody will create | fix the actual cause first (usually §12.11 — confirm with `kubectl apply --dry-run=server` on the pod extracted from the pod-set). Then delete the `StrimziPodSet`; the operator regenerates it from the `Kafka` CR in git and the pod is created (ADR-017 §6) |
+| 12.16 | A change is committed and pushed to the mirror but Argo stays `Synced` on the **old** revision forever | the mirror advance is circular by design: Argo reads the new tag *from* the mirror pod, which is an Argo-managed Deployment, so it never learns a newer tag exists (ADR-018) | advance the transport once per cycle (§9.4): `kustomize build deploy/phases/02-gitops/git-mirror \| kubectl apply --server-side --force-conflicts -f -`, then `kubectl rollout status deploy/git-repo-mirror -n nagar-system`. Check the served revision with `kubectl get app -n nagar-system -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.sync.revision}{"\n"}{end}'` |
+| 12.17 | A Service selects nothing / a NetworkPolicy matches nothing, yet both are `Synced` and look correct in git | the selector uses `app.kubernetes.io/*`, which an operator owns on the pods it creates: Strimzi overwrites `part-of`/`name`/`instance`/`managed-by` and **drops** `app.kubernetes.io/component` | select on the operator's own guaranteed labels instead (`strimzi.io/cluster` / `strimzi.io/kind` / `strimzi.io/name` / `strimzi.io/broker-role` for Strimzi — copy the selector from the operator's generated Service). Check with `kubectl get endpoints <svc>` rather than trusting the manifest (ADR-017 §3) |
 
 ## 13. Upgrade & rollback
 
