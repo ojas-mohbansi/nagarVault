@@ -1,0 +1,206 @@
+{
+  "collection": "nagar_schema",
+  "embedding": { "model": "bge-m3", "dimensions": 1024, "distance": "Cosine" },
+  "documents": [
+    {
+      "id": "overview-01",
+      "table": null,
+      "text": "The NagarVault warehouse is a PostgreSQL 15 database named nagardb in schema public, owned by the role nagar. It stores enriched civic events from five source systems in five department tables (nmc_complaints, traffic_events, water_sensor_readings, health_camp_records, ev_bus_telemetry), plus three support tables: users (login accounts), sessions (JWT jti revocation), and audit_logs (every SQL attempt, allowed or blocked)."
+    },
+    {
+      "id": "overview-02",
+      "table": null,
+      "text": "Every department table shares an event envelope: event_id (ingestion-assigned, globally unique), source_system plus source_record_id (unique together; the deduplication key), occurred_at (when the event happened at the source, timestamptz), ingested_at (when the warehouse row was written, timestamptz, defaults to now()), and payload (jsonb holding the normalized event as received)."
+    },
+    {
+      "id": "overview-03",
+      "table": null,
+      "text": "All timestamps are timestamptz (UTC). For questions about 'today', 'this week' or 'recent', filter on occurred_at for event time, never ingested_at. happened-at questions use occurred_at; arrival questions use ingested_at."
+    },
+    {
+      "id": "overview-04",
+      "table": null,
+      "text": "Access control is enforced twice: queryService checks role-to-table permissions in application code, and PostgreSQL grants mirror it. Role nmc_officer may SELECT nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry. Role health_officer may additionally SELECT health_camp_records. No officer role may SELECT users, sessions, or audit_logs."
+    },
+    {
+      "id": "overview-05",
+      "table": null,
+      "text": "Restricted columns: in nmc_complaints the columns name, phone, email, address and aadhaar contain personally identifiable information and are blocked for every query. Generate SQL that never selects, filters, joins or groups by these columns. Prefer ward-level or category-level aggregates instead."
+    },
+    {
+      "id": "table-nmc_complaints-01",
+      "table": "nmc_complaints",
+      "text": "Table nmc_complaints: citizen complaints registered with the municipal corporation (NMC), one row per complaint event. Columns: id bigserial primary key, event_id text unique not null, source_system text not null, source_record_id text not null, occurred_at timestamptz not null, ingested_at timestamptz not null default now(), ward text, category text, status text, description text, name text, phone text, email text, address text, aadhaar text, media_bucket text, media_object_key text, payload jsonb not null default {}. UNIQUE (source_system, source_record_id)."
+    },
+    {
+      "id": "table-nmc_complaints-02",
+      "table": "nmc_complaints",
+      "text": "nmc_complaints.ward is the municipal ward identifier as free text (examples: 'W-12', 'Ward 12', 'Lal Bagh'); it is not normalized to a code, so group by ward with exact-value equality or IN lists, never range comparisons. nmc_complaints.category values seen in practice: 'pothole', 'streetlight', 'garbage', 'water supply', 'drainage', 'encroachment', 'stray animals'."
+    },
+    {
+      "id": "table-nmc_complaints-03",
+      "table": "nmc_complaints",
+      "text": "nmc_complaints.status is the complaint lifecycle state: 'open', 'in_progress', 'resolved', 'rejected'. A pending complaint is status IN ('open','in_progress'). A closed complaint is status IN ('resolved','rejected'). Response-time questions should compute avg(extract(epoch from (resolution_ts - occurred_at))) only when the payload carries resolution timestamps; otherwise count by status."
+    },
+    {
+      "id": "table-nmc_complaints-04",
+      "table": "nmc_complaints",
+      "text": "nmc_complaints carries PII columns name, phone, email, address, aadhaar. These are denied at the query gate: any SQL touching them is blocked and audited. Ward and category are the safe grouping columns. description is free text and safe to select."
+    },
+    {
+      "id": "table-nmc_complaints-05",
+      "table": "nmc_complaints",
+      "text": "nmc_complaints media reference: media_bucket plus media_object_key point at the complaint's photo or audio attachment in MinIO; they are NULL for text-only complaints. To count complaints with attachments use WHERE media_bucket IS NOT NULL."
+    },
+    {
+      "id": "table-traffic_events-01",
+      "table": "traffic_events",
+      "text": "Table traffic_events: road traffic observations and incidents, one row per event. Columns: id bigserial primary key, event_id text unique not null, source_system text not null, source_record_id text not null, occurred_at timestamptz not null, ingested_at timestamptz not null default now(), junction text, corridor text, direction text, event_type text, severity text, vehicle_count integer, average_speed numeric(6,2), media_bucket text, media_object_key text, payload jsonb not null default {}. UNIQUE (source_system, source_record_id)."
+    },
+    {
+      "id": "table-traffic_events-02",
+      "table": "traffic_events",
+      "text": "traffic_events.event_type values: 'congestion', 'incident', 'signal_fault'. traffic_events.severity values: 'low', 'medium', 'high'. traffic_events.direction values: 'north', 'south', 'east', 'west'. junction and corridor are free-text location names; junction examples: 'Power House', 'Race Course', 'Bittan Market'."
+    },
+    {
+      "id": "table-traffic_events-03",
+      "table": "traffic_events",
+      "text": "traffic_events.vehicle_count is an integer count of vehicles observed in the measurement window; average_speed is km/h as numeric(6,2). Congestion analysis: average of average_speed grouped by junction or corridor, or average of vehicle_count at peak hours (extract(hour from occurred_at) BETWEEN 8 AND 11 or 17 AND 21)."
+    },
+    {
+      "id": "table-traffic_events-04",
+      "table": "traffic_events",
+      "text": "For 'worst junction' or 'most congested corridor' questions on traffic_events, group by junction (or corridor), compute avg(average_speed) and count(*) filtered to event_type = 'congestion', order ascending by speed, and limit to the top few rows."
+    },
+    {
+      "id": "table-water_sensor_readings-01",
+      "table": "water_sensor_readings",
+      "text": "Table water_sensor_readings: water quality and flow sensor telemetry, one row per reading. Columns: id bigserial primary key, event_id text unique not null, source_system text not null, source_record_id text not null, occurred_at timestamptz not null, ingested_at timestamptz not null default now(), sensor_id text not null, parameter text not null, value numeric(12,4), unit text, quality_flag text, payload jsonb not null default {}. UNIQUE (source_system, source_record_id)."
+    },
+    {
+      "id": "table-water_sensor_readings-02",
+      "table": "water_sensor_readings",
+      "text": "water_sensor_readings.parameter values: 'ph', 'turbidity', 'tds' (total dissolved solids), 'flow', 'level'. Typical units: ph is unitless, turbidity NTU, tds ppm, flow litres per minute, level metres. value is numeric(12,4); always pair aggregates of value with the parameter filter because the units differ per parameter."
+    },
+    {
+      "id": "table-water_sensor_readings-03",
+      "table": "water_sensor_readings",
+      "text": "water_sensor_readings.quality_flag marks reading validity: 'good', 'suspect', 'bad'. For compliance-style questions use WHERE quality_flag = 'good'; include suspect or bad rows only when the question asks about sensor faults. Water safety thresholds: WHO drinking water ph 6.5 to 8.5, turbidity below 5 NTU."
+    },
+    {
+      "id": "table-water_sensor_readings-04",
+      "table": "water_sensor_readings",
+      "text": "Time-series questions on water_sensor_readings (trends, anomalies, latest value per sensor) should filter by sensor_id and parameter first, then order by occurred_at; the covering index is (sensor_id, occurred_at DESC). For 'latest reading per sensor' use DISTINCT ON (sensor_id) ordered by occurred_at DESC."
+    },
+    {
+      "id": "table-health_camp_records-01",
+      "table": "health_camp_records",
+      "text": "Table health_camp_records: medical screening events from municipal health camps, one row per patient screening. RESTRICTED: only the health_officer role may SELECT this table; other roles are blocked by the query gate and by PostgreSQL grants. Columns: id bigserial primary key, event_id text unique not null, source_system text not null, source_record_id text not null, occurred_at timestamptz not null, ingested_at timestamptz not null default now(), camp_id text, patient_ref text, age_band text, sex text, screening_type text, diagnosis text, referral text, payload jsonb not null default {}. UNIQUE (source_system, source_record_id)."
+    },
+    {
+      "id": "table-health_camp_records-02",
+      "table": "health_camp_records",
+      "text": "health_camp_records.patient_ref is a camp-local pseudonymous reference, NOT a name; real names, phones and addresses are never stored here. age_band values: '0-5', '6-17', '18-40', '41-60', '60+'. sex values: 'male', 'female', 'other'. screening_type examples: 'blood pressure', 'blood sugar', 'hemoglobin', 'vision', 'dental'."
+    },
+    {
+      "id": "table-health_camp_records-03",
+      "table": "health_camp_records",
+      "text": "health_camp_records.diagnosis is the screening outcome as free text (examples: 'normal', 'elevated BP', 'anemia suspected', 'referral required'). referral values: 'none', 'phc' (primary health centre), 'district hospital', 'emergency'. Referral-rate questions: count(referral <> 'none')::numeric / nullif(count(*),0)."
+    },
+    {
+      "id": "table-ev_bus_telemetry-01",
+      "table": "ev_bus_telemetry",
+      "text": "Table ev_bus_telemetry: electric bus telemetry pings, one row per vehicle ping. Columns: id bigserial primary key, event_id text unique not null, source_system text not null, source_record_id text not null, occurred_at timestamptz not null, ingested_at timestamptz not null default now(), bus_id text not null, route_id text, latitude numeric(9,6), longitude numeric(9,6), speed_kph numeric(6,2), state_of_charge numeric(5,2), payload jsonb not null default {}. UNIQUE (source_system, source_record_id)."
+    },
+    {
+      "id": "table-ev_bus_telemetry-02",
+      "table": "ev_bus_telemetry",
+      "text": "ev_bus_telemetry.state_of_charge is battery percent 0 to 100 as numeric(5,2). Low-battery questions: minimum or average state_of_charge grouped by bus_id or route_id, or pings WHERE state_of_charge < 20. speed_kph is km/h; dwell detection uses speed_kph < 2 over consecutive pings."
+    },
+    {
+      "id": "table-ev_bus_telemetry-03",
+      "table": "ev_bus_telemetry",
+      "text": "ev_bus_telemetry.route_id examples: 'R-1', 'R-12', 'Airport express'. Fleet utilization questions: count(DISTINCT bus_id) per route_id, or count(DISTINCT bus_id) where occurred_at falls in the requested window. The covering index is (bus_id, occurred_at DESC)."
+    },
+    {
+      "id": "table-users-01",
+      "table": "users",
+      "text": "Table users: officer login accounts. Columns: user_id text primary key, username text unique not null, password_hash text not null (argon2id, never plaintext), role text not null (values nmc_officer, ROLE_HEALTH_OFFICER, admin), is_active boolean not null default true, created_at and updated_at timestamptz not null default now(). OFF LIMITS: no officer role may SELECT this table; the query gate blocks it. Never generate SQL against users."
+    },
+    {
+      "id": "table-users-02",
+      "table": "users",
+      "text": "user question patterns such as 'who is logged in' or 'how many officers' are answered from audit_logs (actor column), never from users or sessions: both are off limits to officer roles. audit_logs.actor holds the username that executed or attempted a query."
+    },
+    {
+      "id": "table-sessions-01",
+      "table": "sessions",
+      "text": "Table sessions: server-side JWT revocation store. Columns: jti text primary key, user_id text not null references users(user_id) on delete cascade, issued_at timestamptz not null default now(), expires_at timestamptz not null, revoked_at timestamptz. OFF LIMITS: no officer role may SELECT this table. Never generate SQL against sessions."
+    },
+    {
+      "id": "table-audit_logs-01",
+      "table": "audit_logs",
+      "text": "Table audit_logs: one row per SQL attempt, allowed or blocked, written by queryService. Columns: id bigserial primary key, occurred_at timestamptz not null default now(), actor text, role text, query_sql text, verdict text not null ('allowed' or 'blocked'), block_reason text, row_count integer, client_ip inet, source text ('queryService', 'slmService', 'adminService'). OFF LIMITS to officer roles; admin reaches it through adminService. For 'how many questions were asked', count audit_logs where verdict = 'allowed'."
+    },
+    {
+      "id": "table-audit_logs-02",
+      "table": "audit_logs",
+      "text": "audit_logs.block_reason values: 'table-rbac' (role not permitted on a table), 'pii-column' (query touched a denylisted column), 'non-select' (anything other than a single SELECT), 'parse-error'. Audit questions: blocked-query counts group by block_reason; most-active officers group by actor."
+    },
+    {
+      "id": "column-nmc_complaints-01",
+      "table": "nmc_complaints",
+      "text": "Typical questions answered from nmc_complaints: 'how many complaints this month' (count where occurred_at >= date_trunc('month', now())), 'complaints by ward' (group by ward), 'open pothole complaints' (status='open' and category='pothole'), 'complaint trend by week' (date_trunc('week', occurred_at))."
+    },
+    {
+      "id": "column-traffic_events-01",
+      "table": "traffic_events",
+      "text": "Typical questions answered from traffic_events: 'accidents near Bittan Market' (event_type='incident' and junction ILIKE '%bittan%'), 'average speed on Race Course corridor', 'signal faults today' (event_type='signal_fault' and occurred_at >= date_trunc('day', now())), 'peak hour congestion' (extract(hour from occurred_at) between 17 and 21)."
+    },
+    {
+      "id": "column-water_sensor_readings-01",
+      "table": "water_sensor_readings",
+      "text": "Typical questions answered from water_sensor_readings: 'is the water safe' (parameter='ph' and value between 6.5 and 8.5, or parameter='turbidity' and value < 5), 'ph trend last week' (parameter='ph' and occurred_at >= now() - interval '7 days' order by occurred_at), 'sensor faults' (quality_flag <> 'good')."
+    },
+    {
+      "id": "column-health_camp_records-01",
+      "table": "health_camp_records",
+      "text": "Typical questions answered from health_camp_records (health_officer only): 'screenings this month' (count where occurred_at >= date_trunc('month', now())), 'anemia cases by camp' (diagnosis ILIKE '%anemia%' group by camp_id), 'referral rate' (count(referral <> 'none')::numeric / nullif(count(*),0)), 'age distribution' (group by age_band)."
+    },
+    {
+      "id": "column-ev_bus_telemetry-01",
+      "table": "ev_bus_telemetry",
+      "text": "Typical questions answered from ev_bus_telemetry: 'buses on route R-12 now' (count distinct bus_id where route_id='R-12' and occurred_at >= now() - interval '15 minutes'), 'lowest battery bus' (order by state_of_charge asc limit 1 with occurred_at >= now() - interval '1 hour'), 'average fleet speed' (avg(speed_kph))."
+    },
+    {
+      "id": "sql-style-01",
+      "table": null,
+      "text": "Generated SQL must be a single SELECT statement. No INSERT, UPDATE, DELETE, DDL, or multiple statements. Only the public schema exists. Identifier style: lower_snake_case, no quoting needed. Always alias computed columns (AS label). Limit large result sets explicitly (LIMIT 100 or less) since answers are rendered in a chat UI."
+    },
+    {
+      "id": "sql-style-02",
+      "table": null,
+      "text": "Date arithmetic uses occurred_at with date_trunc or intervals: this month is occurred_at >= date_trunc('month', now()); last 7 days is occurred_at >= now() - interval '7 days'. Never use to_char for filtering; use it only for display grouping. Time-of-day analysis uses extract(hour from occurred_at)."
+    },
+    {
+      "id": "sql-style-03",
+      "table": null,
+      "text": "Aggregation etiquette: always pair count with a sensible grouping when the question says 'by X'; use nullif(count(*),0) in ratio denominators; cast numeric divisions as numeric, e.g. count(*) filter (where status='resolved')::numeric / nullif(count(*),0); prefer FILTER clauses for conditional counts."
+    },
+    {
+      "id": "sql-style-04",
+      "table": null,
+      "text": "Free-text matching uses ILIKE with wildcards (junction ILIKE '%bittan%'). Category, status, event_type, parameter, severity and quality_flag equality comparisons are case-sensitive lowercase; do not uppercase them. ward and junction are free text, so ILIKE is safer than equality when the exact spelling is unknown."
+    },
+    {
+      "id": "sql-style-05",
+      "table": null,
+      "text": "Never join department tables to each other on event_id: event ids are unique per table but not shared keys across systems. Cross-department questions should be answered with separate aggregates in one SELECT via subqueries, or answered per department. The only shared join key is the (source_system, source_record_id) pair within one table."
+    },
+    {
+      "id": "sql-style-06",
+      "table": null,
+      "text": "Media attachments are referenced, never stored, in the warehouse: media_bucket and media_object_key columns point at objects in MinIO buckets raw-media (public-facing media) or raw-sensitive-media (restricted media, e.g. complaint photos). 'How many complaints have photo evidence' counts media_bucket IS NOT NULL; the SQL gate blocks any attempt to read object contents through the database."
+    }
+  ]
+}

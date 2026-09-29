@@ -1,0 +1,83 @@
+# NetworkPolicies for the vector/LLM tier, layered on the namespace default-deny.
+# Port scope follows CONVENTIONS §4: 6333 "namespace + nagar-app only", 6334 (gRPC) namespace
+# only, 11434 "namespace + nagar-app only", 4005 cluster-internal only.
+#
+# Selector note (ADR-017 §2 lesson): plain Services here select on app.kubernetes.io/name,
+# which WE own on these pods (no operator rewrites them), so the selectors are exact.
+---
+# Qdrant: HTTP 6333 from the namespace (indexer Job/Deployment, future slmService) + nagar-app;
+# gRPC 6334 namespace-only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-qdrant-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "06"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+      ports:
+        - protocol: TCP
+          port: 6333
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 6334
+---
+# Ollama: 11434 from the namespace (model Job, indexer, future slmService) + nagar-app.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ollama-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "06"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ollama
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+      ports:
+        - protocol: TCP
+          port: 11434
+---
+# schemaIndexer API: 4005 from the namespace only (adminService lands in nagar-app and talks to
+# it in Phase 7f — CONVENTIONS §4 marks 4005 "cluster-internal only", so that widening is a
+# one-rule change when 7f ships, not a surprise).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-schema-indexer-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "06"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: schema-indexer
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4005

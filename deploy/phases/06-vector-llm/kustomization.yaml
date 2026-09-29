@@ -1,0 +1,23 @@
+# Phase 6 — Vector & LLM tier (PHASES.md §2). Qdrant (vector store) + Ollama (local LLM
+# serving) + the ADR-010 checksum-pinned model Job + the schemaIndexer (Job at deploy time,
+# Deployment as the /reindex API). All in nagar-platform (data plane; no new namespace, so no
+# AppProject change this phase). Ports 6333/6334/11434/4005 are the frozen registry entries.
+#
+# Ordering inside one Argo sync: the model Job and the index Job wait on their dependencies
+# (server up / qdrant+ollama ready) via in-container probes, with Job backoff absorbing the
+# race — the same pattern the Phase-5 migration Job established.
+#
+# Cross-root reference to deploy/third_party/ (ADR-002 layout) is NOT needed this phase: both
+# upstream components are plain images, not operator bundles (ADR-005).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ollama-models-pvc.yaml
+  - ollama-service.yaml
+  - ollama-statefulset.yaml
+  - ollama-model-job.yaml
+  - qdrant-statefulset.yaml
+  - schema-indexer.yaml
+  - networkpolicies.yaml
+components:
+  - digest-pins

@@ -1,0 +1,37 @@
+# Ollama LLM serving (exemplar: docs/manifests/exemplars/ollama-statefulset.yaml).
+# CPU-first per ADR-006; GPU stays a documented nodeSelector away.
+#
+# Deviations from the exemplar, each deliberate:
+#   * The models volume is a **standalone PVC** (ollama-models-pvc.yaml) instead of a
+#     volumeClaimTemplate: the provisioning Job must mount the *same* volume before the
+#     StatefulSet pod exists, and a VCT only materializes when its STS pod starts — a Job
+#     referencing `models-ollama-0` would sit Pending on the STS's scheduling. A named PVC makes
+#     the shared-volume dependency explicit and order-free (ADR-021 §3).
+#   * `runAsUser: 1000` is set explicitly. The ollama image defaults to root, and PSA restricted
+#     (plus Kyverno's require-pod-security-context) rejects root; fsGroup: 1000 gives the kubelet
+#     ownership of the mounted models volume so the non-root server can write its state there.
+#   * Memory is right-sized for this 16 GB host (R1): requests 2Gi / limits 6Gi instead of the
+#     exemplar's 4Gi/8Gi. Both models resident (bge-m3 ~1.2 GB + qwen3:1.7b ~1.4 GB) fit with
+#     headroom; the model Job's `ollama list` gate proves residency, not the request size.
+#   * OLLAMA_HOST binds 0.0.0.0 (the Service routes to the pod IP; the default 127.0.0.1 would
+#     answer the probe and refuse every real client).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  selector:
+    app.kubernetes.io/name: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434

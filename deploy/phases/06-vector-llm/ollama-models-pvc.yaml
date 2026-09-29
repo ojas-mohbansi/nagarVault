@@ -1,0 +1,27 @@
+# Shared models volume (ADR-021 §3): populated by the nagar-ollama-models Job (which copies the
+# checksum-verified payload image's /payload/.ollama into it) and mounted read-write by the
+# ollama server. A standalone PVC rather than a volumeClaimTemplate so the Job can provision
+# before the StatefulSet pod exists.
+#
+# Deleting this PVC deletes the staged models; re-provisioning is a Job re-run (the payload
+# image is in the registry), so the blast radius is a re-staging, not data loss — but it is
+# still a PVC: OPERATIONS §9.3's caution applies.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 10Gi

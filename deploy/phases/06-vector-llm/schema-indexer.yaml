@@ -1,0 +1,162 @@
+# schemaIndexer — Job + Deployment (PHASES.md §2 Phase 6). One image, two modes:
+#   * Job `nagar-schema-index` (--once): runs at deploy time and whenever the corpus/spec
+#     changes; exits non-zero if the final point count mismatches. Force=true,Replace=true per
+#     ADR-016 §2 (its pod spec embeds the corpus image digest).
+#   * Deployment `schema-indexer` (API mode): port 4005 (frozen, CONVENTIONS §4) serving
+#     GET /health and POST /reindex; Phase 7f's adminService POST /vector/resync lands here.
+#
+# Idempotency is the indexer's own property (deterministic point ids; collection created only
+# if absent/mis-sized), so Job re-runs and /reindex calls are safe forever (I-2).
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nagar-schema-index
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: nagar-schema-index
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-schema-index
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: init
+        nagar.io/phase: "06"
+        nagar.io/tier: "4"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: index
+          # Rewritten by ../digest-pins to the internal-registry digest pin (I-5/I-11).
+          image: registry.nagar.internal:5000/schema-indexer:phase6-1
+          command: ["python", "/app/index.py", "--once"]
+          env:
+            - name: QDRANT_URL
+              value: http://qdrant.nagar-platform.svc.cluster.local:6333
+            - name: OLLAMA_URL
+              value: http://ollama.nagar-platform.svc.cluster.local:11434
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-indexer
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: schema-indexer
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  selector:
+    app.kubernetes.io/name: schema-indexer
+  ports:
+    - name: http
+      port: 4005
+      targetPort: 4005
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-indexer
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: schema-indexer
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: schema-indexer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: schema-indexer
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: ai
+        nagar.io/phase: "06"
+        nagar.io/tier: "4"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: indexer
+          # Rewritten by ../digest-pins to the internal-registry digest pin (I-5/I-11).
+          image: registry.nagar.internal:5000/schema-indexer:phase6-1
+          ports:
+            - containerPort: 4005
+              name: http
+          env:
+            - name: QDRANT_URL
+              value: http://qdrant.nagar-platform.svc.cluster.local:6333
+            - name: OLLAMA_URL
+              value: http://ollama.nagar-platform.svc.cluster.local:11434
+            - name: HOME
+              value: /tmp
+          readinessProbe:
+            httpGet: { path: /health, port: 4005 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /health, port: 4005 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

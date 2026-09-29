@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for Phase 6 images (invariant I-5: digest, never a movable tag).
+#
+# Resolution 2026-09-29: upstream image pulled on the host (persistent short-retry against the
+# R3 network flake), retagged, pushed via localhost:35000, digest read back FROM THE REGISTRY:
+#   qdrant/qdrant:v1.15.1   -> mission/qdrant     sha256:2bd6b052…
+#   ollama/ollama:0.12.6    -> mission/ollama     sha256:352e045b…
+#   python:3.12-slim        -> mission/python-builder (build-only base; the cluster never pulls
+#                              it, but the digest is recorded for reproducibility)
+#                              sha256:44ff437b…
+#   mission/ollama-models:phase6-1 (source-built payload, ADR-010 checksum gate)
+#                              sha256:335d043a…
+#   mission/schema-indexer:phase6-1 (source-built indexer)
+#                              sha256:9777c588…
+#
+# Base manifests reference registry.nagar.internal:5000 (I-11); this tree rewrites to the k3d
+# registry the cluster resolves. The tag is kept alongside the digest where the workload is a
+# StatefulSet (mirrors the CNPG operand pinning: the tag is human-readable provenance, the
+# digest is what kubelet resolves).
+images:
+  - name: registry.nagar.internal:5000/qdrant
+    newName: k3d-nagar.localhost:5000/mission/qdrant
+    digest: sha256:2bd6b052a39abc720f219158ec7b71533fa3204b8aa3c10a2e2f6e0bf80ee6ff
+  - name: registry.nagar.internal:5000/ollama
+    newName: k3d-nagar.localhost:5000/mission/ollama
+    digest: sha256:352e045b937ac29d3d9550c22fb85525f60a89e064df34c26579bee5a93b3a16
+  - name: registry.nagar.internal:5000/ollama-models
+    newName: k3d-nagar.localhost:5000/mission/ollama-models
+    digest: sha256:335d043acd8d3c6296d600498ee2a17774b113ab3b429c5641115df04efc7fdc
+  - name: registry.nagar.internal:5000/schema-indexer
+    newName: k3d-nagar.localhost:5000/mission/schema-indexer
+    digest: sha256:9777c5887c110db5d006670c16eeaf279cf2cd0eeb7bdfcdf60f0951ba2854bb

@@ -1,0 +1,79 @@
+# Ollama StatefulSet — see ollama-service.yaml for the full deviation rationale (shared PVC,
+# explicit non-root uid, right-sized memory, 0.0.0.0 bind). Port 11434 is frozen (CONVENTIONS §4).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: ollama
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ai
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+spec:
+  serviceName: ollama
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ollama
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ollama
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: ai
+        nagar.io/phase: "06"
+        nagar.io/tier: "4"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: ollama
+          # Rewritten by ../digest-pins to the internal-registry digest pin (I-5/I-11).
+          image: registry.nagar.internal:5000/ollama:0.12.6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_HOST
+              value: 0.0.0.0:11434
+            - name: OLLAMA_MODELS
+              value: /models/.ollama/models
+            - name: OLLAMA_KEEP_ALIVE
+              value: 24h
+            - name: TMPDIR
+              value: /tmp
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: { path: /api/tags, port: 11434 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/tags, port: 11434 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "4", memory: 6Gi }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+        - name: tmp
+          emptyDir: {}

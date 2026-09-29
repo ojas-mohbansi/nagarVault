@@ -1,0 +1,100 @@
+# Model provisioning Job — ADR-010. Restores the checksum-verified payload image
+# (mission/ollama-models, built by the operator with the build-time checksum gate) into the
+# shared PVC. NO internet egress, no `ollama pull` at runtime, no manual exec.
+#
+# Sequence: verify every blob against the manifest (the same checksum the image build verified;
+# doing it again in the Job makes the PVC's final state provable from the Job log — defense in
+# depth) -> copy into place -> wait for the server -> confirm /api/tags lists both models.
+#
+# Tooling note: the payload image is alpine + payload only (no ollama binary — the server lives
+# in the ollama image), so verification against the live server uses busybox `wget` against
+# /api/tags, which lists every model the server sees on the shared volume. That is a *stronger*
+# check than `ollama list` anyway: it proves the server itself resolved the restored models.
+#
+# Force=true,Replace=true per ADR-016 §2 (init Job; when the payload digest changes the spec
+# changes and a Job template is immutable). The payload digest is recorded in the annotation.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nagar-ollama-models
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: nagar-ollama-models
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "06"
+    nagar.io/tier: "4"
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+    nagar.io/models-payload-digest: sha256:335d043acd8d3c6296d600498ee2a17774b113ab3b429c5641115df04efc7fdc
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-ollama-models
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: init
+        nagar.io/phase: "06"
+        nagar.io/tier: "4"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provision
+          # Rewritten by ../digest-pins to the internal-registry digest pin (I-5/I-11).
+          image: registry.nagar.internal:5000/ollama-models:phase6-1
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "--- checksum verification against the manifest (ADR-010 gate) ---"
+              cd /payload/.ollama/models
+              sha256sum -c /payload/models-manifest.sha256
+              echo "--- restoring into the shared PVC ---"
+              mkdir -p /models/.ollama/models
+              cp -r /payload/.ollama/models/. /models/.ollama/models/
+              echo "--- verifying against the live server ---"
+              i=0
+              until wget -q -O - --timeout=3 http://ollama.nagar-platform.svc.cluster.local:11434/api/tags >/dev/null 2>&1; do
+                i=$((i+1)); [ $i -gt 100 ] && { echo "MODEL-JOB-FAILED: ollama never came up"; exit 1; }
+                sleep 3
+              done
+              sleep 5   # give the server a moment to rescan the models directory
+              TAGS=$(wget -q -O - http://ollama.nagar-platform.svc.cluster.local:11434/api/tags)
+              echo "$TAGS"
+              echo "$TAGS" | grep -q '"name":"bge-m3:latest"' || { echo "MODEL-JOB-FAILED: bge-m3 missing"; exit 1; }
+              echo "$TAGS" | grep -q '"name":"qwen3:1.7b"' || { echo "MODEL-JOB-FAILED: qwen3:1.7b missing"; exit 1; }
+              echo "MODEL-JOB-OK"
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+        - name: tmp
+          emptyDir: {}

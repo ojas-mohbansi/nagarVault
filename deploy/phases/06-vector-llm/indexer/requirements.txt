@@ -1,0 +1,5 @@
+# Runtime dependencies for schemaIndexer. Pinned minor lines; resolved and cached into the
+# image at build time so the cluster never touches PyPI (I-11).
+fastapi==0.115.6
+uvicorn==0.34.0
+httpx==0.28.1
