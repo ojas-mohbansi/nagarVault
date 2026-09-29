@@ -15,6 +15,12 @@
 #      transformer cannot rewrite fields inside a custom resource, so digest-pins/ rewrites it
 #      with a JSON patch — this manifest therefore carries the canonical
 #      `registry.nagar.internal:5000/...` reference with a placeholder digest.
+#   4. The Kafka CR carries `strimzi.io/node-pools: enabled` and the KafkaNodePool carries the
+#      `strimzi.io/cluster: nagar` label. In Strimzi 0.42+ this pair is what ADOPTS a node pool
+#      into a Kafka cluster; without it the operator refuses the whole CR with
+#      `InvalidConfigurationException: No KafkaNodePools found for Kafka cluster nagar` and
+#      creates no Pods at all. Upstream docs: the KafkaNodePool "strimzi.io/cluster label ... must
+#      be set to the name of the Kafka custom resource". (ADR-017 §2 records the failure mode.)
 #
 # Documented deviation from the exemplar's `spec.entityOperator`: NOT deployed. The charter
 # (PHASES.md §2 Phase 4) asks for the Kafka resource, the topics Job, the DLQ topic and
@@ -37,6 +43,11 @@ metadata:
     app.kubernetes.io/managed-by: argocd
     nagar.io/phase: "04"
     nagar.io/tier: "2"
+    # Cluster membership. This label — not the resource name, not the namespace — is how the
+    # Cluster Operator finds the pools belonging to a Kafka CR. It must be exactly the Kafka
+    # resource's name (`nagar`); it is required, and its absence is the failure mode recorded in
+    # the header note 4.
+    strimzi.io/cluster: nagar
 spec:
   # Dual-role single node: this node is both the KRaft controller quorum and the broker
   # (ADR-006 accepts the single-node risk; the pool model makes splitting the roles later a
@@ -111,6 +122,11 @@ kind: Kafka
 metadata:
   name: nagar
   namespace: nagar-platform
+  # Opt-in switch for the node-pool model. With this annotation the Kafka CR owns NO nodes of its
+  # own: every broker/controller pod comes from a KafkaNodePool that carries
+  # `strimzi.io/cluster: nagar` (see the pool above). Both halves are mandatory in Strimzi 1.x.
+  annotations:
+    strimzi.io/node-pools: enabled
   labels:
     app.kubernetes.io/name: kafka
     app.kubernetes.io/part-of: nagarvault
