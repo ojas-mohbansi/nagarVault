@@ -1,0 +1,36 @@
+# Phase 5 child Application (app-of-apps). Same shape as its Phase 3/4 siblings; destination is
+# nagar-platform (the data plane), while the CloudNativePG controller inside the tree lands in its
+# own cnpg-system namespace — the per-resource namespace is what the Phase 1 substrate relying on
+# the cert-manager/kyverno bundles already established, and the AppProject's destination list
+# gates the Application, not each document.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-phase5-postgres
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "2"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/05-postgres
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false

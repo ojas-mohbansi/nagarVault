@@ -1,0 +1,85 @@
+# Drill step 3 — a scratch cluster recovered from the object store (PHASES.md §2 Phase 5:
+# "a restore drill into a scratch cluster succeeded"; OPERATIONS §7 calls it CNPG BootstrapRestore).
+#
+# Shape notes, each of which is load-bearing:
+#
+#   * `externalClusters[].name: postgres` is not decoration. CloudNativePG's native recovery "uses
+#     the name of the cluster in the externalClusters section as the name of the main folder of the
+#     backup data within the object store" — so this name must equal the *source* cluster's name
+#     (`postgres`), which is the folder the daily backups are written under. Naming it after the
+#     drill cluster would look for `s3://pg-backups/postgres-restore-drill/` and find nothing.
+#
+#   * `bootstrap.recovery.database: nagardb` / `owner: nagar` are declared even though the base
+#     backup manifest also carries them: upstream warns that a cluster whose application
+#     database/user are not the `app` convention must state them. Declaring them removes any
+#     dependence on how the recoverer reads the manifest.
+#
+#   * `bootstrap.recovery.secret` re-uses this phase's sealed `nagar-postgres-bootstrap`, so the
+#     drill's recovered `nagar` role ends up with exactly the password the app tier will use in
+#     Phase 7. That turns the verify step into a real end-to-end check of the credential contract
+#     the restore must preserve, not just a "did a pod start" check.
+#
+#   * `instances: 1` and a 5Gi volume: a drill proves recoverability, it does not need the
+#     production shape, and this is a single-node cluster (see ADR-019 §2 on anti-affinity).
+#
+#   * No `spec.backup`: the drill must not archive WALs into the same bucket under its own name —
+#     it is a reader of the backup history, never a writer to it.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-restore-drill
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: postgres-restore-drill
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: restore-drill
+    nagar.io/phase: "05"
+    nagar.io/tier: "3"
+    nagar.io/role: restore-drill
+spec:
+  instances: 1
+  # Rewritten by ../digest-pins to the internal-registry reference pinned by digest (I-5/I-11).
+  imageName: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
+  enableSuperuserAccess: true
+  storage:
+    storageClass: local-path
+    size: 5Gi
+  affinity:
+    enablePodAntiAffinity: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+  inheritedMetadata:
+    labels:
+      app.kubernetes.io/name: postgres-restore-drill
+      app.kubernetes.io/component: restore-drill
+      app.kubernetes.io/part-of: nagarvault
+      nagar.io/phase: "05"
+      nagar.io/tier: "3"
+  monitoring:
+    enablePodMonitor: false
+  bootstrap:
+    recovery:
+      source: postgres
+      database: nagardb
+      owner: nagar
+      secret:
+        name: nagar-postgres-bootstrap
+  externalClusters:
+    - name: postgres
+      barmanObjectStore:
+        destinationPath: s3://pg-backups/
+        endpointURL: http://minio.nagar-platform.svc.cluster.local:9000
+        s3Credentials:
+          accessKeyId:
+            name: nagar-minio-server
+            key: accessKey
+          secretAccessKey:
+            name: nagar-minio-server
+            key: secretKey
+        wal:
+          maxParallel: 4

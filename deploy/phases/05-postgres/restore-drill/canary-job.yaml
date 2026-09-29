@@ -1,0 +1,89 @@
+# Drill step 1 — write a known canary row into the SOURCE warehouse.
+#
+# Without a canary the drill can only prove that a database came up; with one it proves that
+# *this* cluster's data, as of *this* backup, arrived in the restored copy. Idempotent: the insert
+# is guarded by ON CONFLICT on the event_id primary key, so re-running the drill re-uses the same
+# row instead of growing the table.
+#
+# Connects as the source cluster's operator-managed superuser because the row is written into
+# tables owned by `nagar` during an operator procedure (same reasoning as the migration Job).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pg-drill-canary
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: pg-drill-canary
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: restore-drill
+    nagar.io/phase: "05"
+    nagar.io/tier: "3"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pg-drill-canary
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: restore-drill
+        nagar.io/phase: "05"
+        nagar.io/tier: "3"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        fsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: canary
+          image: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" <<'SQL'
+              INSERT INTO nmc_complaints
+                (event_id, source_system, source_record_id, occurred_at, ward, category, description)
+              VALUES
+                ('p5-drill-canary-001', 'restore-drill', 'p5-drill-canary-001', now(), 'W-00',
+                 'restore-drill', 'Phase 5 restore drill canary — safe to delete')
+              ON CONFLICT (event_id) DO NOTHING;
+              SQL
+              rows=$(psql -X -tAc "SELECT count(*) FROM nmc_complaints WHERE source_record_id = 'p5-drill-canary-001'" "$DATABASE_URL")
+              echo "canary rows in source = $rows"
+              [ "$rows" -ge 1 ] || { echo "CANARY-FAILED"; exit 1; }
+              echo "CANARY-PRESENT"
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: password
+            - name: DATABASE_URL
+              value: postgresql://$(PGUSER):$(PGPASSWORD)@postgres-rw.nagar-platform.svc.cluster.local:5432/nagardb
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 300m, memory: 128Mi }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

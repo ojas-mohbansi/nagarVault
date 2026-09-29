@@ -1,0 +1,21 @@
+# Drill step 2 — take a base backup NOW, so the restore has something that contains the canary.
+#
+# A `Backup` object is the declarative form of "back up this cluster once"; the operator writes its
+# phase back into `.status`, which is what the drill waits on. Declared in git (rather than run
+# with the `cnpg` kubectl plugin) so the drill is reproducible from the repository alone.
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: pg-drill-backup
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: pg-drill-backup
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: restore-drill
+    nagar.io/phase: "05"
+    nagar.io/tier: "3"
+spec:
+  cluster:
+    name: postgres
+  method: barmanObjectStore
+  target: prefer-standby

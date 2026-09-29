@@ -446,3 +446,132 @@ operator must perform this step by hand: the structural fix — moving `git-mirr
 Argo-managed tree so that updating the transport is ordinary bootstrap (like the k3s install in
 OPERATIONS §2) rather than an exception to I-1 — is recorded here as the recommended Phase-9/10
 cleanup, not silently deferred. Until it lands, this ADR is the authority for the step.
+
+---
+
+## ADR-019 — CloudNativePG 1.30.1 as the relational substrate: native Barman backups, pinned app credentials, and three exemplar fields that do not exist
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 5
+
+**Context.** Phase 5 delivers the warehouse PostgreSQL (ADR-005/006: CloudNativePG, 2 instances,
+WAL + base backups into the `pg-backups` bucket Phase 3 created). Three facts forced choices the
+Phase-0 exemplar could not have known. (a) CloudNativePG's current stable line is **1.30**, and
+native Barman Cloud support has been **deprecated since 1.26** in favour of the Barman Cloud
+plugin. (b) The exemplar predates any live run and contains fields that the 1.30 CRD does not
+define. (c) The service tree was deleted before the mission began (ADR-013), so the warehouse
+schema the migration applies had to be authored rather than copied from application code.
+
+**Decisions.**
+1. **Operator 1.30.1; PostgreSQL 15.** 1.30.1 is the newest stable release (published
+   2026-09-23) and is vendored as a static manifest per ADR-002. The *major* version is not a
+   preference: the exemplar documents the "postgres:15 line", and the frozen legacy stack's
+   `docker-compose.yml` pinned `postgres:15-alpine` — recovered from git history at `21472138~1`,
+   which is the behavioural reference ADR-013 mandates rebuilding against. The operand is
+   therefore the 15.17 line of the CloudNativePG image, chosen because it ships the
+   `barman-cli-cloud` tooling the native backup path invokes.
+2. **Native `barmanObjectStore` backups now, with an explicit migration trigger to the plugin.**
+   The deprecated-in-tree integration is what the exemplar, ARCHITECTURE §4.3 and OPERATIONS §7
+   all describe, and it keeps the air-gap surface minimal: the plugin would add a second operator
+   Deployment, its own CRD, cert-manager-issued serving certificates and a randomly-named Secret
+   inside its manifest, at version 0.15.0 (pre-1.0). The accepted risk is written down rather than
+   assumed: upstream says the native integration "remains functional" but "will be removed in a
+   future release", so **the migration trigger is the 1.31 upgrade or the first upstream
+   deprecation warning** — whichever comes first — and the documented path is upstream's
+   "Migrating from Built-in CloudNativePG Backup". One operational consequence is inherited from
+   Barman Cloud 3.16+: the toolchain no longer creates the target bucket, so Phase 3's `pg-backups`
+   bucket is a hard prerequisite of this phase, not a convenience.
+3. **The controller stays in its upstream-native `cnpg-system` namespace**, the same posture
+   Phase 1 took for the cert-manager and kyverno bundles — and explicitly *not* the relocation
+   Phase 4 performed on Strimzi. The bundle hardcodes `cnpg-system` in 15 places (RBAC subjects,
+   webhook `clientConfig`, leader election), it ships its own Namespace document, and the reason
+   Strimzi had to move does not apply here: Strimzi was relocated because the data-plane namespace
+   carries a namespace-wide `default-deny` that would have blinded its egress to the API server,
+   whereas `cnpg-system` has no default-deny and therefore needs no policy hole. What relocating
+   would buy (one operator namespace instead of two) does not pay for fifteen hand-patched
+   references. The namespace is PSS-labelled by a patch in this phase so it is not the one
+   ungoverned namespace in the cluster.
+4. **`affinity.podAntiAffinityType: preferred`, overriding the exemplar's `required`.** On a
+   single-node cluster, `required` makes the second instance permanently unschedulable: the
+   anti-affinity term matches its own cluster's pods on the same `kubernetes.io/hostname`.
+   Upstream documents `preferred` as the default and warns that `required` "may cause pods to
+   remain pending". Two instances on one node is the honest shape of this substrate; `required` is
+   the right production posture and is a one-word change when a second node exists.
+5. **The application role's password is pinned, not generated.** CloudNativePG's
+   `bootstrap.initdb.secret` takes a `kubernetes.io/basic-auth` secret whose username must equal
+   `initdb.owner` and whose password becomes that role's password. Phase 1 already sealed the
+   `nagar` password into the app tier's `nagar-app/nagar-postgres-app.databaseUrl`, so letting the
+   operator generate a fresh one would split SECURITY §6.2's key map into two disagreeing halves —
+   and repairing that later would mean re-sealing another phase's secret (I-9). Instead this phase
+   seals its own namespace-local copy, `nagar-postgres-bootstrap`, carrying **the password already
+   in the cluster**: read from the live unsealed Secret, never printed or committed in the clear,
+   re-sealed offline against the controller certificate, plaintext shredded. Consequence for
+   SECURITY §6.4: rotating the database password now means re-sealing that blob *and* the app
+   tier's `databaseUrl` in the same change.
+6. **The migration Job connects as the operator-managed superuser.** The migration creates the two
+officer roles and reassigns object ownership, so it needs superuser or `CREATEROLE` rights; the
+   `nagar` role is deliberately neither. Granting it `CREATEROLE` for the platform's lifetime to
+   match the exemplar's credential choice would widen the application role permanently to save a
+   one-second connection, so the Job consumes the operator-generated `postgres-superuser` secret
+   instead — which also means no database credential is ever committed (I-3).
+7. **Warehouse objects are owned by `nagar`, and the officer roles hold SELECT only**
+   (`nmc_officer` without health records, `health_officer` with them, neither able to touch
+   `users`/`sessions`/`audit_logs`) — SECURITY §3.3's "second wall", implemented as grants rather
+   than promised. `nagar` is made a member of both officer roles so queryService can activate the
+   wall with `SET ROLE` in Phase 7b. The JWT constant `ROLE_HEALTH_OFFICER` maps to the PostgreSQL
+   role `health_officer`, because PostgreSQL folds unquoted identifiers to lower case.
+8. **Three exemplar fields are corrected, not obeyed:** `storage.sizeClass` → `storageClass` (the
+   former does not exist in the 1.30 CRD and the API server prunes unknown fields, so the exemplar
+   would have silently used the cluster's default StorageClass — correct by accident here, wrong
+   anywhere else); `monitoring.enablePodMonitor: true` → `false` (a `PodMonitor` needs the
+   Prometheus Operator CRDs that arrive in Phase 9, so leaving it on would fail every
+   reconciliation); and the placeholder `imageName` → a digest pin (I-5).
+9. **The schema's canonical home is the phase subtree.**
+   `deploy/phases/05-postgres/migrations/001_create_tables.sql` is applied by this phase's
+   migration Job through a kustomize-generated ConfigMap. ARCHITECTURE §3.3 had named
+   `enrichWorker/migrations/001_create_tables.sql`, a path that no longer exists; §3.3 is corrected
+   in the same change. Phase 7c's enrichWorker consumes this DDL rather than forking its own copy —
+   a second schema definition would be the kind of silent divergence I-6 forbids for registries.
+
+**Consequences.** The relational store is reproducible from git alone: one vendored controller,
+one Cluster, one ScheduledBackup, one idempotent migration and four NetworkPolicies (three
+inherited from Phase 3, two added here). Two consequences deserve to be visible rather than
+buried: the backup path deliberately sits on a deprecated-but-supported API with a named exit
+trigger, and the single-node anti-affinity decision means "2 instances" is a durability posture on
+this substrate, not a topology guarantee — both are restated in the phase's mission-log entry.
+
+---
+
+## ADR-020 — The restore drill lives in git but outside the reconciled tree
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 5
+
+**Context.** PHASES.md §2 Phase 5 requires that "a restore drill into a scratch cluster succeeded",
+and OPERATIONS §7 prescribes the shape: apply a restore manifest, verify row counts and the smoke
+test. Two rules then pull against each other. I-1 says the cluster is reconciled from git and
+nothing is applied by hand; a drill is by nature a bounded procedure whose artifacts must not
+survive it. Meanwhile MISSION.md §5's restart-from-scratch test means the drill has to be
+expressible from the repository alone — an improvised sequence of commands that lives only in a
+chat log is not restartable.
+
+**Decision.** Keep the drill as a **buildable git subtree that Argo deliberately does not
+reconcile**: `deploy/phases/05-postgres/restore-drill/`, absent from the phase root kustomization,
+applied and deleted as a unit by an operator following OPERATIONS §7. Applying it is recorded as
+sanctioned imperative exception 5 (§9.5) — the same class as the git-transport advance
+(ADR-018 §1): a bounded, documented operator action that the reconciler cannot express, executed
+against a tree that is still the single source of truth.
+
+**Alternatives rejected.**
+1. *A permanently reconciled scratch cluster.* It would hold a second PostgreSQL cluster running
+   for the life of the platform against the mission's tightest resource (risk R1), and it would
+   restore exactly once — after which it demonstrates nothing about any newer backup. A drill that
+   cannot be re-run is not a drill.
+2. *No manifests in git; run the drill imperatively.* Cheapest in the moment and the worst long
+   term: it re-invents the procedure for each operator, which is precisely what the
+   restart-from-scratch test exists to catch.
+
+**Consequences.** The drill is reproducible from the repository, leaves no permanent footprint, and
+its evidence is the verify Job's own exit status rather than a human's judgement: the drill writes
+a canary row into the source, takes a fresh base backup, restores into the scratch cluster, and
+then connects **as the application role with the application's sealed password** to assert the
+schema, the canary, and that the SECURITY §3.3 grant matrix survived the round trip. Because the
+drill runs outside Argo, its objects are not pruned automatically — the documented procedure ends
+with an explicit delete, and a forgotten drill is visible as two Clusters in
+`kubectl get cluster -n nagar-platform`.

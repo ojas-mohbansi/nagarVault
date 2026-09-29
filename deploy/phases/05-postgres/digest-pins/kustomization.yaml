@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for Phase 5 images (invariant I-5: digest, never a movable tag).
+#
+# Resolution 2026-09-29: upstream image pulled on the host, retagged and pushed to the local
+# registry via localhost:35000, then the digest was read back FROM THE REGISTRY ITSELF:
+#   ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1         -> mission/cnpg-operator    sha256:b0f9805b…
+#   ghcr.io/cloudnative-pg/postgresql:15.17-system-trixie -> mission/cnpg-postgresql sha256:0e1a5a4e…
+#
+# The operand's stored digest differs from the upstream tag's manifest digest
+# (sha256:dfe703aa…) for the reason recorded at G0.3 note 3: pushing a multi-platform-cached
+# image re-hydrates it single-platform, so the registry stores a new manifest — which is why the
+# pin is read from the registry's own Docker-Content-Digest header, not from docker's metadata.
+#
+# Version choice evidence (ADR-019 §1): PostgreSQL **15** is the contract, not a preference — the
+# frozen legacy stack pinned `postgres:15-alpine` (recovered from git history at commit
+# 21472138~1) and the Phase-0 exemplar documents the "postgres:15 line". The operand is therefore
+# the 15.17 line of the CloudNativePG image.
+#
+# **One operand image serves three roles.** The exemplar's migration Job uses a `postgres:15-alpine`
+# client image; this phase uses the operand image instead, because it already contains `psql` and
+# the `barman-cloud-*` tooling the backup path needs, so staging a second PostgreSQL image would
+# buy nothing and cost an extra artifact to mirror, verify and eventually sign (I-11's spirit:
+# the fewer images an air-gapped site must hold, the better). The Jobs therefore run as uid 26 —
+# any non-root uid can execute `psql`; only the operator's own instance containers touch PGDATA.
+#
+# The local-registry rewrite mirrors Phases 3 and 4: base manifests reference
+# registry.nagar.internal:5000 (I-11); this tree rewrites to the k3d registry the cluster actually
+# resolves. On a real deployment the digest rows are replaced by digests pulled from the internal
+# registry and the `newName` rewrites disappear.
+#
+# The `patches` entry exists because kustomize's images transformer only rewrites image fields
+# inside known PodSpec-bearing kinds; it reaches the Job pod specs below, but a CloudNativePG
+# `Cluster` custom resource is opaque to it, so the operand is also applied with an explicit JSON
+# patch (Phase-4 precedent, the Kafka broker image).
+images:
+  - name: ghcr.io/cloudnative-pg/cloudnative-pg
+    newName: k3d-nagar.localhost:5000/mission/cnpg-operator
+    digest: sha256:b0f9805bd5f98592e7320b5ea624dd10a7a6ef8e477df5650655c94f0b242497
+  - name: registry.nagar.internal:5000/cnpg-postgresql
+    newName: k3d-nagar.localhost:5000/mission/cnpg-postgresql
+    digest: sha256:0e1a5a4e65577e0a7f2036b397e248db142a9645a51962fccb6a6a0fc1b2e9c9
+# The operand pin is selected by label rather than by name so that it covers every PostgreSQL
+# Cluster in a build: the production Cluster and the restore drill's scratch cluster
+# (restore-drill/). A name-based target would silently pin only the first, and a silently unpinned
+# image is worse than a loud build failure (I-5).
+patches:
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      labelSelector: "nagar.io/phase=05"
+    patch: |-
+      - op: replace
+        path: /spec/imageName
+        value: k3d-nagar.localhost:5000/mission/cnpg-postgresql@sha256:0e1a5a4e65577e0a7f2036b397e248db142a9645a51962fccb6a6a0fc1b2e9c9

@@ -1,0 +1,31 @@
+# Restore drill — OPERATIONS §7, PHASES.md §2 Phase 5 ("a restore drill into a scratch cluster
+# succeeded"), ADR-020.
+#
+# This subtree is version-controlled and buildable (I-12) but deliberately NOT referenced by the
+# phase root kustomization, so Argo never reconciles it: a restore drill is a bounded operator
+# procedure, and leaving a second PostgreSQL cluster running forever would spend the mission's
+# scarce memory budget (risk R1) to prove something that is only proven at the moment it runs.
+#
+# It is also the reason ADR-020 and OPERATIONS §9.5 exist: applying this tree is an intentional,
+# sanctioned out-of-band act, not drift.
+#
+# Procedure (OPERATIONS §7 carries the operator-facing version):
+#   1. kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/05-postgres/restore-drill | kubectl apply -f -
+#   2. wait for job/pg-drill-canary        (writes the canary row into the SOURCE cluster)
+#   3. wait for backup/pg-drill-backup     (fresh base backup that contains the canary)
+#   4. wait for cluster/postgres-restore-drill to report Ready
+#   5. wait for job/pg-drill-verify        (asserts schema + canary + app role in the RESTORE)
+#   6. kustomize build …/restore-drill | kubectl delete -f -
+#
+# Step ordering is the whole point: the canary must exist before the backup, and the backup must
+# exist before the restore, or the drill proves nothing about point-in-time recovery.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - canary-job.yaml
+  - backup-now.yaml
+  - restore-cluster.yaml
+  - networkpolicies.yaml
+  - verify-job.yaml
+components:
+  - ../digest-pins

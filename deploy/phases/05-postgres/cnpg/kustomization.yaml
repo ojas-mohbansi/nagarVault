@@ -1,0 +1,24 @@
+# CloudNativePG 1.30.1 controller — Phase 5 (PHASES.md §2). Vendored static per ADR-002 and kept
+# in its upstream-native `cnpg-system` namespace (ADR-019 §3): the bundle ships its own Namespace
+# document and hardcodes `cnpg-system` in 15 places (RBAC subjects, webhook clientConfig, leader
+# election), exactly the shape Phase 1 kept native for the cert-manager and kyverno bundles.
+#
+# Why this operator is NOT relocated into nagar-system the way the Strimzi operator was
+# (ADR-017 §2): Strimzi had to move because the data-plane namespace nagar-platform carries a
+# namespace-wide default-deny that would have blinded its egress to the API server. cnpg-system has
+# no default-deny, so the controller's API access needs no policy hole, and leaving it native keeps
+# every hardcoded reference untouched. Full comparison: ADR-019 §3.
+#
+# The controller watches ALL namespaces (no --watch-namespace argument in the bundle), which is
+# what lets one operator manage the nagar-platform Cluster.
+#
+# Cross-root reference to deploy/third_party/ (ADR-002 layout): build with
+# `kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/05-postgres`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../third_party/cnpg/v1.30.1/install.yaml
+patches:
+  - path: cnpg-patches.yaml
+components:
+  - ../digest-pins

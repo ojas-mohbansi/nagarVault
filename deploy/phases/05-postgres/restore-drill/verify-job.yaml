@@ -1,0 +1,115 @@
+# Drill step 5 — verify the restored cluster, and fail loudly if it is not actually a restore.
+#
+# Design choice: it connects as the **application role with the application's sealed password**
+# (from `nagar-postgres-bootstrap`), not as the superuser. A superuser check would pass against an
+# empty database; this one only passes if the recoverer restored the catalog, the data *and*
+# the credential contract the app tier depends on (ADR-019 §5). It asserts four things and exits
+# non-zero on any of them:
+#
+#   1. every table the migration created exists in the restore;
+#   2. the drill canary row — written before the backup, after the migration — is present, which is
+#      what makes this a data-recovery test rather than a schema-recovery test;
+#   3. the two officer roles exist and the SECURITY §3.3 grant matrix survived the round trip:
+#      `nmc_officer` must NOT be able to read health records, `health_officer` must;
+#   4. it can connect at all as `nagar`, i.e. the password Phase 1 sealed into the app tier
+#      authenticates against the restored copy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pg-drill-verify
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: pg-drill-verify
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: restore-drill
+    nagar.io/phase: "05"
+    nagar.io/tier: "3"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pg-drill-verify
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: restore-drill
+        nagar.io/phase: "05"
+        nagar.io/tier: "3"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        fsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: verify
+          image: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+
+              echo "--- restored tables ---"
+              fail=0
+              for t in users sessions audit_logs nmc_complaints traffic_events \
+                       water_sensor_readings health_camp_records ev_bus_telemetry; do
+                n=$(psql -X -tAc "SELECT count(*) FROM $t" "$DATABASE_URL" || echo MISSING)
+                echo "  $t rows=$n"
+                [ "$n" = "MISSING" ] && fail=1
+              done
+              [ "$fail" -eq 0 ] || { echo "DRILL-FAILED: at least one table is missing from the restore"; exit 1; }
+
+              echo "--- canary ---"
+              canary=$(psql -X -tAc "SELECT count(*) FROM nmc_complaints WHERE source_record_id = 'p5-drill-canary-001'" "$DATABASE_URL")
+              echo "  canary rows=$canary (written before the backup, read after the restore)"
+              [ "$canary" -ge 1 ] || { echo "DRILL-FAILED: canary row absent — the restore has schema but not data"; exit 1; }
+
+              echo "--- officer role matrix (SECURITY §3.3) ---"
+              for r in nmc_officer health_officer; do
+                got=$(psql -X -tAc "SELECT count(*) FROM pg_roles WHERE rolname = '$r'" "$DATABASE_URL")
+                echo "  role $r present=$got"
+                [ "$got" = "1" ] || { echo "DRILL-FAILED: role $r missing"; exit 1; }
+              done
+              nmc_health=$(psql -X -tAc "SELECT has_table_privilege('nmc_officer','health_camp_records','SELECT')" "$DATABASE_URL")
+              health_health=$(psql -X -tAc "SELECT has_table_privilege('health_officer','health_camp_records','SELECT')" "$DATABASE_URL")
+              echo "  nmc_officer -> health_camp_records SELECT = $nmc_health (want f)"
+              echo "  health_officer -> health_camp_records SELECT = $health_health (want t)"
+              [ "$nmc_health" = "f" ] || { echo "DRILL-FAILED: nmc_officer can read health records after restore"; exit 1; }
+              [ "$health_health" = "t" ] || { echo "DRILL-FAILED: health_officer lost its grant in the restore"; exit 1; }
+
+              echo "RESTORE-DRILL-VERIFIED"
+          env:
+            # The application role and the password Phase 1 sealed for the app tier — the same
+            # secret the production Cluster was bootstrapped from.
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: nagar-postgres-bootstrap
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nagar-postgres-bootstrap
+                  key: password
+            - name: DATABASE_URL
+              value: postgresql://$(PGUSER):$(PGPASSWORD)@postgres-restore-drill-rw.nagar-platform.svc.cluster.local:5432/nagardb
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 300m, memory: 128Mi }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,31 @@
+# Scheduled base backup — daily 03:00 (OPERATIONS §7: "base daily, WAL 5 min"). The 5-minute WAL
+# cadence is not declared here because it is PostgreSQL's own `archive_timeout`, which CloudNativePG
+# sets to 5 min by default for exactly this RPO guarantee; overriding it would be drift, not config.
+#
+# `immediate: true` takes one backup as soon as this resource is created, so a fresh cluster has a
+# restorable base backup without waiting for the first 03:00 window. It is a create-time trigger,
+# not a per-sync one: the operator fires it only while the object has no recorded schedule time, so
+# Argo re-applying the same resource does not produce backup churn (verified live, see the phase
+# entry in agentic/mission-log.md).
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: postgres-daily
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: postgres-daily
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "05"
+    nagar.io/tier: "2"
+spec:
+  # Six-field cron (seconds first) — CloudNativePG's schedule format.
+  schedule: "0 0 3 * * *"
+  immediate: true
+  suspend: false
+  # Backup objects are owned by this ScheduledBackup so retention pruning can garbage-collect them.
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: postgres

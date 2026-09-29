@@ -1,0 +1,81 @@
+# NetworkPolicies for the relational store, layered on Phase 3's namespace default-deny.
+# Port scope follows CONVENTIONS §4: "5432 | PostgreSQL | namespace + nagar-app only".
+# Standard objects — no pod template — so Kyverno's pod policies do not evaluate them.
+---
+# PostgreSQL ingress. The selector is CloudNativePG's own pod label (`cnpg.io/cluster`), not a
+# label of our choosing: the operator owns the metadata of the pods it creates, and selecting on
+# a label we invent would produce a policy that looks correct in git and matches nothing live.
+# That failure mode — a silent no-match selector, loud nowhere — is exactly what cost Phase 4 a
+# deploy cycle (ADR-017 §2).
+#
+# 5432 accepts this namespace (the migration Job, the restore drill's jobs, and instance-to-
+# instance replication, which is why the same-namespace selector is not redundant with the
+# service) plus nagar-app, where the five services will live in Phase 7.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "05"
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+      ports:
+        - protocol: TCP
+          port: 5432
+    # The controller's channel into each instance. CloudNativePG documents this requirement
+    # itself — "the operator can reach every cluster pod on ports 8000 and 5432" (Networking) and
+    # "the operator needs to communicate to each instance on TCP port 8000 to get information
+    # about the status of the PostgreSQL server" (Security) — so this rule is quoted from upstream
+    # rather than discovered by breaking reconciliation. Port-scoped to the controller namespace,
+    # nothing else.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 5432
+---
+# API-server egress for the instance manager. Each instance reads its own Cluster resource, the
+# bootstrap credentials Secret and the WAL/base-backup configuration through the Kubernetes API
+# before and while it serves; the namespace-wide default-deny egress would otherwise leave the
+# pods unable to see their own spec.
+#
+# Deliberately port-scoped with no peer: a NetworkPolicy peer cannot name the k3s API server
+# process, and the ClusterIP-versus-post-DNAT address makes even an ipBlock guess a coin flip on
+# this substrate. Ports 443 (service ClusterIP) and 6443 (the API server's native port) are the
+# only two the control plane listens on. This is the same shape, and the same reasoning, as the
+# Kafka broker's egress rule in Phase 4 (ADR-017 §4) — the second time an operator's own
+# reconciliation has needed a deliberate hole in the data-plane default-deny.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-api-egress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "05"
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes: ["Egress"]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

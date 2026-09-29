@@ -1,0 +1,49 @@
+# Patches to the vendored CloudNativePG 1.30.1 bundle (deploy/third_party/cnpg/v1.30.1/).
+#
+# Only two things need changing, and neither is a behavioural override:
+#
+# 1. The bundle's own Namespace gets the mission label set and the Pod Security Standards
+#    restricted labels, matching what Phase 1 did for the cert-manager and kyverno namespaces.
+#    Without the PSS labels this namespace would be the one ungoverned place in the cluster.
+#
+# 2. The controller Deployment's pod template gets the labels Kyverno's `require-nagar-labels`
+#    policy evaluates (autogen inspects pod templates, not just bare pods).
+#
+# Deliberately NOT patched, and why:
+#   * securityContext / resources — upstream already ships a PSS-restricted-compliant controller
+#     (pod-level runAsNonRoot + seccompProfile RuntimeDefault; container-level
+#     allowPrivilegeEscalation false, capabilities drop ALL, readOnlyRootFilesystem true,
+#     runAsUser 10001) and declares container resources. Verified by reading the vendored
+#     manifest; nothing to add, and adding would only create drift on the next version bump.
+#   * namespace / RBAC subjects / webhook clientConfig — relocation is refused on purpose
+#     (ADR-019 §3).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "05"
+    pod-security.kubernetes.io/enforce: "restricted"
+    pod-security.kubernetes.io/enforce-version: v1.31
+    pod-security.kubernetes.io/audit: "restricted"
+    pod-security.kubernetes.io/audit-version: v1.31
+    pod-security.kubernetes.io/warn: "restricted"
+    pod-security.kubernetes.io/warn-version: v1.31
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnpg-controller-manager
+  namespace: cnpg-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "05"
+    nagar.io/tier: "3"
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "05"
+        nagar.io/tier: "3"

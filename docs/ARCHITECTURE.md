@@ -104,8 +104,9 @@ detected via `sourceSystem + sourceRecordId` and answered `200 duplicate` idempo
 
 `enrichWorker` consumes the five raw topics plus the DLQ, normalizes payloads per department, and
 upserts into `nmc_complaints`, `traffic_events`, `water_sensor_readings`, `health_camp_records`,
-`ev_bus_telemetry` (schema in `enrichWorker/migrations/001_create_tables.sql`, idempotent
-`IF NOT EXISTS`). Malformed events go to `nmc.complaints.dlq.v1` for inspection via adminService.
+`ev_bus_telemetry` (schema in `deploy/phases/05-postgres/migrations/001_create_tables.sql`,
+idempotent `IF NOT EXISTS`, applied by that phase's migration Job; the path was corrected from
+`enrichWorker/migrations/` in Phase 5 — see ADR-019 §9). Malformed events go to `nmc.complaints.dlq.v1` for inspection via adminService.
 
 ### 3.4 Natural-language query (NL → SQL)
 

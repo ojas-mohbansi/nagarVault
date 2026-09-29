@@ -29,7 +29,7 @@
 | 2 | GitOps control plane | **Done (2026-09-29, k3d substrate)** | Argo CD app-of-apps + `deploy/` skeleton | self-heal/prune lost; manual `kustomize apply` fallback documented |
 | 3 | Object store & cache | **Done (2026-09-29, k3d substrate)** | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
 | 4 | Messaging | **Done (2026-09-29, k3d substrate)** | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
-| 5 | Relational store | Not started | CNPG + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
+| 5 | Relational store | **In progress (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
 | 6 | Vector & LLM tier | Not started | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
 | 7a–7g | App tier (per service) | Not started | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
 | 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
@@ -74,6 +74,16 @@
   restore drill into a scratch cluster succeeded.
 - **Rollback:** CNPG finalizers documented — deleting the Cluster CR does not delete PVCs; use
   cnpg tooling if a real teardown is intended.
+- **Implementation notes (2026-09-29, ADR-019/ADR-020):** the warehouse schema's canonical home is
+  `deploy/phases/05-postgres/migrations/001_create_tables.sql`. ARCHITECTURE §3.3 previously named
+  `enrichWorker/migrations/`, a path that no longer exists after the service tree was removed
+  (ADR-013) — the phase that owns the relational store authors and delivers its schema, and Phase
+  7c's enrichWorker consumes that same DDL rather than forking a copy. Backups use CloudNativePG's
+  native `barmanObjectStore` integration (deprecated upstream since 1.26 but functional in 1.30,
+  with a named migration trigger to the Barman Cloud plugin). The restore drill is a buildable
+  subtree that Argo deliberately does not reconcile (`deploy/phases/05-postgres/restore-drill/`),
+  applied by an operator per OPERATIONS §7 — the exit criterion is evidenced by a verify Job that
+  connects as the application role, not by a pod being up.
 
 ### Phase 6 — Vector & LLM tier
 - **Files:** `deploy/phases/06-vector-llm/` — Qdrant + Ollama StatefulSets, model Job

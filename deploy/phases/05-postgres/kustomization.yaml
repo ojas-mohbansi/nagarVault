@@ -1,0 +1,43 @@
+# Phase 5 — Relational store (PHASES.md §2). CloudNativePG 1.30.1 controller (cnpg-system) + a
+# two-instance PostgreSQL 15 Cluster (nagar-platform) with WAL/base backups to MinIO, the
+# idempotent schema migration Job, and the NetworkPolicies the default-deny namespace requires.
+#
+# Namespace split, matching Phase 4's control-plane/data-plane pattern: the operator is control
+# plane and stays in its upstream-native cnpg-system (ADR-019 §3); the database is the data plane
+# in nagar-platform, where the namespace-wide default-deny from Phase 3 lives.
+#
+# This kustomization intentionally has NO `namespace:` transformer — every document states its own
+# namespace, which is what lets the cnpg-system controller and the nagar-platform database coexist
+# in one tree.
+#
+# `restore-drill/` is deliberately NOT listed below: the drill is an operator procedure with a
+# bounded life (OPERATIONS §7), not a permanently reconciled workload. See that directory's own
+# kustomization and ADR-020. It still builds — I-12 applies to every tree under deploy/.
+#
+# Cross-root reference to deploy/third_party/ (ADR-002 layout) lives in cnpg/: build with
+# `kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/05-postgres`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cnpg
+  - postgres-cluster.yaml
+  - scheduled-backup.yaml
+  - postgres-migration-job.yaml
+  - networkpolicies.yaml
+  - secrets
+configMapGenerator:
+  # The migration SQL is generated from the phase subtree rather than hand-copied into a
+  # ConfigMap literal, so the schema has exactly one home and the generated name carries a content
+  # hash that changes whenever the SQL does — which is what forces the migration Job to be
+  # re-created (and the schema re-applied) on a schema change.
+  - name: nagar-db-migrations
+    namespace: nagar-platform
+    files:
+      - migrations/001_create_tables.sql
+    options:
+      labels:
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: init
+        nagar.io/phase: "05"
+components:
+  - digest-pins

@@ -1,0 +1,59 @@
+# Drill-scoped NetworkPolicies. The production policies in ../networkpolicies.yaml select
+# `cnpg.io/cluster: postgres`, which by design does not match a different cluster — so the scratch
+# cluster carries its own three rules rather than widening the production ones. Same shape, same
+# reasoning, different selector; keeping them separate is what lets the drill be applied and
+# deleted without touching the production policy set.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-drill-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "05"
+    nagar.io/role: restore-drill
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres-restore-drill
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+      ports:
+        - protocol: TCP
+          port: 5432
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-drill-api-egress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "05"
+    nagar.io/role: restore-drill
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres-restore-drill
+  policyTypes: ["Egress"]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

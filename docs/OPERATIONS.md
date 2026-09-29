@@ -102,11 +102,41 @@ kubectl -n nagar-system get secret -l sealedsecrets.bitnami.com/sealed-secrets-k
   -o yaml > sealed-secrets-master-key.yaml   # store offline, encrypted
 ```
 
-### Restore drill (quarterly, evidence recorded)
+### Restore drill (quarterly, evidence recorded — Phase 5)
+
+The drill is a version-controlled tree that Argo deliberately does not reconcile, applied and
+deleted as a unit (ADR-020, sanctioned as §9.5). It is a **data** drill, not a "a pod started"
+drill: it writes a canary row into the source, takes a fresh base backup, restores that backup into
+a scratch cluster, and then connects **as the application role with the application's sealed
+password** to assert the schema, the canary, and that the grant matrix survived the round trip.
+
 ```bash
-kubectl -n nagar-platform apply -f <restore-manifest>   # CNPG BootstrapRestore
-# then verify row counts vs audit baseline, run the §11 smoke test
+BUILD="kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/05-postgres/restore-drill"
+
+# 1. apply the drill (canary Job runs first and writes into the SOURCE warehouse; idempotent)
+$BUILD | kubectl apply -f -
+kubectl -n nagar-platform wait --for=condition=complete job/pg-drill-canary --timeout=10m
+
+# 2. take a base backup that contains the canary
+kubectl -n nagar-platform wait --for=jsonpath='{.status.phase}'=completed backup/pg-drill-backup --timeout=20m
+
+# 3. recover the scratch cluster from the object store (latest base backup + WAL replay)
+kubectl -n nagar-platform get backup pg-drill-backup -o jsonpath='{.status.phase}{"\n"}'
+kubectl -n nagar-platform wait --for=condition=Ready cluster/postgres-restore-drill --timeout=20m
+
+# 4. verify — schema, canary, and the SECURITY §3.3 grant matrix, as the application role
+kubectl -n nagar-platform wait --for=condition=complete job/pg-drill-verify --timeout=10m
+kubectl -n nagar-platform logs job/pg-drill-verify          # expect the final line: RESTORE-DRILL-VERIFIED
+
+# 5. tear the drill down (nothing here is Argo-owned, so nothing prunes it for you)
+$BUILD | kubectl delete -f -
 ```
+
+Record the verify Job's output with the drill date. Expect ~3–6 minutes end to end on the
+reference substrate. A `DRILL-FAILED` line in step 4 means the backup chain is broken — that is an
+incident to fix, not a drill to re-run until it passes. The canary row stays in
+`nmc_complaints` (`source_record_id = 'p5-drill-canary-001'`) as the audit trail; delete it only if
+the warehouse is being reset.
 
 ## 8. Common operations
 
@@ -130,6 +160,11 @@ The only permitted out-of-band `kubectl` mutations, all documented here:
    apply the mirror subtree with the exact command in §12.16. This is the "push to the git remote"
    step, not a workload edit — the cluster has no way to learn about a new mirror tag otherwise.
    Apply the same git tree Argo reads; never hand-edit the live Deployment.
+5. Applying and then deleting the restore drill (§7, ADR-020): the drill tree is intentionally
+   outside the reconciled tree because a permanently running scratch cluster would spend the
+   resource budget the platform needs and would still restore only once. Both halves of the
+   procedure are mandatory — an applied-and-forgotten drill is the one way this exception turns
+   into drift, and it is visible as a second `Cluster` in `kubectl get cluster -n nagar-platform`.
 
 Everything else: change git, let Argo converge.
 

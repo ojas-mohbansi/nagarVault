@@ -1,0 +1,106 @@
+# CloudNativePG Cluster — the NagarVault relational warehouse (PHASES.md §2 Phase 5, ADR-005/006).
+# Two instances (HA), bootstrapped with `nagardb` owned by the `nagar` role, WAL + base backups to
+# the `pg-backups` bucket Phase 3 created in MinIO, 14-day recovery window.
+#
+# Deviations from docs/manifests/exemplars/postgres-cnpg.yaml, all deliberate — the exemplar is a
+# shape reference written before Phase 5 and is wrong in three fields (ADR-019 §6):
+#
+#   1. `storage.sizeClass: local-path` -> `storage.storageClass: local-path`.
+#      `sizeClass` is not a field in the CloudNativePG 1.30 CRD (verified against the vendored
+#      schema: zero occurrences; `storageClass` present). The API server prunes unknown fields, so
+#      the exemplar's spelling would have silently fallen back to the default StorageClass —
+#      correct by accident on this cluster and wrong on any cluster whose default differs.
+#   2. `affinity.podAntiAffinityType: required` -> `preferred`.
+#      With `required` and a single-node cluster, the second instance can never schedule: the
+#      anti-affinity term matches its own cluster's pods on the same `kubernetes.io/hostname`.
+#      Upstream documents `preferred` as the default and warns that `required` "may cause pods to
+#      remain pending". `required` is the right posture for a multi-node production cluster and is
+#      a one-word change when this deployment grows a second node.
+#   3. `monitoring.enablePodMonitor: true` -> `false`.
+#      `PodMonitor` is a monitoring.coreos.com resource that does not exist in this cluster until
+#      Phase 9 installs the Prometheus Operator; leaving it enabled would make every reconciliation
+#      fail on a missing CRD.
+#
+# Two further adaptations:
+#   * `imageName`/backup credentials are rewritten by the phase's digest-pins component (I-5) and
+#     point at the `nagar-minio-server` secret Phase 3 sealed in this namespace (the exemplar's
+#     `nagar-minio` name predates the platform-side copy).
+#   * `bootstrap.initdb.secret` names a SealedSecret in this phase's subtree, which is what keeps
+#     the `nagar` role's password identical to the one Phase 1 already encoded in the app tier's
+#     `nagar-app/nagar-postgres-app.databaseUrl` — the two halves of SECURITY §6.2's key map stay
+#     consistent instead of drifting apart (ADR-019 §5).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "05"
+    nagar.io/tier: "2"
+spec:
+  instances: 2
+  # Rewritten by ../digest-pins to the internal-registry reference pinned by digest (I-5/I-11).
+  imageName: registry.nagar.internal:5000/cnpg-postgresql:15.17-system-trixie
+  # The migration Job and the restore drill connect as the superuser or read the operator-managed
+  # superuser secret; the flag is declared explicitly rather than relied on as a default so that
+  # the secret's existence is part of the declared contract.
+  enableSuperuserAccess: true
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "512MB"
+  bootstrap:
+    initdb:
+      database: nagardb
+      owner: nagar
+      secret:
+        name: nagar-postgres-bootstrap
+  storage:
+    storageClass: local-path
+    size: 20Gi
+  # Labels inherited by every pod the operator creates for this cluster (instance pods, the
+  # backup Job pod). This is how an operator-owned pod satisfies Kyverno's `require-nagar-labels`
+  # without hand-authoring a pod template the operator would discard — the Phase 4 lesson about
+  # operators owning their own pod metadata (ADR-017 §2), applied before it can bite.
+  inheritedMetadata:
+    labels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/component: database
+      app.kubernetes.io/part-of: nagarvault
+      nagar.io/phase: "05"
+      nagar.io/tier: "2"
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  monitoring:
+    enablePodMonitor: false
+  backup:
+    # Base backups are taken on the standby so the primary keeps serving queries (ADR-006).
+    target: prefer-standby
+    barmanObjectStore:
+      destinationPath: s3://pg-backups/
+      endpointURL: http://minio.nagar-platform.svc.cluster.local:9000
+      s3Credentials:
+        accessKeyId:
+          name: nagar-minio-server
+          key: accessKey
+        secretAccessKey:
+          name: nagar-minio-server
+          key: secretKey
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+    retentionPolicy: "14d"
