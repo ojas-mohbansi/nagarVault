@@ -1,0 +1,53 @@
+# NetworkPolicies for the messaging tier (SECURITY §8). The namespace-wide `default-deny` and
+# `allow-dns-egress` / `allow-intra-namespace-egress` policies already exist in this namespace
+# (deploy/phases/03-object-cache/networkpolicies.yaml) and are NOT duplicated here — Phase 4 adds
+# only the ingress rule the Kafka broker needs to exist at all.
+#
+# Why no egress rule: `allow-intra-namespace-egress` already permits pods in nagar-platform to
+# reach any pod in the namespace (broker↔broker replication and the KRaft quorum, the topics Job
+# → the bootstrap Service, the operator's AdminClient through the Service). Everything crossing
+# the namespace boundary stays default-deny unless named below.
+#
+# Note on operator-generated policies: the Strimzi Cluster Operator would create its own
+# listener NetworkPolicies at runtime. It is switched off (`STRIMZI_NETWORK_POLICY_GENERATION=false`
+# in ../strimzi/strimzi-patches.yaml) so that (a) cluster state stays exactly what git declares
+# (I-1) and (b) no "allow from anywhere" rule silently widens the default-deny posture.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/component: broker
+  policyTypes: ["Ingress"]
+  ingress:
+    # 29092 is the frozen listener port (CONVENTIONS §4, ADR-009). Sources, each named for a
+    # concrete flow rather than widened "just in case":
+    #   podSelector {}        → in-namespace clients: the topics Job (tier 3) and, in Phase 5+,
+    #                           any init Job that needs a topic.
+    #   nagar-app             → producers/consumers: ingestion backend (7e) and enrichWorker (7c).
+    #   nagar-system          → the Strimzi Cluster Operator itself, which reconciles the Kafka CR
+    #                           from the control-plane namespace (see ../strimzi/kustomization.yaml
+    #                           for why it lives there rather than here).
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+      ports:
+        - protocol: TCP
+          port: 29092

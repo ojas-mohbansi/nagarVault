@@ -1,0 +1,24 @@
+# Strimzi Cluster Operator — Phase 4 (PHASES.md §2). Relocates the vendored upstream bundle
+# (ADR-002: static manifests, no Helm) into nagar-system, the control-plane namespace
+# (ARCHITECTURE §1 pattern set by Argo CD and the Sealed Secrets controller), and points it at
+# the nagar-platform data-plane namespace via STRIMZI_NAMESPACE.
+#
+# Why the operator lives in nagar-system and the Kafka cluster in nagar-platform:
+#   1. ARCHITECTURE §1's nagar-platform row lists "Kafka (Strimzi)" = the Kafka cluster; the
+#      control plane belongs with the other operators (nagar-system).
+#   2. nagar-platform carries the namespace-wide `default-deny` NetworkPolicy from Phase 3.
+#      The Cluster Operator must reach the Kubernetes API server, which is not a pod in any
+#      namespace (no selector-addressable peer exists) — a default-deny egress would blind it.
+#      nagar-system has no default-deny, so the operator's API access needs no policy hole.
+#
+# Cross-root reference to deploy/third_party/ (ADR-002 layout): build with
+# `kustomize build --load-restrictor LoadRestrictionsNone` (see deploy/third_party/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: nagar-system
+resources:
+  - ../../../third_party/strimzi/v1.2.0/install.yaml
+patches:
+  - path: strimzi-patches.yaml
+components:
+  - ../digest-pins

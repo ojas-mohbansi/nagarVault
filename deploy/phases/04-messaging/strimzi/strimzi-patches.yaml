@@ -1,0 +1,130 @@
+# Patches onto the vendored Strimzi bundle (third_party stays pristine; ADR-002).
+#
+# 1) Deployment/strimzi-cluster-operator
+#    a. metadata + pod-template labels per CONVENTIONS §5 (part-of + nagar.io/phase are what
+#       the Phase-1 Kyverno autogen policies evaluate against pod templates).
+#    b. pod-level securityContext: the upstream container is restricted-compliant already,
+#       but `require-pod-security-context` demands POD-level runAsNonRoot + seccompProfile.
+#    c. STRIMZI_NAMESPACE=nagar-platform — upstream points it at metadata.namespace via a
+#       fieldRef. The operator runs in nagar-system (control plane, next to Argo CD and the
+#       Sealed Secrets controller, per ARCHITECTURE §1) and must watch the data-plane
+#       namespace. The operator's own namespace stays nagar-system via
+#       STRIMZI_OPERATOR_NAMESPACE (untouched fieldRef).
+#    d. STRIMZI_NETWORK_POLICY_GENERATION=false — Strimzi otherwise creates its own
+#       NetworkPolicies for the Kafka listeners at runtime. Those objects are not in git, so
+#       they would (i) violate I-1 (cluster state must be exactly what git declares) and
+#       (ii) add an "allow from anywhere" ingress rule that silently widens SECURITY §8's
+#       default-deny posture. This phase owns every NetworkPolicy explicitly instead.
+#
+# 2) RBAC relocation (transformers do not rewrite RBAC SUBJECT namespaces reliably; pin them):
+#    the three ClusterRoleBindings' subjects point at the ServiceAccount in `myproject` — the
+#    docs' placeholder namespace — and must point at nagar-system.
+#
+# 3) Three RoleBindings are DELETED from this subtree because they do not belong in the
+#    operator's namespace: `strimzi-cluster-operator`, `strimzi-cluster-operator-watched` and
+#    `strimzi-cluster-operator-entity-operator-delegation` grant namespaced Strimzi permissions
+#    and must live in the WATCHED namespace (nagar-platform). Leaving the bundle's copies in
+#    nagar-system would hand the operator Strimzi-resource, Service, ConfigMap, Secret, PVC and
+#    workload rights in the control-plane namespace that hosts the Sealed Secrets key — an
+#    unnecessary escalation. Their nagar-platform equivalents are declared in
+#    ../strimzi-watched-rbac.yaml (the entity-operator delegation one is intentionally omitted
+#    because this phase does not deploy the entity operator — see ../../kafka.yaml).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strimzi-cluster-operator
+  labels:
+    app.kubernetes.io/name: strimzi-cluster-operator
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: strimzi-cluster-operator
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: operator
+        app.kubernetes.io/managed-by: argocd
+        nagar.io/phase: "04"
+        nagar.io/tier: "2"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: strimzi-cluster-operator
+          env:
+            # `name` is the strategic-merge key for env, so this item is MERGED into the
+            # upstream one rather than replacing it — verified in the built output: without the
+            # explicit null, the object kept BOTH `value` and `valueFrom`, and the API server
+            # rejected it (`may not be specified when value is not empty`). A null in a
+            # strategic merge patch deletes the field, so the fieldRef is removed and the
+            # operator watches nagar-platform instead of its own namespace.
+            - name: STRIMZI_NAMESPACE
+              value: nagar-platform
+              valueFrom: null
+            - name: STRIMZI_NETWORK_POLICY_GENERATION
+              value: "false"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: nagar-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator-kafka-broker-delegation
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: nagar-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator-kafka-client-delegation
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: nagar-system
+---
+# Leader-election lives with the operator (STRIMZI_LEADER_ELECTION_ENABLED=true, lease in the
+# operator's own namespace). Its subject also carries the docs' `myproject` placeholder —
+# kustomize's namespace transformer rewrites object namespaces but NOT RBAC subject namespaces
+# (verified in the built output before this patch was written), so it is pinned here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: nagar-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator
+$patch: delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-watched
+$patch: delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-entity-operator-delegation
+$patch: delete

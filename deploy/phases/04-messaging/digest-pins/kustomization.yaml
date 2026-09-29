@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for Phase 4 images (invariant I-5: digest, never a movable tag).
+#
+# Resolution 2026-09-29 (Day 0 G0.2/G0.3 transport): upstream image pulled on the host, retagged
+# and pushed to the local registry via localhost:35000, then the digest was read back FROM THE
+# REGISTRY ITSELF (docker's local RepoDigests differ from the stored manifest digest after a
+# single-platform push — see the mission log G0.3 note 3):
+#   quay.io/strimzi/operator:1.2.0            -> mission/strimzi-operator  sha256:6df3bf9f…
+#   quay.io/strimzi/kafka:1.2.0-kafka-4.2.0   -> mission/strimzi-kafka     sha256:ef0f3302…
+# Both were proven pullable inside the cluster by digest (`crictl pull`, mission log G4.0)
+# before any manifest referenced them.
+#
+# Base manifests reference registry.nagar.internal:5000 (I-11); this tree rewrites to the k3d
+# registry the cluster actually resolves (Day 0 evidence G0.2: push via localhost:35000, pull
+# via the k3d-nagar.localhost:5000 mirror). On a real deployment the upstream rows are replaced
+# by digests pulled from the internal registry and the `newName` rewrites disappear.
+#
+# This component is included ONCE, by the phase root kustomization: kustomize applies a parent's
+# transformers to resources accumulated from child kustomizations too, so the pin below reaches
+# the Strimzi operator Deployment inside strimzi/ as well as this directory's own resources.
+#
+# The `patches` entry exists because kustomize's images transformer only rewrites image fields
+# inside known PodSpec-bearing kinds; a `Kafka` custom resource is opaque to it, so the broker
+# image is rewritten with an explicit JSON patch instead (see ../kafka.yaml deviation note 3).
+images:
+  - name: quay.io/strimzi/operator
+    newName: k3d-nagar.localhost:5000/mission/strimzi-operator
+    digest: sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e
+  - name: registry.nagar.internal:5000/strimzi-kafka
+    newName: k3d-nagar.localhost:5000/mission/strimzi-kafka
+    digest: sha256:ef0f33023738ba2fcffd9b5962bbef6ff7ccc7aba229d7a711cedab3c4fc1d32
+patches:
+  - target:
+      group: kafka.strimzi.io
+      version: v1
+      kind: Kafka
+      name: nagar
+    patch: |-
+      - op: replace
+        path: /spec/kafka/image
+        value: k3d-nagar.localhost:5000/mission/strimzi-kafka@sha256:ef0f33023738ba2fcffd9b5962bbef6ff7ccc7aba229d7a711cedab3c4fc1d32

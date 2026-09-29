@@ -1,6 +1,23 @@
-# Placeholder (2026-09-29): Phase 4's manifests land in its own phase commit
-# (PHASES.md §2 Phase 4). This file exists only so the forward-declared child
-# Application `nagar-phase4-messaging` has a valid empty app path in the meantime.
+# Phase 4 — Messaging (PHASES.md §2). Strimzi 1.2.0 Cluster Operator (nagar-system) + Kafka
+# KRaft single node (nagar-platform, KafkaNodePool + Kafka, ADR-005/006), idempotent topics Job
+# (six frozen topics, ARCHITECTURE §4.2), default-deny-respecting ingress NetworkPolicy.
+#
+# Namespace split is deliberate and documented in strimzi/kustomization.yaml: the operator is
+# control plane (nagar-system, with Argo CD and the Sealed Secrets controller) and the Kafka
+# cluster is the data plane (nagar-platform, where the namespace-wide default-deny lives).
+# This kustomization intentionally has NO `namespace:` transformer — every document states its
+# own namespace, which is what lets the operator and its watched-namespace RBAC split across two
+# namespaces in one tree.
+#
+# Cross-root reference to deploy/third_party/ (ADR-002 layout) lives in strimzi/: build with
+# `kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/04-messaging`.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources: []
+resources:
+  - strimzi
+  - strimzi-watched-rbac.yaml
+  - kafka.yaml
+  - kafka-topics-job.yaml
+  - networkpolicies.yaml
+components:
+  - digest-pins

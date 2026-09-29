@@ -1,0 +1,63 @@
+# Strimzi Cluster Operator — namespaced grants in the WATCHED namespace (nagar-platform).
+#
+# The Cluster Operator runs in nagar-system but reconciles Kafka CRs in nagar-platform
+# (STRIMZI_NAMESPACE=nagar-platform). Strimzi's RBAC model splits cluster-scoped permission
+# (ClusterRoles, bound once) from watched-namespace permission (ClusterRoles bound by a
+# RoleBinding in EVERY watched namespace), so these two bindings are what let the operator
+# actually act on the data plane. Their upstream twins arrive inside the vendored bundle and
+# are deleted from the operator's own namespace by ../strimzi/strimzi-patches.yaml (leaving
+# them in nagar-system would grant Kafka-resource, Service, ConfigMap, Secret, PVC and workload
+# rights in the namespace that holds the Sealed Secrets master key).
+#
+#   strimzi-cluster-operator-namespaced → pods, services, configmaps, secrets, PVCs,
+#       deployments, poddisruptionbudgets, rolebindings, networkpolicies (the resources the
+#       operator materializes for a Kafka cluster).
+#   strimzi-cluster-operator-watched    → kafkas, kafkanodepools, strimzipodsets (+status and
+#       finalizer subresources) — the CRs this phase declares.
+#
+# `strimzi-cluster-operator-entity-operator-delegation` has no twin here on purpose: this phase
+# does not deploy the entity operator (see ../kafka.yaml header). If a future phase enables
+# `spec.entityOperator`, that delegation RoleBinding must be re-created in this namespace in the
+# same change.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: strimzi-cluster-operator
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: strimzi-cluster-operator-namespaced
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: nagar-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator-watched
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: strimzi-cluster-operator
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: strimzi-cluster-operator-watched
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: nagar-system

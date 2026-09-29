@@ -1,0 +1,121 @@
+# Idempotent topic-creation Job (invariant I-2; exemplar behavior, ARCHITECTURE §4.2 registry).
+# Creates the six frozen topics. `--if-not-exists` makes every re-run a no-op, so the Job is
+# safe to delete and let Argo recreate (OPERATIONS §8), and safe under the Force/Replace sync
+# option below.
+#
+# Deviation from the exemplar's image (`apache-kafka:4.2.0`): this Job runs the SAME staged
+# Strimzi Kafka image the broker runs (`mission/strimzi-kafka`, Kafka 4.2.0). Reasons:
+#   1. The image is already staged for the broker, so the phase adds no third image to the
+#      air-gapped registry (I-11, minimal surface).
+#   2. It is purpose-built for PSS `restricted`: it runs as uid 1001, works with a read-only
+#      root filesystem (verified locally before this manifest was written), and ships
+#      /opt/kafka/bin/*.sh against Kafka 4.2.0 — byte-for-byte the client version of the broker.
+# The client tools are NOT on the image PATH, so PATH is set explicitly.
+#
+# The reachability wait lives inside the container (a bounded retry loop) rather than in an init
+# container: it uses the same image and the same client the actual work uses, so a green Job
+# proves the client can really talk to the broker — not merely that a TCP port opened.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nagar-kafka-topics
+  namespace: nagar-platform
+  # A Job's pod template is immutable, so Argo's default (server-side) apply cannot land a
+  # changed spec — it fails with "field is immutable" and wedges the app for that revision
+  # (ADR-016, OPERATIONS §12.13). Force=true,Replace=true is Argo's documented option for
+  # exactly this case: the job is deleted and recreated when (and only when) its spec changes.
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+  labels:
+    app.kubernetes.io/name: nagar-kafka-topics
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: init
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "3"
+spec:
+  backoffLimit: 6
+  # Evidence retention: a completed Job stays visible for the nightly review window.
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-kafka-topics
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: init
+        app.kubernetes.io/managed-by: argocd
+        nagar.io/phase: "04"
+        nagar.io/tier: "3"
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: topics
+          # The images: transformer of the digest-pins component rewrites this to the staged
+          # image by digest (I-5); the base manifest carries the canonical internal-registry
+          # reference so it stays portable off this substrate (ADR-013 §4).
+          image: registry.nagar.internal:5000/strimzi-kafka@sha256:REPLACED-BY-DIGEST-PINS
+          env:
+            # Frozen env-var name (CONVENTIONS §3): the bootstrap address is configuration,
+            # not a literal buried in the script.
+            - name: BOOTSTRAP_SERVER
+              value: kafka-bootstrap.nagar-platform.svc.cluster.local:29092
+            # Client tools live in /opt/kafka/bin and are not on the image PATH.
+            - name: PATH
+              value: /opt/kafka/bin:/usr/local/bin:/usr/bin:/bin
+            # Cap the tools' JVM well inside the container limit.
+            - name: KAFKA_HEAP_OPTS
+              value: -Xms128m -Xmx384m
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              wait_for_kafka() {
+                n=0
+                until kafka-topics.sh --bootstrap-server "$BOOTSTRAP_SERVER" --list >/dev/null 2>&1; do
+                  n=$((n+1))
+                  if [ "$n" -ge 40 ]; then
+                    echo "FATAL: kafka unreachable after $n attempts" >&2
+                    exit 1
+                  fi
+                  echo "waiting for kafka (attempt $n)"
+                  sleep 5
+                done
+              }
+              create() {
+                kafka-topics.sh --bootstrap-server "$BOOTSTRAP_SERVER" \
+                  --create --if-not-exists --topic "$1" \
+                  --partitions 1 --replication-factor 1
+              }
+              wait_for_kafka
+              create health.camps.raw.v1
+              create nmc.complaints.raw.restricted.v1
+              create traffic.events.raw.v1
+              create water.sensors.raw.v1
+              create ev.bus.telemetry.raw.v1
+              create nmc.complaints.dlq.v1
+              echo "--- topics present ---"
+              kafka-topics.sh --bootstrap-server "$BOOTSTRAP_SERVER" --list | sort
+              echo "topics ready"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # The image's JVM and Kafka scripts need a writable temp dir under the read-only
+            # root filesystem.
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests: { cpu: 100m, memory: 320Mi }
+            limits: { cpu: 500m, memory: 640Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}

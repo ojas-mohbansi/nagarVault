@@ -1,0 +1,199 @@
+# Phase 4 — Kafka (Strimzi 1.2.0, KRaft single node; ADR-005 operator, ADR-006 single-node).
+#
+# Shape deviations from the exemplar `docs/manifests/exemplars/kafka-strimzi.yaml`, all forced by
+# the operator version this network can reach (Strimzi 1.2.0, verified against the vendored CRDs
+# and the upstream 1.2.0 docs — see docs/DECISIONS.md ADR-017):
+#
+#   1. apiVersion is `kafka.strimzi.io/v1`, not `v1beta2`. The 1.2.0 CRDs serve v1 only
+#      (`spec.versions[*].name == v1` for every Kafka CRD in the vendored bundle).
+#   2. `spec.kafka.replicas` and `spec.kafka.storage` no longer exist. In Strimzi 1.x the node
+#      count, storage, resources and JVM options live in a separate `KafkaNodePool` CR, and a
+#      KRaft cluster is always TWO resources (Kafka + KafkaNodePool) — a Kafka CR without a
+#      node pool has no nodes at all.
+#   3. `spec.kafka.image` is pinned explicitly to the staged internal-registry image so the
+#      broker never resolves an upstream registry at runtime (I-11). The kustomize `images:`
+#      transformer cannot rewrite fields inside a custom resource, so digest-pins/ rewrites it
+#      with a JSON patch — this manifest therefore carries the canonical
+#      `registry.nagar.internal:5000/...` reference with a placeholder digest.
+#
+# Documented deviation from the exemplar's `spec.entityOperator`: NOT deployed. The charter
+# (PHASES.md §2 Phase 4) asks for the Kafka resource, the topics Job, the DLQ topic and
+# NetworkPolicies; this phase creates every topic through the idempotent Job below (frozen
+# parity — the same mechanism the Compose stack used), declares no KafkaTopic/KafkaUser CRs, and
+# consumes no user credentials. Enabling it would add two JVMs on a host whose 7.6 GiB container
+# allocation is the binding constraint (risk R1), for a capability nothing consumes. Enabling it
+# later is `spec.entityOperator: {topicOperator: {}, userOperator: {}}` plus the delegation
+# RoleBinding noted in strimzi-watched-rbac.yaml.
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  # Dual-role single node: this node is both the KRaft controller quorum and the broker
+  # (ADR-006 accepts the single-node risk; the pool model makes splitting the roles later a
+  # manifest edit, not a migration).
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 20Gi
+        # `class`, not `storageClass` — the 1.2.0 CRD field name (verified against the CRD).
+        class: local-path
+        # Rollback safety (PHASES.md §3): deleting the Kafka resource must never take the data
+        # with it. Deleting the PVC is then an explicit, typed operator action.
+        deleteClaim: false
+        # Nominate the KRaft metadata log volume explicitly. With one volume it is also what the
+        # operator would choose, but declaring it keeps the live spec byte-comparable with git.
+        kraftMetadata: shared
+  # Minimal footprint for the ~7.6 GiB container allocation (risk R1). Heap is capped well
+  # below the container limit so the JVM cannot be OOM-killed by its own default heap sizing.
+  jvmOptions:
+    "-Xms": 512m
+    "-Xmx": 768m
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+  template:
+    pod:
+      metadata:
+        # Kyverno `require-nagar-labels` evaluates these pod templates at admission: every pod
+        # Strimzi materializes must carry part-of + nagar.io/phase. Strimzi's own labels
+        # (strimzi.io/*, app.kubernetes.io/instance, app.kubernetes.io/managed-by:
+        # strimzi-cluster-operator) are added on top; managed-by is deliberately NOT overridden,
+        # because Strimzi — not Argo — is what manages these pods.
+        labels:
+          app.kubernetes.io/name: kafka
+          app.kubernetes.io/part-of: nagarvault
+          app.kubernetes.io/component: broker
+          nagar.io/phase: "04"
+          nagar.io/tier: "2"
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+    kafkaContainer:
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+    initContainer:
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: nagar
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  kafka:
+    version: 4.2.0
+    # Metadata version must be a string and must be supported by the Kafka version in use.
+    # 4.2-IV1 is the KRaft metadata version for Kafka 4.2.0 (Strimzi 1.2.0 docs).
+    metadataVersion: "4.2-IV1"
+    image: registry.nagar.internal:5000/strimzi-kafka@sha256:REPLACED-BY-DIGEST-PINS
+    listeners:
+      # 29092 is the frozen registry port (CONVENTIONS §4, I-6, ADR-009). `plain` with tls:false
+      # is cluster-internal only: the only path in is the NetworkPolicy in networkpolicies.yaml
+      # (SECURITY §8). East-west mTLS is a documented future ADR, as in the exemplar.
+      - name: plain
+        port: 29092
+        type: internal
+        tls: false
+    config:
+      # Frozen parity with the Compose stack: single-replica internal topics, no auto-creation
+      # (topics come from the Job, idempotently — I-2).
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      auto.create.topics.enable: false
+    readinessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+    livenessProbe:
+      initialDelaySeconds: 15
+      timeoutSeconds: 5
+    template:
+      pod:
+        metadata:
+          # Same label set as the node pool template: the pool template wins for pool-managed
+          # pods, this one covers any Kafka pod the operator creates outside the pool.
+          labels:
+            app.kubernetes.io/name: kafka
+            app.kubernetes.io/part-of: nagarvault
+            app.kubernetes.io/component: broker
+            nagar.io/phase: "04"
+            nagar.io/tier: "2"
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+      kafkaContainer:
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+---
+# Stable bootstrap hostname (ADR-009 / CONVENTIONS §3): clients always speak
+# kafka-bootstrap.nagar-platform.svc.cluster.local:29092, whatever Strimzi names its own
+# generated services. The selector targets only broker pods — the labels are the ones declared
+# in the templates above, which the entity operator (not deployed) and any sidecar never get.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-bootstrap
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "04"
+    nagar.io/tier: "2"
+spec:
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: broker
+  ports:
+    - name: plain
+      port: 29092
+      targetPort: 29092
+      protocol: TCP
