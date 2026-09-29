@@ -62,6 +62,12 @@ spec:
                 secretKeyRef:
                   name: nagar-minio-server
                   key: mcHostLocal
+            # readOnlyRootFilesystem + non-root uid means mc cannot write its default
+            # ~/.mc config; point both HOME and MC_CONFIG_DIR at the writable volume.
+            - name: HOME
+              value: /tasks
+            - name: MC_CONFIG_DIR
+              value: /tasks/.mc
           command: ["/bin/sh", "-c"]
           args:
             - |
