@@ -53,7 +53,10 @@ globalThis.__ingestion = {
 
 const app = buildApp();
 const server = http.createServer(app);
-const port = parseInt(process.env.INGESTION_PORT || '3000', 10);
+// NB: must NOT be named INGESTION_PORT — the k8s Service named `ingestion` makes the
+// kubelet inject INGESTION_PORT=tcp://<clusterip>:3000 (service-link env), and parseInt
+// of that is NaN (ERR_SOCKET_BAD_PORT crash, G7e.1). See OPERATIONS §12.28.
+const port = parseInt(process.env.INGESTION_HTTP_PORT || '3000', 10);
 
 async function main() {
   await producer.connect();

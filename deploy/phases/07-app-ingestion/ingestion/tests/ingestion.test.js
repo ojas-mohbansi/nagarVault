@@ -23,7 +23,7 @@ import http from 'node:http';
 import jwt from 'jsonwebtoken';
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-not-a-real-credential';
-process.env.INGESTION_PORT = process.env.INGESTION_PORT || '0';
+process.env.INGESTION_HTTP_PORT = process.env.INGESTION_HTTP_PORT || '0';
 process.env.UPLOAD_TTL_S = process.env.UPLOAD_TTL_S || '600';
 
 const secret = process.env.JWT_SECRET;

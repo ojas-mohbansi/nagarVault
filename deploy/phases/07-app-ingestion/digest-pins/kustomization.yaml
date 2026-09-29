@@ -7,7 +7,9 @@ kind: Component
 # header (Docker-Content-Digest) and machine-compared against this file before landing.
 #   mission/nagar-ingestion:phase7e-1
 #     sha256:ecd0ad621c1874f0ab134a34bb901ac8655d9675169b33f14334e09303f46148
+#   mission/nagar-ingestion:phase7e-2  (NaN-port fix: INGESTION_HTTP_PORT, G7e.1)
+#     sha256:5384c153ff486e0c4227576866766518d2bddc0154d2c020617399232f2144a8
 images:
   - name: registry.nagar.internal:5000/nagar-ingestion
     newName: k3d-nagar.localhost:5000/mission/nagar-ingestion
-    digest: sha256:ecd0ad621c1874f0ab134a34bb901ac8655d9675169b33f14334e09303f46148
+    digest: sha256:5384c153ff486e0c4227576866766518d2bddc0154d2c020617399232f2144a8
