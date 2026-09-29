@@ -1,21 +1,23 @@
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
-# Digest pins for Phase 3 images (invariant I-5). Resolution 2026-09-29:
+# Digest pins for Phase 3 images (invariant I-5: digest, never a movable tag). Resolution
+# 2026-09-29:
 # - redis: pulled to host, digest from `docker image inspect .RepoDigests`
-# - minio/mc: built from source tag RELEASE.2025-08-13T08-35-41Z (ADR-015; upstream
-#   registries unreachable) and staged into the local registry — digest recorded at
-#   push time in the phase log; pins updated by the images transformer below.
-# - minio server: same source-build path at tag RELEASE.2025-10-15T17-29-55Z.
+# - minio/mc: built from source tags RELEASE.2025-10-15T17-29-55Z (server) and
+#   RELEASE.2025-08-13T08-35-41Z (mc) per ADR-015 (upstream registries unreachable), staged
+#   into the local registry, digest read back from the registry at push time
+#   (`docker image inspect .RepoDigests`). Source-built binaries carry an extra checksum gate
+#   in images/*.Dockerfile, so the pin covers both the compile output and the staged manifest.
 # Base manifests reference registry.nagar.internal:5000 (I-11); this tree rewrites to
 # the k3d registry (Day 0 evidence G0.2: push via localhost:35000, pull via the
 # k3d-nagar.localhost:5000 mirror).
 images:
   - name: registry.nagar.internal:5000/minio
     newName: k3d-nagar.localhost:5000/mission/minio
-    newTag: phase3
+    digest: sha256:d8464e6cc50064010cf17e1a1b74e4cf2fc0d9b23ab6bf0ff521bd2ea0af7576
   - name: registry.nagar.internal:5000/minio-mc
     newName: k3d-nagar.localhost:5000/mission/minio-mc
-    newTag: phase3
+    digest: sha256:72e8defdcea3777f3935cb0f834294aa7b5bf210f85572939a363e65fda6326e
   - name: registry.nagar.internal:5000/busybox
     newName: k3d-nagar.localhost:5000/mission/busybox
     # Day-0 staged single-platform busybox (mission log G0.2): proven pullable
