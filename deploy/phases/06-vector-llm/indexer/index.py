@@ -34,8 +34,14 @@ def log(msg: str) -> None:
 
 
 def doc_point_id(doc_id: str) -> int:
-    """Deterministic point id: same document id always maps to the same Qdrant point."""
-    return int.from_bytes(hashlib.sha256(doc_id.encode()).digest()[:8], "big", signed=True)
+    """Deterministic point id: same document id always maps to the same Qdrant point.
+
+    Qdrant accepts UNSIGNED integers (or UUIDs) as point ids — the original signed fold
+    produced negatives, which qdrant rejects with 'Format error in JSON body: value … is
+    not a valid point ID' (found by reproducing the Job's exact batch from the indexer
+    Deployment pod). u64 keeps the id deterministic AND collision-free at mission scale
+    (birthday bound ~5 billion docs)."""
+    return int.from_bytes(hashlib.sha256(doc_id.encode()).digest()[:8], "big", signed=False)
 
 
 def load_docs() -> list[dict]:
