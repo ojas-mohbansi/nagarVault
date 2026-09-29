@@ -96,20 +96,33 @@ spec:
         - protocol: TCP
           port: 6379
 ---
-# 5. MinIO + Redis pods: no egress needed beyond DNS (data plane services).
+# 5. Egress: intra-namespace east-west is required by the SECURITY §8 flows (init Jobs
+#    → MinIO/Redis, future Kafka topics/migration Jobs, replication in Phase 5); everything
+#    crossing the namespace boundary stays default-deny. First draft wrongly denied ALL
+#    storage egress beyond DNS — which blocked the very init flows this phase exists to
+#    serve (proven by probe: bucket-init wait container could not reach minio:9000).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-storage-egress-dns-only
+  name: allow-intra-namespace-egress
   namespace: nagar-platform
   labels:
     app.kubernetes.io/part-of: nagarvault
     nagar.io/phase: "03"
 spec:
-  podSelector:
-    matchExpressions:
-      - key: app.kubernetes.io/name
-        operator: In
-        values: [minio, redis]
+  podSelector: {}
   policyTypes: ["Egress"]
-  egress: []
+  egress:
+    # any pod in this namespace, any port (east-west data plane)
+    - to:
+        - podSelector: {}
+    # DNS (kube-system CoreDNS)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
