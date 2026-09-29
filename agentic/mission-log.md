@@ -1615,3 +1615,122 @@ trees build.
       think=false; execution through the queryService wall)
 - [x] RBAC/security paths: admin /ask gate-blocked (table-rbac pass-through); PII denylist
       enforced against model output; denylisted jti rejected — G7d.4/G7d.6
+
+## Phase 7e — ingestion backend (2026-09-30, k3d substrate)
+
+Fresh rebuild per ADR-013 in `deploy/phases/07-app-ingestion/`. Contracts read before code:
+ARCHITECTURE §3.2 (presigned flow, never-proxy-media, server-chosen topics, duplicate
+idempotency), §4.1 endpoint registry, §4.2 frozen topics, the 7c wire envelope from
+`worker/enrich.py` (producer must satisfy the consumer), SECURITY §6.2/§8 (secrets,
+egress), Phase-4 producer conventions.
+
+### G7e.1 — CrashLoopBackOff root-caused: k8s service-env injection (NaN port)
+
+Standing re-verification found 7e pods crash-looping: `RangeError [ERR_SOCKET_BAD_PORT]
+... Received NaN` at `runtime.js:60` (`server.listen(port)`), `port =
+parseInt(process.env.INGESTION_PORT || '3000', 10)`. Local/image checks parsed 3000 fine —
+the killer is Kubernetes service-link env: the Service named `ingestion` makes the kubelet
+inject `INGESTION_PORT=tcp://10.43.x.x:3000` into pods created after the Service existed;
+`parseInt("tcp://…")` = NaN. Hermetic tests cannot reproduce it (no service-env injection
+outside k8s) — they passed while prod crashed. Fix: app env renamed `INGESTION_HTTP_PORT`
+(default still the frozen 3000, I-6); commented at the read site; test seed updated.
+Image `phase7e-2`, digest `sha256:5384c153ff48…` read from the registry header and
+machine-compared with the rendered pin (`PIN-MATCHES-REGISTRY`). Pods Running. Recorded
+as OPERATIONS §12.28.
+
+### G7e.2 — Second boot defect exposed by real probes: minioOk fetched the bare S3 URL
+
+With pods up, `/health` returned `503 {"api":true,"minio":false,"kafka":true}`. In-pod
+probe: `GET http://minio…:9000/` → 403 (S3 auth on the bare base), `GET
+…:9000/minio/health/live` → 200. `minioOk()` appended the health path only in its
+env-less fallback branch. Fixed both branches to use `/minio/health/live`. Image
+`phase7e-3`, digest `sha256:ac905eee1c81…` (same machine-verified pin flow). `/health`
+→ `200 {"api":true,"minio":true,"kafka":true}` after Argo sync of the new mirror HEAD.
+Recorded as OPERATIONS §12.29.
+
+### G7e.3 — Third defect: sealed-secret pair drift (InvalidAccessKeyId on the real PUT)
+
+API E2E first pass: presign 201, but the direct-to-MinIO PUT returned **403
+`InvalidAccessKeyId`** — the commit gate then correctly answered 409 for the unverifiable
+attachment (gate proven by accident). Root cause: SECURITY §6.2's dual-seal contract says
+the `nagar-minio` (nagar-app) and `nagar-minio-server` (nagar-platform) seals carry the
+same values, but nothing enforced it: the Phase-1 seal (`0facdc8c`) never matched the
+Phase-3 server truth (`23f1efb5`); 7e's presigned PUTs were the first live consumer.
+Compared copies by hashing decoded values (`base64 -d | sha256sum` — never printed):
+`94b609f4…` vs `cb4a2b0e…` DRIFTED. Fix: re-sealed the consumer SealedSecret from the
+server Secret piped with metadata overrides (`kubeseal` — plaintext only in the pipe,
+never argv/disk/git), dropped the `mcHostLocal` key the server Secret carried but the
+consumer's original seal did not, `kubectl apply` of the same-content git object
+(sanctioned §9.4 transport exception), controller rewrote the Secret,
+`rollout restart deploy/ingestion` (sanctioned §9 table). Post-fix hash equality:
+`SECRET-ALIGNMENT-OK cb4a2b0e…`. Recorded as OPERATIONS §12.30.
+
+### G7e.4 — Cluster-internal E2E (`E2E-RESULT`, §12.26 choreography)
+
+JWT minted the real way: throwaway officer `off7e` created inside the auth pod via its own
+`insert_user`/`hash_password`, then a real `POST /login` → 200 + `session_token` cookie
+(Note: first mint attempt 401'd — I swapped `insert_user`'s hash/role args; row deleted,
+re-minted correctly). NetworkPolicy egress blocks ingestion→auth-service by design, so the
+token crossed pods via operator stdin only. Driver: `e2e/e2e-cluster.mjs` staged to pod
+`/tmp` (Bearer header — 7e's `requireJwt` is Bearer-only). Results:
+
+- `/health` 200 {api,minio,kafka all true}
+- `POST /api/v1/uploads/presign` → 201 {uploads:[…], ttlSeconds:600}
+- PUT bytes direct to MinIO via presigned URL → **200** (media never touches the API)
+- `GET /api/v1/uploads/:id` → 200 intent {pending, bucket/objectKey/size/subject}
+- `POST /api/v1/events` → **202 {eventId: evt-1afa9708…, topic:
+  nmc.complaints.raw.restricted.v1}** — server-chosen frozen topic (§4.2)
+- duplicate re-POST → **200 {duplicate:true}** with the same eventId (§3.2 idempotency)
+- unknown department → 400 `unknown department`; missing `description` → 400
+  `missing required payload field for complaints: description` (envelope contract)
+- `GET /api/v1/events/:id` → 200 {status: published, topic, dedupKey}
+
+Downstream leg: the 7c worker consumed the raw topic and enriched the row —
+`nmc_complaints` shows the exact `event_id`, `source_system='e2e'`,
+`source_record_id='e2e-7e-1790724073062'`, ward/category/status, `media_bucket='raw-media'`,
+`media_object_key` set, and the payload description verbatim. Topic→API→Kafka→worker→table
+proven end to end.
+
+### G7e.5 — Cleanup + platform gates
+
+Cleanup: `DELETE FROM nmc_complaints WHERE source_system='e2e'` (1), e2e sessions (1) and
+user (1); pod `/tmp` staging removed; MinIO fixture object removed (`FIXTURES-REMOVED 1`,
+deleted from the ingestion pod with the same S3 client); local token file shredded. The
+driver stays versioned at `deploy/phases/07-app-ingestion/e2e/e2e-cluster.mjs` (outside
+the image build context). Platform: 12/12 Applications Synced/Healthy (7e flipped
+Degraded→Healthy); all 25 kustomize trees build with `--load-restrictor
+LoadRestrictionsNone` (3 Components skipped by design); node 8.0/13.65 GiB (58%), disk
+391G free.
+
+### Session lessons
+
+(1) The E2E stdout ate my first two staging attempts — one stdin per exec; stage the
+driver and pipe the token in separate calls. (2) kubeseal round-trips every key of the
+source Secret; trim keys the target's original seal didn't carry (sed on the sealed blob,
+not plaintext edits). (3) Real-surface verification keeps paying: the crash (env
+injection), the 403 (health path), and the InvalidAccessKeyId (secret drift) were all
+invisible to the hermetic suite and each found within one probe of the real system.
+
+### Invariants touched
+
+**I-1** — mirror/Argo only; out-of-band: §9.4 mirror advances ×3, same-content SealedSecret
+apply + sanctioned `rollout restart` (§12.30 remedy), deletion of my own fixtures/user.
+**I-2** — unchanged (intents/keys all TTL'd; upserts idempotent). **I-3** — no secrets in
+git; sealed blobs only; token staged ephemerally via stdin, shredded; plaintext never hit
+argv/disk. **I-4** — probes/resources/PDB/NetworkPolicy to the letter; egress unchanged
+(the E2E 401/403 path proved the policy, not a gap). **I-5** — phase7e-2/phase7e-3 digests
+read from the registry header, machine-verified against the pin. **I-6** — 3000 unchanged.
+**I-7/I-8** — no alerts touched; no ADR: all three defects are repairs toward documented
+contracts (SECURITY §6.2 dual-seal, ARCH §3.2/§4.1), no architectural choice made. **I-9**
+— scope: `deploy/phases/07-app-ingestion/**` (+ the pre-existing cross-phase SealedSecret
+re-seal in `deploy/phases/01-substrate/secrets/`, the documented cross-phase defect-fix
+precedent), two app-of-apps files, mirror tags. **I-10** — frozen files untouched. **I-11/
+I-12** — internal registry only; all trees build.
+
+### Phase 7e exit criteria — met
+
+- [x] presign→PUT→event→Kafka E2E — G7e.4 (`E2E-RESULT` 202 commit + 200 duplicate + 200
+      media PUT; topic→table enrichment witnessed in `nmc_complaints`)
+- [x] Malformed input rejected per the envelope contract — G7e.4 (400 unknown-department,
+      400 missing-description; unverifiable attachment 409 by the statObject gate)
+- [x] Platform gates green — G7e.5 (12/12 apps, all trees build, headroom OK)
