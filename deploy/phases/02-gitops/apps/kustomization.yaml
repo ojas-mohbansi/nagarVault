@@ -8,3 +8,4 @@ resources:
   - nagar-argocd-self.yaml
   - nagar-phase3-object-cache.yaml
   - nagar-phase4-messaging.yaml
+  - nagar-phase5-postgres.yaml
