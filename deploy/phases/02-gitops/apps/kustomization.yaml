@@ -15,3 +15,4 @@ resources:
   - nagar-phase7c-worker.yaml
   - nagar-phase7d-slm.yaml
   - nagar-phase7e-ingestion.yaml
+  - nagar-phase7f-admin.yaml
