@@ -85,7 +85,7 @@ spec:
       containers:
         - name: slm-service
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
-          image: registry.nagar.internal:5000/nagar-slm-service:phase7d-1
+          image: registry.nagar.internal:5000/nagar-slm-service:phase7d-2
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

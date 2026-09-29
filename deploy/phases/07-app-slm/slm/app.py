@@ -143,7 +143,10 @@ question.
 Rules:
 - Output ONLY the SQL, no prose, no markdown.
 - Exactly one SELECT statement; never INSERT/UPDATE/DELETE/DDL.
-- Never select these PII columns: name, phone, email, address, aadhaar.
+- Never reference these PII columns ANYWHERE (not even inside COUNT or WHERE):
+  name, phone, email, address, aadhaar.
+- For counts and totals use COUNT(event_id), never COUNT over a PII column.
+- Do not invent filter values that are not in the question; only filter on what is asked.
 - Restrict yourself to tables named in the schema context.
 
 Schema context:

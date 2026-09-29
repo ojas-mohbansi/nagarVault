@@ -5,9 +5,10 @@ kind: Component
 # Resolution 2026-09-30: built on the host from this tree (python:3.12-slim; G0.3), pushed
 # via localhost:35000, digest read from the registry header (Docker-Content-Digest) and
 # machine-compared against this file before landing.
-#   mission/nagar-slm-service:phase7d-1
-#     sha256:5285a33e1f9ab6490237a3e5b57c7cc2ac8c64bd025721cbc723eb3a88717212
+#   mission/nagar-slm-service:phase7d-1 (superseded: prompt hardened after live E2E)
+#   mission/nagar-slm-service:phase7d-2
+#     sha256:c83f6435c28722116984457e71c949cb261380e776de972bc0974305e242726b
 images:
   - name: registry.nagar.internal:5000/nagar-slm-service
     newName: k3d-nagar.localhost:5000/mission/nagar-slm-service
-    digest: sha256:5285a33e1f9ab6490237a3e5b57c7cc2ac8c64bd025721cbc723eb3a88717212
+    digest: sha256:c83f6435c28722116984457e71c949cb261380e776de972bc0974305e242726b
