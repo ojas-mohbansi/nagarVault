@@ -628,3 +628,206 @@ exit=0   # no value difference left
 - [x] `nagar-phase3-object-cache` Synced/Healthy at rev `f1e8f4d3`; the redis pod was not touched
 - [x] `kustomize build` clean; server-side dry run admitted by live Kyverno; I-9 file scope respected
 - [x] ADR-015 + ADR-016 written; PHASES ledger flipped; OPERATIONS §12.13–12.14 added
+
+---
+
+## Phase 4 — Messaging (2026-09-29)
+
+**Entry checklist (PHASES.md §2 Phase 4):** substrate + GitOps + object/cache complete (all
+Applications Synced/Healthy before this tree landed); `nagar-platform` at PSA `restricted`;
+Kyverno Enforce policies live; internal-registry round-trip proven; Strimzi images staged by
+digest and pullable in-cluster.
+
+### Deliverables (subtree: `deploy/phases/04-messaging/` + vendored operator)
+
+- **Strimzi Cluster Operator 1.2.0** vendored static (`deploy/third_party/strimzi/v1.2.0/`,
+  upstream sha256 recorded) and relocated to `nagar-system` (control plane, beside Argo CD and the
+  Sealed Secrets controller) with `STRIMZI_NAMESPACE=nagar-platform`.
+- **Kafka KRaft single node** as two CRs — `Kafka/nagar` + `KafkaNodePool/dual-role` (ADR-006's
+  single-node risk acceptance unchanged; the pool split makes widening a manifest edit, not a
+  migration). Client listener on the frozen port **29092** (CONVENTIONS §4, I-6).
+- **Idempotent topics Job** creating the six frozen topics (`--if-not-exists`), plus
+  **`allow-kafka-ingress`** and **`allow-kafka-api-egress`** NetworkPolicies.
+- **Digest pins (I-5)** for `mission/strimzi-operator` and `mission/strimzi-kafka`.
+- **Neither CR declares the Entity Operator** — documented reason and one-line reversal path in
+  `kafka.yaml`'s header.
+
+### Gate evidence
+
+**G4.1 — the six frozen topics exist and an event round-trips through the broker.** Run against
+`kafka-bootstrap.nagar-platform.svc.cluster.local:29092` (the frozen DNS name from CONVENTIONS §3,
+not the operator's generated one), from a client inside the image the manifests pin:
+
+```
+$ MSYS_NO_PATHCONV=1 kubectl exec -n nagar-platform nagar-dual-role-0 -- \
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-bootstrap…:29092 --list
+ ev.bus.telemetry.raw.v1
+ health.camps.raw.v1
+ nmc.complaints.dlq.v1
+ nmc.complaints.raw.restricted.v1
+ traffic.events.raw.v1
+ water.sensors.raw.v1
+
+$ echo '{"eventId":"p4-roundtrip-001","kind":"traffic.events.raw.v1","ts":"…"}' \
+  | kubectl exec -i nagar-dual-role-0 -- …/kafka-console-producer.sh --topic traffic.events.raw.v1
+PRODUCED
+$ …/kafka-console-consumer.sh --topic traffic.events.raw.v1 --from-beginning --max-messages 1
+{"eventId":"p4-roundtrip-001","kind":"traffic.events.raw.v1","ts":"…"}
+Processed a total of 1 messages
+```
+
+The same job's own log is the second, independent witness for topic creation (it ran `create`
+six times and then listed them back): `nagar-kafka-topics` → `Complete 1/1`.
+
+**G4.2 — the broker is up and the Kafka CR is Ready:**
+
+```
+$ kubectl get kafka nagar -n nagar-platform
+NAME    READY   WARNINGS   KAFKA VERSION   METADATA VERSION
+nagar   True               4.2.0           4.2-IV1
+$ … -o jsonpath='{.status.conditions[*].type} {.status.clusterId}'
+Ready True · 4MHMqdk5QfKu4oGbwclETQ
+$ kubectl get knp dual-role -n nagar-platform
+NAME        DESIRED REPLICAS   ROLES                     NODEIDS
+dual-role   1                  ["controller","broker"]   [0]
+```
+
+**G4.3 — GitOps convergence, all five Applications:**
+
+```
+$ kubectl get applications -n nagar-system
+nagar-argocd-self           Synced   Healthy
+nagar-mission-root          Synced   Healthy
+nagar-phase1-substrate      Synced   Healthy
+nagar-phase3-object-cache   Synced   Healthy
+nagar-phase4-messaging      Synced   Healthy     ← rev 73e08b97
+```
+
+**G4.4 — the Kyverno carve-out did not weaken the general rule** (a PSS-compliant pod carrying no
+mission labels is still denied, by *both* rules):
+
+```
+$ kubectl apply --dry-run=server -f compliant-unlabelled-pod.yaml
+Error from server (Forbidden): … denied the request:
+require-nagar-labels:
+  check-part-of-label: '… rule check-part-of-label failed at path /metadata/labels/'
+  check-phase-label:  '… rule check-phase-label failed at path /metadata/labels/'
+```
+
+**G4.5 — `kustomize build` clean (I-12) and admitted by live Kyverno:** phase-1 125 docs,
+phase-2 64, phase-3 10, phase-4 31; `kubectl apply --dry-run=server` on the phase-4 build → every
+document admitted.
+
+**G4.6 — in-cluster digest pull (I-5), observed on the real pods:** kubelet's own events report
+`Container image "k3d-nagar.localhost:5000/mission/strimzi-kafka@sha256:ef0f3302…" already present
+on machine` for both the topics Job and the broker, i.e. the pinned digests resolve and run — not
+just that they were pushed. (The pre-flight `crictl pull` recorded in
+`digest-pins/kustomization.yaml` was performed when the images were staged; this entry is the
+independent end-to-end witness.)
+
+### Five convergence traps (each cost a deploy; all five are invisible to build/dry-run)
+
+Phase 4's failures were qualitatively different from Phase 3's: every one of them was
+**upstream-documented but unguessable**, and none could be caught by `kustomize build` or
+`kubectl apply --dry-run=server`, because all five only manifest once the Cluster Operator
+reconciles against a live API server. They are the argument for the "verify against official docs
+and live behaviour, not memory" rule in MISSION.md §3.
+
+1. **Node-pool adoption (empty cluster, no error in the manifest).** The operator refused the
+   entire Kafka CR — `InvalidConfigurationException: No KafkaNodePools found for Kafka cluster
+   nagar` — and created **no pods at all**. The pool is joined to the cluster by *two* fields that
+   must both be present: `strimzi.io/node-pools: enabled` on the Kafka CR and
+   `strimzi.io/cluster: nagar` on the pool. Symptom shape: a `Degraded` Application over an
+   otherwise empty `Kafka` status.
+2. **The operator owns the pod labels (a silent selector failure).** Strimzi hard-codes
+   `app.kubernetes.io/*` on the pods it creates and drops `component` entirely (upstream: "cannot
+   be overridden through template configuration"). Two consequences, one loud
+   (`require-nagar-labels` denied the broker pod, because `part-of` is forced to `strimzi-nagar`)
+   and one **silent**: `kafka-bootstrap`'s Service selector and the Kafka NetworkPolicy were both
+   built on `component: broker`, so they selected **nothing** — a Service with no endpoints and a
+   policy with no subject, both looking correct in git. Selectors now use Strimzi's own label set,
+   copied from its generated `nagar-kafka-bootstrap`, and the pod templates no longer declare
+   labels the operator will discard.
+3. **The broker needs the Kubernetes API to start.** Strimzi 1.x loads the cluster CA / trust
+   bundle through Kafka's `KubernetesSecretConfigProvider`, not a mounted volume, so the broker
+   reads Secret `nagar-trustbundle` over the API server before it can boot. Phase 3's namespace
+   `default-deny` blocked it and the pod CrashLoopBackOff'd on `java.net.ConnectException`.
+   `allow-kafka-api-egress` was added, port-scoped rather than peer-scoped (a NetworkPolicy peer
+   cannot name a k3s host process, and the ClusterIP-vs-post-DNAT address makes even an `ipBlock`
+   guess a coin flip).
+4. **The operator's admin client does not use the client port.** With the broker running and
+   serving clients, every reconciliation still ended in `Error getting broker config:
+   TimeoutException`, and the `Kafka` CR sat at `NotReady`. Strimzi 1.x runs three listeners
+   (`PLAIN-29092`, `REPLICATION-9091`, `CONTROLPLANE-9090`); the operator's AdminClient uses
+   **REPLICATION-9091**, which the ingress policy — written for the documented client port — did
+   not allow. Confirmed by probing the operator pod instead of guessing:
+   `BLOCKED 9090 · BLOCKED 9091 · OPEN 29092`. Ingress is now one rule per listener, with 9090
+   restricted to broker pods.
+5. **A vendored CRD that can never converge.** `kafkas.kafka.strimzi.io` was `OutOfSync` after
+   every sync forever while its eleven siblings from the same file converged. `argocd app diff`
+   rendered the entire drift as one line — `> properties: {}` — which identified it as the API
+   server *pruning an empty schema node*, not human drift. Fixed by declaring the stored form with
+   a JSON 6902 patch in this phase (ADR-016's declare-never-mask rule, applied to a CRD);
+   `ignoreDifferences` was rejected because it would hide real schema drift on the one CRD most
+   likely to move under a Strimzi upgrade. Diagnosis note: the first comparison script reported
+   "no difference" because it skipped any key named `status`/`annotations` **at every depth** — and
+   a CRD schema contains those as property names. The false negative is worth remembering.
+
+Two process findings came out of this phase and are now written down rather than remembered:
+**ADR-017** (the 1.2.0 contract: node-pool adoption, label ownership, API access, listener ports)
+and **ADR-018** (advancing the git transport is an out-of-band operator step — the mirror is
+circular by construction, since Argo reads the new tag *from* the pod whose tag git declares; the
+cycle order is content → tag bump → payload → push → transport apply, recorded as §9.4).
+
+### Honest correction to the Phase 3 record
+
+Phase 3's entry claims the topics-style Job "is deleted+recreated exactly when its spec changes
+and is *not* re-run when it does not (no churn — I-2)". This phase's evidence **contradicts that**:
+`nagar-kafka-topics` was deleted and recreated on syncs where its spec had not changed (observed
+across four consecutive syncs, each producing a fresh pod: `…-dk9fv → …-4sv5 → …-qw8rb → …-9gv8n`).
+`Replace=true` is documented by Argo as delete-and-recreate, and so it does — on every sync. The
+run itself is harmless (the Job is idempotent, `--if-not-exists`, ~4 s), so this is **reported as
+drift in the record, not silently fixed**: the right remedy is to drop `Replace=true` and keep
+`Force=true`, which requires a verification cycle of its own and is logged here as an open item.
+
+### Invariants touched
+
+- **I-1** — every workload change landed through the mirror/Argo path; the single out-of-band call
+  per cycle is the transport step, now sanctioned and documented (ADR-018, §9.4). **I-2** — the
+  topics Job re-runs idempotently against a populated broker without error; the `Replace` churn is
+  recorded above. **I-3** — no plaintext secret added. **I-4** — both NetworkPolicies are explicit
+  and least-privilege; resources/securityContext are declared on the pool; Strimzi's own PDB
+  exists (`nagar-kafka`) and the pool's replica count is 1, so no PDB obligation attaches.
+  **I-5** — both images digest-pinned, proven running. **I-6** — 29092 unchanged. **I-9** — scope
+  below. **I-11** — no manifest resolves an upstream registry. **I-12** — all four trees build.
+- **I-9 file scope** (`git diff --name-only b37644b9..HEAD`): `deploy/phases/04-messaging/**`, the
+  vendored `deploy/third_party/strimzi/`, the `deploy/phases/02-gitops/git-mirror/` transport tag
+  (ADR-014 practice), `docs/`, and **one Phase-1 file** — `deploy/phases/01-substrate/policies.yaml`
+  (the scoped Strimzi carve-out, ADR-017 §4). That last one is a deliberate, documented
+  cross-phase amendment, the same shape as the earlier declaration of the Kyverno webhook defaults
+  (`ce2fef91`); the alternative was to weaken the label rule for every pod in the cluster.
+
+### Open items / risks
+
+- **R1 (memory) unchanged and comfortable:** the node container reports ~2.3–3 GiB of 7.6 GiB with
+  MinIO, Redis, the broker, the operator and Argo running; the pending `~/.wslconfig` restart is
+  still an owner decision and still not required.
+- **R8 (supply chain) unchanged:** still no SBOM/scan/signature for any image; digest pinning plus
+  the build-time checksum gate remain the only controls in force. Phase 9.
+- **New, low severity — `Replace=true` churn on Jobs** (see the correction above).
+- **New, low severity — `allow-kafka-api-egress` is port-scoped, not peer-scoped.** It is the one
+  deliberately imprecise rule in the namespace; ADR-017 §5 records the exact reasoning and the
+  upgrade path (control-plane `ipBlock`) for Phase 9.
+- **Structural, deferred to Phase 9/10 — the git transport is inside the tree it serves**
+  (ADR-018). The step is sanctioned and scripted; the cleanup is not done.
+
+### Phase 4 exit criteria — met
+
+- [x] Kafka CR `Ready True`, Kafka 4.2.0 / metadata 4.2-IV1 — G4.2
+- [x] The six frozen topics exist (ARCHITECTURE §4.2) and an event round-trips — G4.1
+- [x] DLQ topic present (`nmc.complaints.dlq.v1`) — G4.1
+- [x] `nagar-phase4-messaging` Synced/Healthy at rev `73e08b97`; all five Applications Synced — G4.3
+- [x] `kustomize build` clean on every tree; live Kyverno admits every document — G4.5
+- [x] Label policy still denies unlabelled pods after the carve-out — G4.4 (negative proof)
+- [x] Both images digest-pinned and observed running — G4.6 (I-5)
+- [x] ADR-017 + ADR-018 written; PHASES ledger flipped; OPERATIONS §9.4 + §12.15–12.19 added
