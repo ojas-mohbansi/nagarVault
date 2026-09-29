@@ -139,7 +139,9 @@ Reading order is enforced by review. If your change touches data plane, read §4
 
 ## 7. Current state of the world
 
-**Phase 0 (this documentation suite) is complete. Phases 1–10 are not yet implemented.**
+**Phase 0 (this documentation suite) is complete. Phases 1–5 are implemented and verified on
+the disposable k3d substrate (see `docs/PHASES.md` for the ledger and `agentic/mission-log.md`
+for gate evidence); Phases 6–10 are not yet implemented.**
 
 - The runtime substrate today is **Docker Compose** (frozen per I-10). The Kubernetes manifests in
   `docs/manifests/exemplars/` are canonical reference shapes, not yet applied anywhere.

@@ -831,3 +831,216 @@ drift in the record, not silently fixed**: the right remedy is to drop `Replace=
 - [x] Label policy still denies unlabelled pods after the carve-out — G4.4 (negative proof)
 - [x] Both images digest-pinned and observed running — G4.6 (I-5)
 - [x] ADR-017 + ADR-018 written; PHASES ledger flipped; OPERATIONS §9.4 + §12.15–12.19 added
+
+---
+
+## Phase 5 — Relational store (2026-09-29)
+
+**Entry checklist (PHASES.md §2 Phase 5):** Phases 1–4 complete (all Applications Synced/Healthy
+before the tree landed); `nagar-postgres-app` SealedSecret present from Phase 1; `pg-backups`
+bucket present from Phase 3 (hard prerequisite since Barman Cloud 3.16 no longer creates buckets —
+ADR-019 §2); internal-registry round-trip proven (G0.2).
+
+### Deliverables (subtree: `deploy/phases/05-postgres/` + vendored `deploy/third_party/cnpg/`)
+
+- **CloudNativePG 1.30.1 controller** vendored static (`deploy/third_party/cnpg/v1.30.1/`,
+  upstream sha256 recorded), kept in its upstream-native `cnpg-system` namespace (ADR-019 §3),
+  PSS-labelled by patch. Controller is PSS-restricted-compliant as shipped (uid 10001, drop ALL,
+  RO rootfs) — nothing patched, documented why.
+- **`Cluster/postgres`** — 2 instances, PostgreSQL **15.17** (`15.17-system-trixie` line of the
+  CNPG image, chosen because the legacy stack pinned `postgres:15-alpine` and the exemplar says
+  "postgres:15 line" — ADR-019 §1), `nagardb` owned by `nagar`, native `barmanObjectStore` backups
+  to `s3://pg-backups/` with gzip WAL+data and a 14-day retention window, `prefer-standby` backup
+  target, `inheritedMetadata` carrying the mission labels onto operator-created pods.
+- **`001_create_tables.sql`** — authored fresh (ADR-019 §9): `users`/`sessions`/`audit_logs` + the
+  five department tables, every statement `IF NOT EXISTS`-equivalent, PII columns named exactly as
+  the queryService denylist expects, `source_system + source_record_id` unique per table as the
+  §3.2 duplicate key, officer roles as NOLOGIN roles with SELECT-only grants (SECURITY §3.3 "second
+  wall"), `nagar` a member of both officer roles for Phase-7b `SET ROLE`.
+- **Migration Job** on the operator-managed superuser (ADR-019 §6), gated by a
+  `wait-for-postgres` init container, SQL delivered via a hash-suffixed kustomize ConfigMap.
+- **`ScheduledBackup/postgres-daily`** — `0 0 3 * * *` + `immediate: true` (create-time trigger,
+  not per-sync).
+- **Restore drill** (`restore-drill/`, ADR-020) — buildable, deliberately unreconciled: canary
+  Job → on-demand Backup → scratch `Cluster` recovering via `externalClusters` + `bootstrap.recovery`
+  → verify Job that connects **as `nagar` with the sealed app password** and asserts tables,
+  canary, and the grant matrix.
+- **NetworkPolicies** — `allow-postgres-ingress` (5432 from namespace + nagar-app; **8000 from
+  cnpg-system**, the operator→instance channel upstream documents), `allow-postgres-api-egress`
+  (ports 443/6443, port-scoped, the ADR-017 §4 precedent).
+- **SealedSecret `nagar-postgres-bootstrap`** — `kubernetes.io/basic-auth` with
+  `username=nagar` and **the password Phase 1 already sealed into the app tier's `databaseUrl`**
+  (ADR-019 §5): read from the live unsealed Secret, re-sealed offline with `--cert`, plaintext
+  never printed, shredded after sealing. `bootstrap.initdb.secret` then pins it.
+- **Digest pins (I-5):** `mission/cnpg-operator` `sha256:b0f9805b…`; `mission/cnpg-postgresql`
+  `sha256:0e1a5a4e…` (registry-read-back; differs from the upstream index digest
+  `dfe703aa…` — G0.3 note 3). One operand image serves cluster + client Jobs (uid 26 + `fsGroup`
+  on a tmp emptyDir HOME); the exemplar's separate `postgres:15-alpine` client image was
+  dropped.
+
+### Gate evidence
+
+**G5.1 — cluster healthy, migration applied and idempotent:**
+
+```
+$ kubectl get cluster postgres -n nagar-platform
+NAME   AGE  INSTANCESTATUS  ...
+→ `kubectl get cluster postgres` → phase "Cluster in healthy state"
+$ kubectl get pods -n nagar-platform | grep postgres
+postgres-1  1/1 Running  0
+postgres-2  1/1 Running  0
+$ kubectl get jobs -n nagar-platform → nagar-db-migrate Complete 1/1 (56s)
+job log tail: 8×ALTER TABLE · 5×GRANT · GRANT ROLE ×2 · migrations complete
+$ # idempotency: full re-apply of 001_create_tables.sql with ON_ERROR_STOP=1
+→ 0 errors; row counts unchanged (users=0, nmc_complaints=0, audit_logs=0)
+$ # all eight tables listed via \dt as nagar
+```
+
+**G5.2 — `SELECT 1` via `postgres-rw` as the application role, with the Phase-1 password:**
+
+```
+$ PW=$(kubectl -n nagar-platform get secret nagar-postgres-bootstrap -o jsonpath='{.data.password}' | base64 -d)
+$ kubectl exec -n nagar-platform postgres-1 -- env PGPASSWORD=$PW psql \
+    -h postgres-rw.nagar-platform.svc.cluster.local -U nagar -d nagardb -tAc \
+    "SELECT 'AUTH-OK', current_user, current_database();"
+AUTH-OK|nagar|nagardb
+```
+
+This is the credential contract proven end-to-end: the password sealed in Phase 1 for the app
+tier authenticates the role that owns `nagardb`.
+
+**G5.3 — grant matrix (SECURITY §3.3) enforced in the database:**
+
+```
+SELECT 'nmc->health:'||has_table_privilege('nmc_officer','health_camp_records','SELECT')...
+→ nmc->health:false  health->health:true  nmc->complaints:true
+```
+
+**G5.4 — backup completed into MinIO:**
+
+```
+$ kubectl get backup -n nagar-platform
+postgres-daily-20260929101401  postgres  barmanObjectStore  completed
+$ MSYS_NO_PATHCONV=1 kubectl exec -n nagar-platform minio-0 -- sh -c \
+    'ls /data/pg-backups/postgres/; ls /data/pg-backups/postgres/base'
+base  wals
+20260929T102802        ← WAL archive `wals/0000000100000000` present alongside
+```
+
+**G5.5 — restore drill (ADR-020, applied+deleted per §9.5):**
+
+```
+$ kustomize build …/restore-drill | kubectl apply -f -   (5 docs)
+→ canary=Complete · backup pg-drill-backup=completed ·
+  cluster postgres-restore-drill="Cluster in healthy state"
+$ kubectl logs job/pg-drill-verify   (final state)
+--- restored tables --- 8/8 present (nmc_complaints rows=1)
+--- canary --- canary rows=1 (written before the backup, read after the restore)
+--- officer role matrix --- nmc_officer→health=f · health_officer→health=t
+RESTORE-DRILL-VERIFIED
+$ kustomize build …/restore-drill | kubectl delete -f -  → "drill fully removed"
+```
+
+**G5.6 — GitOps convergence, all six Applications:**
+
+```
+nagar-argocd-self           Synced  Healthy
+nagar-mission-root          Synced  Healthy
+nagar-phase1-substrate      Synced  Healthy   ← re-healthy after the 12.23 repair
+nagar-phase3-object-cache   Synced  Healthy
+nagar-phase4-messaging      Synced  Healthy
+nagar-phase5-postgres       Synced  Healthy   ← rev e82f268d
+```
+
+Trees build clean (I-12): phase-1 125 docs, phase-2 64, phase-3 10, phase-4 31, phase-5 32
+(+5 unreconciled drill docs); no unpinned image reference anywhere in the phase-5 build.
+
+### Failures → fixes (each its own mirror cycle; none visible to build/dry-run alone)
+
+1. **The new Application file was never registered in `apps/kustomization.yaml`.**
+   `kustomize build` rendered 4 Applications, Argo synced the root, and phase 5 simply didn't
+   exist. The "adding a phase = adding a file" comment was half right — the file must also be
+   listed. `phase5-2` (combined with fix 2 below).
+2. **`namespace cnpg-system is not permitted in project 'nagar'`** — the AppProject destination
+   whitelist didn't know the CNPG namespace. Worse, `root.yaml` (where the fix lives) is part of
+   the phase-2 bootstrap tree but of **no Application's path**: `argocd-self` watches only
+   `deploy/phases/02-gitops/argocd`, the root only `.../apps`. The retry loop kept failing against
+   a stale live AppProject. Fix: extend `root.yaml` (`phase5-3`) **and** replay the phase-2
+   bootstrap tree once with SSA — sanctioned as §9.4 byte-identity, plus §12.20/§12.23 rows.
+3. **CNPG's own webhook denied the Cluster twice** (webhook-only, invisible to `--dry-run=client`):
+   `spec.imageName: Can't use just the image sha as we can't detect upgrades` — the operator parses
+   the tag; the pin is now `:15.17-system-trixie@sha256:0e1a5a4e…` — and
+   `Memory request is lower than PostgreSQL shared_buffers` — request raised to 1Gi (= limit).
+   `phase5-4`. The dry-run *server* output also surfaced upstream's warning that native Barman
+   Cloud support is removed in 1.31.0 — the ADR-019 §2 migration trigger is now concrete.
+4. **The drill's verify Job raced the recovery** (first run FailureTarget: it started while WAL
+   replay was still running and burned its backoffLimit before `-rw` had endpoints; the re-run
+   after the cluster went healthy passed, proving the checks correct and the ordering wrong).
+   Added the same wait-init the migration Job has, pointed at the drill cluster.
+5. **The cert-manager outage (the big one).** Mid-Phase-5, `nagar-phase1-substrate` flipped to
+   Progressing: cert-manager had **zero pods**, every ReplicaSet event
+   `admission webhook "validate.kyverno.svc-fail" denied … check-part-of-label, check-phase-label`.
+   Root cause was **not** in Phase 5: `cert-manager-patches.yaml` (Phase 1) never added the
+   mission pod-template labels — only Namespace labels and resources. The first pods predated the
+   live Kyverno webhook and kept running; Argo saw no drift because git itself lacked the labels;
+   the Docker-VM restart (Day-0 infrastructure flake, R7) forced pod re-creation against the
+   now-live policy. TwoPhase-4-class lessons compounded: a policy that only ever evaluated
+   pre-existing pods proves nothing (the negative test must create a pod), and a patch that labels
+   the Namespace does not label the pods. Fixed in the phase-1 subtree (`phase5-5`), replayed with
+   SSA (byte-identity), documented as §12.23; phase 1 converged on the new revision and all six
+   Applications are green. The `kubectl get pods -A` count after recovery: 24 pods, node at
+   3.5 GiB / 13.65 GiB.
+
+### Honest corrections to the record
+
+- The Phase-4-era claim that the WSL memory raise "remains an owner decision and is not required"
+  is overtaken by events: the raise took effect (node now 13.65 GiB), which is what made the
+  restore drill's third PostgreSQL instance comfortable. R1 is **downgraded**.
+- `deploy/third_party/README.md` had drifted from reality — the Phase-4 vendoring added Strimzi
+  but not its row, and Phase 5 initially repeated the mistake with the digest-pins table
+  (listed 3 images; consolidating to 2 made it wrong differently). Both fixed in this phase; the
+  table now records the per-phase pin components and the source-URL checksum convention.
+- The mirror tag `phase5-1` was built and pushed before the app-of-apps registration fix — it
+  exists in the registry but was never read by Argo (dead tag, per ADR-018 §3 the name is not
+  reused).
+
+### Invariants touched
+
+- **I-1** — workload changes through mirror/Argo only; out-of-band calls were the sanctioned
+  transport step (§9.4) and the phase-2 bootstrap replay when the project gate wedged. **I-2** —
+  migration re-applied cleanly; drill canary idempotent. **I-3** — only sealed blobs tracked; the
+  bootstrap password was sealed from the live secret and the plaintext shredded. **I-4** —
+  policies/NetworkPolicies/resources as documented. **I-5** — two images, both digest-pinned
+  (tag+digest for the operand, per CNPG's own validation). **I-6** — 5432 unchanged; `nagardb`,
+  `postgres-rw`, `pg-backups` all registry names. **I-7/I-8** — no new alert; ADR-019/ADR-020
+  written. **I-9** — scope below. **I-11** — no manifest resolves an upstream registry. **I-12** —
+  all trees build.
+- **I-9 file scope** (`git diff --name-only 2065f8eb..HEAD`, excluding the sanctioned transport
+  tag): `deploy/phases/05-postgres/**`, vendored `deploy/third_party/cnpg/`, **two Phase-1/2
+  files**: `deploy/phases/02-gitops/root.yaml` (AppProject destination) and
+  `deploy/phases/01-substrate/cert-manager/cert-manager-patches.yaml` (12.23 repair). Both are
+  deliberate, documented cross-phase amendments of latent defects, the established pattern
+  (Phase 4's `policies.yaml` carve-out, Phase 2's webhook-defaults declaration).
+
+### Open items / risks
+
+- **R8 (supply chain) unchanged:** no SBOM/scan/sign for any image yet; Phase 9.
+- **`Replace=true` churn on init Jobs** unchanged from Phase 4 (applies to the migration Job too).
+- **The two `git ls-files`-visible sealed secrets now differ in shape**: phase-5's bootstrap blob
+  carries a `kubernetes.io/basic-auth` template; Phase 1's three are `Opaque`-shaped with labels
+  only. Cosmetic drift only, no action needed.
+- **Native Barman Cloud removal in CNPG 1.31.0** is now upstream-confirmed (deprecation warning
+  observed live). ADR-019 §2's trigger stands: migrate to the Barman Cloud plugin at the 1.31
+  upgrade.
+
+### Phase 5 exit criteria — met
+
+- [x] `001_create_tables.sql` applied (and idempotent) — G5.1
+- [x] `SELECT 1` via `postgres-rw` — G5.2, as the application role with the Phase-1 password
+- [x] A backup completed — G5.4 (immediate ScheduledBackup, `completed`, base+`wals/` in MinIO)
+- [x] A restore drill into a scratch cluster succeeded — G5.5 (`RESTORE-DRILL-VERIFIED`, then
+      `kubectl delete` per §9.5)
+- [x] `kustomize build` clean on every tree; no unpinned image — G5.6
+- [x] All six Applications Synced/Healthy — G5.6
+- [x] ADR-019 + ADR-020 written; PHASES ledger flipped; OPERATIONS §7/§9.5/§12.20–12.23 added;
+      ARCHITECTURE §3.3 schema path corrected; `third_party/README.md` registry completed

@@ -29,7 +29,7 @@
 | 2 | GitOps control plane | **Done (2026-09-29, k3d substrate)** | Argo CD app-of-apps + `deploy/` skeleton | self-heal/prune lost; manual `kustomize apply` fallback documented |
 | 3 | Object store & cache | **Done (2026-09-29, k3d substrate)** | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
 | 4 | Messaging | **Done (2026-09-29, k3d substrate)** | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
-| 5 | Relational store | **In progress (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
+| 5 | Relational store | **Done (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
 | 6 | Vector & LLM tier | Not started | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
 | 7a–7g | App tier (per service) | Not started | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
 | 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |

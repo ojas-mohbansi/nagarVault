@@ -38,7 +38,7 @@ includes, so pins are declared once per phase and apply to every image in its tr
 | 2 | `phases/02-gitops/digest-pins/` | 3 (argocd, dex, redis) |
 | 3 | `phases/03-object-cache/digest-pins/` | 4 (minio, minio-mc, redis, busybox) |
 | 4 | `phases/04-messaging/digest-pins/` | 2 (strimzi-operator, strimzi-kafka) |
-| 5 | `phases/05-postgres/digest-pins/` | 3 (cnpg-operator, cnpg-postgresql, postgres-15-alpine) |
+| 5 | `phases/05-postgres/digest-pins/` | 2 (cnpg-operator, cnpg-postgresql — the operand doubles as the Jobs' psql client) |
 
 A phase's component is also included by that phase's *operator sub-tree* (e.g. `phases/05-postgres/
 cnpg/`), so a subtree build pins its own images; see the components' own headers for the
