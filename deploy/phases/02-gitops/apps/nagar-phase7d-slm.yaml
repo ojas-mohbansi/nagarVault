@@ -1,0 +1,33 @@
+# Phase 7d child Application (app-of-apps). Destination nagar-app — already whitelisted.
+# Registered in apps/kustomization.yaml in the SAME commit (the phase-5/6 lesson).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-phase7d-slm
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "7"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/07-app-slm
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false

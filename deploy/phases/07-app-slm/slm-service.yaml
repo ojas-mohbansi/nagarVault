@@ -1,0 +1,142 @@
+# slmService — Phase 7d (ADR-013 fresh rebuild; charter: PHASES.md §2 micro-phase 7d).
+#
+# Exemplar-parity shape follows the Phase-7a/7b pattern (no slmService exemplar exists):
+# ServiceAccount, Service :4004 (frozen registry, CONVENTIONS §4), Deployment replicas 2 with
+# maxUnavailable 0, PDB minAvailable 1, NetworkPolicy (networkpolicy.yaml). Live-state notes:
+#   * DATABASE_URL is used ONLY for the sessions jti-denylist check (shared JWT chain) — the
+#     LLM has no database identity of its own; all SQL goes through queryService (SECURITY §3).
+#   * OLLAMA_KEEP_ALIVE on the server side (Phase 6) keeps qwen3 warm; first generation after
+#     an idle period may take tens of seconds on CPU — probe timeouts account for it.
+#   * pod-template mission labels (§12.23), writable /tmp emptyDir (7a lesson).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nagar-slm-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slm-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-slm-service
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "07"
+    nagar.io/tier: "6"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-slm-service
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 4004          # frozen registry, CONVENTIONS §4
+      targetPort: 4004
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slm-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-slm-service
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "07"
+    nagar.io/tier: "6"
+spec:
+  replicas: 2
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-slm-service
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-slm-service
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "07"
+        nagar.io/tier: "6"
+        nagar.io/scrape: "true"
+    spec:
+      serviceAccountName: nagar-slm-service
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: slm-service
+          # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
+          image: registry.nagar.internal:5000/nagar-slm-service:phase7d-1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - containerPort: 4004
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: nagar-postgres-app, key: databaseUrl }
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: nagar-jwt, key: jwtSecret }
+            - name: OLLAMA_URL
+              value: http://ollama.nagar-platform.svc.cluster.local:11434
+            - name: QDRANT_URL
+              value: http://qdrant.nagar-platform.svc.cluster.local:6333
+            - name: QUERY_URL
+              value: http://query-service.nagar-app.svc.cluster.local:4003
+          readinessProbe:
+            httpGet: { path: /, port: 4004 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 4004 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: slm-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-slm-service
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-slm-service
+      app.kubernetes.io/component: api
