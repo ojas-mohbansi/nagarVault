@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pin for the Phase 7e ingestion backend image (invariant I-5).
+#
+# Resolution 2026-09-30: built on the host from this tree (node:22-slim; the image's own
+# `node` user is uid/gid 1000), pushed via localhost:35000, digest read from the registry
+# header (Docker-Content-Digest) and machine-compared against this file before landing.
+#   mission/nagar-ingestion:phase7e-1
+#     sha256:ecd0ad621c1874f0ab134a34bb901ac8655d9675169b33f14334e09303f46148
+images:
+  - name: registry.nagar.internal:5000/nagar-ingestion
+    newName: k3d-nagar.localhost:5000/mission/nagar-ingestion
+    digest: sha256:ecd0ad621c1874f0ab134a34bb901ac8655d9675169b33f14334e09303f46148

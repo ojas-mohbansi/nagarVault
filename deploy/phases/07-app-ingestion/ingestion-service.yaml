@@ -1,0 +1,147 @@
+# ingestion backend — Phase 7e (ADR-013 fresh rebuild; charter: PHASES.md §2 micro-phase 7e).
+#
+# Exemplar-parity shape follows the Phase-7a/7b pattern (no ingestion exemplar exists):
+# ServiceAccount, Service :3000 (frozen registry, CONVENTIONS §4), Deployment replicas 2 with
+# maxUnavailable 0, PDB minAvailable 1, NetworkPolicy (networkpolicy.yaml). Notes:
+#   * MinIO credentials from the Phase-1 SealedSecret nagar-minio (SECURITY §6.2:
+#     accessKey/secretKey); JWT_SECRET shared via nagar-jwt.
+#   * The API never proxies media bytes: presigned PUTs are handed to the browser directly
+#     (§3.2); this container talks to MinIO only for presign/stat/health.
+#   * Pod-template mission labels (§12.23), writable /tmp emptyDir (7a lesson).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nagar-ingestion
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-ingestion
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "07"
+    nagar.io/tier: "6"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-ingestion
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 3000          # frozen registry, CONVENTIONS §4
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-ingestion
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "07"
+    nagar.io/tier: "6"
+spec:
+  replicas: 2
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-ingestion
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-ingestion
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "07"
+        nagar.io/tier: "6"
+        nagar.io/scrape: "true"
+    spec:
+      serviceAccountName: nagar-ingestion
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ingestion
+          # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
+          image: registry.nagar.internal:5000/nagar-ingestion:phase7e-1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: nagar-jwt, key: jwtSecret }
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: nagar-minio, key: accessKey }
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: nagar-minio, key: secretKey }
+            - name: MINIO_URL
+              value: http://minio.nagar-platform.svc.cluster.local:9000
+            - name: REDIS_URL
+              value: redis://redis.nagar-platform.svc.cluster.local:6379
+            - name: KAFKA_BOOTSTRAP
+              value: nagar-kafka-bootstrap.nagar-platform.svc.cluster.local:29092
+            - name: MEDIA_BUCKET
+              value: raw-media
+          readinessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 3000 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingestion
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-ingestion
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-ingestion
+      app.kubernetes.io/component: api

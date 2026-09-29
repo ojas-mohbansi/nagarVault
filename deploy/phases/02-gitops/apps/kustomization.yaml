@@ -14,3 +14,4 @@ resources:
   - nagar-phase7b-query.yaml
   - nagar-phase7c-worker.yaml
   - nagar-phase7d-slm.yaml
+  - nagar-phase7e-ingestion.yaml

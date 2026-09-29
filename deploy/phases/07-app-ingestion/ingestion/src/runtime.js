@@ -1,0 +1,72 @@
+// Production wiring for the ingestion backend: binds the injectable seams to the real
+// clients (MinIO via AWS SDK S3 presigner, Redis via ioredis, Kafka via kafkajs) and
+// starts the HTTP server. Tests replace these seams in-memory.
+import http from 'node:http';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import Redis from 'ioredis';
+import { Kafka } from 'kafkajs';
+import { buildApp } from './app.js';
+
+const MEDIA_BUCKET = process.env.MEDIA_BUCKET || 'raw-media';
+const s3 = new S3Client({
+  endpoint: process.env.MINIO_URL || 'http://minio.nagar-platform.svc.cluster.local:9000',
+  region: 'us-east-1',
+  forcePathStyle: true,
+  credentials: {
+    accessKeyId: process.env.MINIO_ACCESS_KEY,
+    secretAccessKey: process.env.MINIO_SECRET_KEY,
+  },
+});
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://redis.nagar-platform.svc.cluster.local:6379', {
+  maxRetriesPerRequest: 2,
+  lazyConnect: false,
+});
+
+const kafka = new Kafka({ clientId: 'ingestion', brokers: [process.env.KAFKA_BOOTSTRAP || 'nagar-kafka-bootstrap.nagar-platform.svc.cluster.local:29092'] });
+const producer = kafka.producer();
+
+globalThis.__ingestion = {
+  store: {}, // unused in production (the seams below hit the real services)
+  published: [],
+  async presignUrls({ bucket, objectKey, contentType }) {
+    const cmd = new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: contentType });
+    return getSignedUrl(s3, cmd, { expiresIn: 300 }); // §3.2: 5-minute PUT URLs
+  },
+  async statObject({ bucket, objectKey }) {
+    const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
+    const out = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey }));
+    return { size: out.ContentLength, etag: out.ETag };
+  },
+  async redisSet(key, value, ttlSeconds) { await redis.set(key, value, 'EX', ttlSeconds); },
+  async redisGet(key) { return redis.get(key); },
+  async redisExpire(key, ttlSeconds) { await redis.expire(key, ttlSeconds); },
+  async kafkaSend(topic, key, value) { await producer.send({ topic, messages: [{ key: Buffer.from(key), value: Buffer.from(value) }] }); },
+  async minioOk() { return (await fetch(process.env.MINIO_URL || 'http://minio.nagar-platform.svc.cluster.local:9000/minio/health/live')).ok; },
+  async kafkaOk() {
+    const admin = kafka.admin();
+    try { await admin.connect(); await admin.fetchTopicMetadata({ topics: ['nmc.complaints.raw.restricted.v1'] }); return true; }
+    catch { return false; } finally { await admin.disconnect().catch(() => {}); }
+  },
+};
+
+const app = buildApp();
+const server = http.createServer(app);
+const port = parseInt(process.env.INGESTION_PORT || '3000', 10);
+
+async function main() {
+  await producer.connect();
+  server.listen(port, '0.0.0.0', () => console.log(`ingestion listening on ${port}`));
+}
+
+const shutdown = async () => {
+  server.close();
+  await producer.disconnect().catch(() => {});
+  redis.disconnect();
+  process.exit(0);
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+main().catch((e) => { console.error('fatal:', e); process.exit(1); });

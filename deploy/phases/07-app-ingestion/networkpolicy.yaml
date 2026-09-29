@@ -1,0 +1,69 @@
+# NetworkPolicy: ONLY the flows the ingestion backend needs (SECURITY §8:
+# "ingestion -> MinIO, Redis, Kafka").
+#   ingress :3000 from same-namespace pods (frontend 7g; edge route in Phase 8 extends).
+#   egress: minio :9000 (presign/stat/health), redis :6379 (intents + dedup),
+#           kafka :29092 (raw topics), kube-dns :53. Nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingestion
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-ingestion
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-ingestion
+      app.kubernetes.io/component: api
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}          # same-namespace peers only (pre-edge posture)
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    - to:                          # MinIO (presign, statObject, health)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    - to:                          # Redis (upload intents + dedup keys)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:                          # Kafka raw topics (§4.2)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              strimzi.io/cluster: nagar
+      ports:
+        - protocol: TCP
+          port: 29092
+    - to:                          # DNS — always present (SECURITY §8)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
