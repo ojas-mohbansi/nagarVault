@@ -1,0 +1,71 @@
+# NetworkPolicy: ONLY the flows adminService needs (SECURITY §8: admin → Postgres, Kafka,
+# schemaIndexer). Egress enumeration is derived from what the endpoints actually touch:
+#   /dbcheck, probe_db, fetch_audit_rows -> postgres-rw :5432
+#   probe_kafka, fetch_dlq_entries       -> Strimzi cluster 'nagar' :29092
+#   probe_schema_indexer                 -> schema-indexer :4005 (/health)
+#   DNS (kube-dns :53)                   — always present
+# Ingress: same-namespace peers only (frontend/edge arrive in Phase 8 and extend this list).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-admin-service
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-admin-service
+      app.kubernetes.io/component: api
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}          # same-namespace peers only (pre-edge posture)
+      ports:
+        - protocol: TCP
+          port: 4001
+  egress:
+    - to:                          # Postgres — /dbcheck, probe_db, audit rows
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:                          # Kafka — DLQ consumer group + topic-metadata probe
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              strimzi.io/cluster: nagar
+      ports:
+        - protocol: TCP
+          port: 29092
+    - to:                          # schemaIndexer — /health/cluster probe
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: schema-indexer
+      ports:
+        - protocol: TCP
+          port: 4005
+    - to:                          # DNS — always present (SECURITY §8)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

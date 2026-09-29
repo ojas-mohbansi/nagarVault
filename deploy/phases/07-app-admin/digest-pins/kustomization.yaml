@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pin for the Phase 7f adminService image (invariant I-5).
+#
+# Resolution 2026-09-30: built on the host from this tree (python:3.12-slim; dedicated
+# uid 1000 per the 7b pattern), pushed via localhost:35000, digest read from the registry
+# header (Docker-Content-Digest) and machine-compared against this file before landing.
+#   mission/nagar-admin-service:phase7f-1
+#     sha256:22681d4e89e7bf09c5d7740e480830a63c87230f4203d53d435b850ac62fbbd9
+images:
+  - name: registry.nagar.internal:5000/nagar-admin-service
+    newName: k3d-nagar.localhost:5000/mission/nagar-admin-service
+    digest: sha256:22681d4e89e7bf09c5d7740e480830a63c87230f4203d53d435b850ac62fbbd9

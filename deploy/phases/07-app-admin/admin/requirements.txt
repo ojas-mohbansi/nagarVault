@@ -1,0 +1,10 @@
+# adminService runtime dependencies — pinned (CONVENTIONS §8).
+# Same FastAPI/uvicorn/psycopg/PyJWT pins as authService (7a) / queryService (7b) for a
+# uniform app tier; confluent-kafka at the enrichWorker (7c) pin — the DLQ consumer and
+# the DLQ producer must share the client major (librdkafka wire behavior).
+fastapi==0.115.14
+uvicorn==0.35.0
+starlette==0.46.2
+psycopg[binary]==3.2.9
+PyJWT==2.10.1
+confluent-kafka==2.11.1
