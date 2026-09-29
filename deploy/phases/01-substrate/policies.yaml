@@ -33,6 +33,20 @@ spec:
         any:
           - resources:
               namespaces: [kube-system, kube-public, kube-node-lease]
+          # Operator-reserved label carve-out (Phase 4, ADR-017 §4). Strimzi's Cluster Operator
+          # HARD-CODES `app.kubernetes.io/part-of: strimzi-<cluster>` on every pod it creates and
+          # upstream documents that set as not overridable through template configuration
+          # ("These labels cannot be overridden through template configuration of Strimzi
+          # resources"). No Kafka pod can therefore ever satisfy this rule, and the only
+          # alternatives were to weaken the pattern for everyone or to let Phase 4 ship a Kafka
+          # tier that cannot start. The carve-out is deliberately narrow: it applies to pods the
+          # Strimzi Cluster Operator declares itself as managing, and the sibling rule
+          # `check-phase-label` below still applies to those pods in full — Strimzi does not
+          # reserve `nagar.io/*`, so every broker pod remains enumerable by mission phase.
+          - resources:
+              selector:
+                matchLabels:
+                  app.kubernetes.io/managed-by: strimzi-cluster-operator
       skipBackgroundRequests: true
       validate:
         allowExistingViolations: true

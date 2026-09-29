@@ -21,6 +21,18 @@
 #      `InvalidConfigurationException: No KafkaNodePools found for Kafka cluster nagar` and
 #      creates no Pods at all. Upstream docs: the KafkaNodePool "strimzi.io/cluster label ... must
 #      be set to the name of the Kafka custom resource". (ADR-017 §2 records the failure mode.)
+#   5. **Strimzi OWNs the pod labels, so git does not pretend otherwise.** The operator hard-codes
+#      `app.kubernetes.io/{name,instance,managed-by,part-of}` on pods it creates and DROPS those
+#      keys from the pod templates (upstream: "These labels cannot be overridden through template
+#      configuration of Strimzi resources"). Empirically, `part-of` becomes `strimzi-nagar`,
+#      `managed-by` becomes `strimzi-cluster-operator`, `name` becomes `kafka`, `instance` becomes
+#      `nagar`, and `component: broker` vanishes entirely. The pod templates below therefore
+#      declare ONLY the labels that actually survive — `nagar.io/phase` and `nagar.io/tier` — and
+#      every selector in this phase targets Strimzi's own guaranteed label set
+#      (`strimzi.io/cluster` / `strimzi.io/kind` / `strimzi.io/name` / `strimzi.io/broker-role`).
+#      Two consequences worth knowing before editing anything here: (a) the `require-nagar-labels`
+#      Kyverno policy needed a scoped operator carve-out for `part-of` (ADR-017 §4), and (b) a
+#      selector written against `app.kubernetes.io/component: broker` silently matches NOTHING.
 #
 # Documented deviation from the exemplar's `spec.entityOperator`: NOT deployed. The charter
 # (PHASES.md §2 Phase 4) asks for the Kafka resource, the topics Job, the DLQ topic and
@@ -85,15 +97,12 @@ spec:
   template:
     pod:
       metadata:
-        # Kyverno `require-nagar-labels` evaluates these pod templates at admission: every pod
-        # Strimzi materializes must carry part-of + nagar.io/phase. Strimzi's own labels
-        # (strimzi.io/*, app.kubernetes.io/instance, app.kubernetes.io/managed-by:
-        # strimzi-cluster-operator) are added on top; managed-by is deliberately NOT overridden,
-        # because Strimzi — not Argo — is what manages these pods.
+        # Only the mission labels Strimzi does NOT reserve. `nagar.io/*` is ours, so it survives
+        # onto the real pods and is what keeps every broker enumerable by phase (the
+        # `require-nagar-labels` phase rule depends on it). The `app.kubernetes.io/*` labels this
+        # block used to declare were silently dropped or overwritten by the operator — see header
+        # note 5 — so they are gone rather than left as a false promise to the next reader.
         labels:
-          app.kubernetes.io/name: kafka
-          app.kubernetes.io/part-of: nagarvault
-          app.kubernetes.io/component: broker
           nagar.io/phase: "04"
           nagar.io/tier: "2"
       securityContext:
@@ -167,12 +176,9 @@ spec:
     template:
       pod:
         metadata:
-          # Same label set as the node pool template: the pool template wins for pool-managed
-          # pods, this one covers any Kafka pod the operator creates outside the pool.
+          # Same surviving label set as the node pool template: the pool template wins for
+          # pool-managed pods, this one covers any Kafka pod the operator creates outside a pool.
           labels:
-            app.kubernetes.io/name: kafka
-            app.kubernetes.io/part-of: nagarvault
-            app.kubernetes.io/component: broker
             nagar.io/phase: "04"
             nagar.io/tier: "2"
         securityContext:
@@ -190,8 +196,15 @@ spec:
 ---
 # Stable bootstrap hostname (ADR-009 / CONVENTIONS §3): clients always speak
 # kafka-bootstrap.nagar-platform.svc.cluster.local:29092, whatever Strimzi names its own
-# generated services. The selector targets only broker pods — the labels are the ones declared
-# in the templates above, which the entity operator (not deployed) and any sidecar never get.
+# generated services.
+#
+# The selector is deliberately Strimzi's OWN broker selector — byte-identical to the one the
+# operator puts on `nagar-kafka-bootstrap` — rather than the `app.kubernetes.io/name` +
+# `component` pair the exemplar shows. Both parts of that pair are unreliable here: the operator
+# overwrites `name` with `kafka` and drops `component` altogether (header note 5). `broker-role`
+# is what excludes controller-only pods, so this alias keeps meaning "brokers" even if the pool
+# roles are split later. This is also the selector the NetworkPolicy in networkpolicies.yaml uses,
+# so both objects follow broker pods through any scheduling change.
 apiVersion: v1
 kind: Service
 metadata:
@@ -206,8 +219,10 @@ metadata:
     nagar.io/tier: "2"
 spec:
   selector:
-    app.kubernetes.io/name: kafka
-    app.kubernetes.io/component: broker
+    strimzi.io/broker-role: "true"
+    strimzi.io/cluster: nagar
+    strimzi.io/kind: Kafka
+    strimzi.io/name: nagar-kafka
   ports:
     - name: plain
       port: 29092

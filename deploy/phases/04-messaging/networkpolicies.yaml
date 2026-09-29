@@ -26,10 +26,16 @@ metadata:
     nagar.io/phase: "04"
     nagar.io/tier: "2"
 spec:
+  # Strimzi's OWN broker selector, identical to Service/kafka-bootstrap and to
+  # `nagar-kafka-bootstrap`. A selector on `app.kubernetes.io/component: broker` would match no
+  # pod at all: the operator drops that key from pod templates and overwrites
+  # `app.kubernetes.io/name` with `kafka` (../kafka.yaml header note 5, ADR-017 §4).
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: kafka
-      app.kubernetes.io/component: broker
+      strimzi.io/broker-role: "true"
+      strimzi.io/cluster: nagar
+      strimzi.io/kind: Kafka
+      strimzi.io/name: nagar-kafka
   policyTypes: ["Ingress"]
   ingress:
     # 29092 is the frozen listener port (CONVENTIONS §4, ADR-009). Sources, each named for a
