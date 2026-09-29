@@ -223,6 +223,8 @@ Phase 10 exit requires this script green on the Kubernetes stack.
 
 | 12.26 | An E2E harness run from inside one service's pod gets `Connection refused` calling a peer service in the same namespace, while every readiness probe is green | the calling service's NetworkPolicy egress enumerates only its documented flows (SECURITY §8) — e.g. queryService validates JWTs locally and has no path to authService; the harness, not the policy, is at fault. Never widen the policy to make a test pass | run cross-service E2E steps from a pod that owns the flow (mint tokens at auth, then exercise the target service from its own pod), staging any tokens/files ephemerally in `/tmp` and shredding them after (Phase-7b pattern) |
 
+| 12.27 | A code fix is merged and its tree builds, but the running pod still behaves the old way — and the tree's rendered image is unchanged | the fix was committed but the image was never rebuilt/re-pinned: `git commit` is not a deployment. Found in Phase 7d when the committed COUNT(*) gate refinement kept blocking — the tree still pinned the pre-fix digest | after any service-code change: rebuild the image, push, read the digest from the registry header, update the pin component, mirror-advance, and verify the pod's `imageID` matches the new pin before re-running the E2E |
+
 ## 13. Upgrade & rollback
 
 - **Platform (k3s):** pin the k3s version per node; upgrade one node at a time with the data plane

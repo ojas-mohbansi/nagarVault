@@ -1493,3 +1493,125 @@ internal registry only; all trees build.
 - [x] Events flow topic→table — G7c.4 (real produce, real upsert, DB row verified)
 - [x] DLQ on malformed input — G7c.4 (`invalid-json` + accidental Phase-4-era
       `invalid-envelope`, both routed without crashing the loop)
+
+---
+
+## Phase 7d — slmService (2026-09-30)
+
+**Scope:** `deploy/phases/07-app-slm/` (fresh code per ADR-013) + app-of-apps registration,
+plus two cross-phase defect fixes the live E2E exposed (7b gate, phase-6 indexer). Mirrors
+`phase7d-1..4`; Application `nagar-phase7d-slm` Synced/Healthy. No pushes to any remote.
+
+### G7d.1 — Contracts + live parameter probe
+
+`GET /health` (public, ollama/qdrant/query status) and `POST /ask` (JWT; NL→SQL+rows) from
+ARCHITECTURE §4.1; §3.4 guardrails; SECURITY §3 ("generated SQL must pass the same queryService
+gate — the LLM has no direct database access"). Undocumented detail — what identity /ask uses
+against the gate — resolved as the **smallest consistent choice**: forward the CALLER's bearer
+token (RBAC inheritance; no service identity exists in SECURITY §6.2, and the audit trail then
+names the real human). Recorded in code + this log; no ADR needed (it *is* SECURITY §3's
+sentence, made concrete). Before coding, the Phase-6 model contract was verified live:
+`/api/generate` with `think:false` + `temperature:0` returns exactly "OK" (status 200).
+
+### G7d.2 — TDD: 21 hermetic tests, red → green
+
+All three backends mocked at module seams. Coverage: token absence/garbage/wrong-aud/
+denylisted-jti; /health aggregation (503 with per-dep status); /ask happy path (SQL + rows +
+role echoed, CALLER's token forwarded — asserted); prompt carries RAG context + SELECT-only +
+PII rules; generate request shape (qwen3:1.7b, stream=false, **think=false, temperature=0**);
+top_k=5; SQL extraction (fences, bare, `<think>` strip, empty → NoSQLError→502); gate verdicts
+pass through verbatim (403 table-rbac for nmc_officer AND admin — slm does not duplicate RBAC);
+backend failures → 503. Suite-driven fixes: health body shape (FastAPI nests `detail`), the
+truthful pass-through rule (503→503), and catching RuntimeError seams as 503. Final: **21 passed**.
+
+### G7d.3 — Image + manifests + landing
+
+`mission/nagar-slm-service:phase7d-1`, digest machine-verified (`PIN-MATCHES-REGISTRY`).
+NetworkPolicy egress exactly ollama:11434 + qdrant:6333 + query-service:4003 + postgres:5432
+(jti denylist) + DNS — no other warehouse path. Commit `73fe71fb` (code + manifests +
+Application + registration), mirror `phase7d-1`, **11/11 Applications Synced/Healthy**,
+`/health` → `{"ollama":"ok","qdrant":"ok","query":"ok"}` from inside a pod.
+
+### G7d.4 — E2E findings: RBAC inheritance proven; gate and indexer defects exposed
+
+First run minted an **admin** token by mistake → `/ask` returned the gate's own verdict:
+`403 table-rbac` passed through verbatim. A live negative proof that /ask inherits RBAC
+(admins have no warehouse tables) — the positive path needed an officer token.
+
+Officer run: Q2 (`which wards have open complaints?`) passed the FULL path — generated
+`SELECT ward FROM nmc_complaints WHERE status = 'open'`, rows returned including the seeded
+ward 9. Q1 (`how many complaints…`) was gate-blocked `pii-column`; the audit log (reading the
+blocked SQL verbatim — the audit trail doing its job) showed the model emitted
+`SELECT COUNT(*) FROM nmc_complaints`. Root cause: my 7b star-expansion hardening over-blocked
+aggregation stars. A star as an aggregate argument projects no columns; the denylist contract
+is about COLUMNS (ARCH §3.4). Fix: block only select-list stars; `SELECT *` still blocked.
+Suite extended (`test_count_star_allowed_on_pii_table`, `test_select_star_still_blocked`) →
+**29 passed**.
+
+Recovery drill in passing: mid-diagnosis, qdrant began returning 500 on ALL searches
+(`gridstore.rs:53 OutputTooSmall` — payload-storage segment corruption). Treated exactly as
+documented (rebuildable cache): dropped `nagar_schema` and re-ran `/reindex` → 40 points,
+search healthy again. This also surfaced a **phase-6 latent bug**: default async upserts made
+the post-reindex count witness race (rebuild landed 40 while /reindex returned 500
+`post-reindex point count mismatch`). Fixed with `?wait=true` upserts (image `phase6-3`,
+machine-verified pin).
+
+### G7d.5 — Prompt hardening + the ship-the-image lesson
+
+Model variations also produced a PII-column COUNT and an invented `category='pothole'` filter;
+prompt now forbids PII anywhere (incl. COUNT/WHERE) and inventing filter values. Landed as
+`phase7d-2` — **and the first E2E on it still blocked COUNT(*): the 7b refinement was committed
+but never built into an image; the tree still pinned phase7b-1.** Lesson recorded: a code fix
+is not shipped until the image is rebuilt, re-pinned, and rolled — `git commit` is not a
+deployment. Shipped as `phase7b-2` (digest `sha256:7c70081f…` machine-verified), mirror
+`phase7d-4`.
+
+### G7d.6 — Final E2E (`E2E-SLM-OK`, 8/8 PASS)
+
+```
+Q1: How many complaints are there in total?
+  PASS 200 | SQL: SELECT COUNT(*) FROM nmc_complaints | rows=[{'count': 2}] | role=nmc_officer
+Q2: Which wards have open complaints?
+  PASS 200 | SQL: SELECT ward FROM nmc_complaints WHERE status = 'open' | rows=[{'ward': '9'}]
+E2E-SLM-OK
+```
+
+Real NL → bge-m3 embed → qdrant RAG → qwen3:1.7b (temperature=0, think=false) → gate → rows.
+Earlier negative proof preserved: admin `/ask` → 403 table-rbac pass-through.
+
+### G7d.7 — Cleanup + platform gates
+
+Fixture row + off7d test user deleted; staged tokens shredded in slm/auth pods; host scratch
+removed. All **10 trees** build; **11/11 Applications Synced/Healthy**; node **8.62/13.65 GiB
+(63%)** — qwen3 weights resident (OLLAMA_KEEP_ALIVE=24h) accounts for the rise; disk 382G, no
+pressure conditions.
+
+### Session lessons
+
+(1) A mid-command `cd` poisoned a whole tool batch with relative paths — no changes landed
+(none were committed, no k8s objects applied); re-ran from the project root with subshells.
+(2) The ship-the-image lesson above (§12.27 candidate). (3) A persisted-token re-run against
+recreated pods fails with "missing session" — the E2E restage is part of the choreography.
+
+### Invariants touched
+
+**I-1** — mirror/Argo only; out-of-band: §9.4 advances ×4, admin re-seed (§9.1), deletion of my
+own fixtures/test users, and the qdrant collection drop+reindex (documented recovery of a
+rebuildable cache, no durable data touched). **I-2** — reindex witness now deterministic
+(wait=true). **I-3** — no secrets in git; tokens staged ephemerally, shredded. **I-4** —
+probes/resources/PDB/NetworkPolicy to the letter. **I-5** — three new images (phase7d-1/2,
+phase7b-2, phase6-3), all registry-header digests, all machine-verified. **I-6** — 4004
+unchanged. **I-8** — no ADR: RBAC inheritance is SECURITY §3 made concrete; the COUNT(*)
+refinement aligns the gate with ARCH §3.4's column-denylist wording (test-pinned); the indexer
+fix restores I-2's original intent. **I-9** — scope: `deploy/phases/07-app-slm/**`, two
+app-of-apps files, mirror tags, plus the two documented cross-phase defect fixes
+(`deploy/phases/07-app-query/**`, `deploy/phases/06-vector-llm/indexer/**`) — the established
+amendment precedent, both caught and proven live. **I-11/I-12** — internal registry only; all
+trees build.
+
+### Phase 7d exit criteria — met
+
+- [x] `/ask` returns SQL + rows — G7d.6 (`E2E-SLM-OK`; real generation at temperature=0,
+      think=false; execution through the queryService wall)
+- [x] RBAC/security paths: admin /ask gate-blocked (table-rbac pass-through); PII denylist
+      enforced against model output; denylisted jti rejected — G7d.4/G7d.6
