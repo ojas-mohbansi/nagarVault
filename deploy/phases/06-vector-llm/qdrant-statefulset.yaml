@@ -95,6 +95,17 @@ spec:
           volumeMounts:
             - name: storage
               mountPath: /qdrant/storage
+            # Upstream config also defaults snapshots_path: ./snapshots (relative to the same
+            # workingDir). With readOnlyRootFilesystem the actix init phase panics FATAL at
+            # src/actix/mod.rs:73 — "Failed to create snapshots temp directory at
+            # ./snapshots/tmp: ReadOnlyFilesystem" — before the HTTP listener binds. Verified
+            # on the host with the pinned digest: adding a writable ./snapshots is the exact
+            # fix; the "Failed to create init file indicator" WARN and the "Filesystem check
+            # failed" ERROR are both non-fatal by the same run. Snapshots are ephemeral here
+            # because nagar_schema is a rebuildable cache (ADR-005/006), so an emptyDir is
+            # sufficient — no second PVC.
+            - name: snapshots
+              mountPath: /qdrant/snapshots
             - name: tmp
               mountPath: /tmp
           readinessProbe:
@@ -110,6 +121,8 @@ spec:
             limits: { cpu: "1", memory: 2Gi }
       volumes:
         - name: tmp
+          emptyDir: {}
+        - name: snapshots
           emptyDir: {}
   volumeClaimTemplates:
     # apiVersion/kind/volumeMode declared: the API server defaults these into the stored object
