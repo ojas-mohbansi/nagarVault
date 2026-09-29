@@ -1,0 +1,51 @@
+# NetworkPolicy: ONLY the flows authService needs (SECURITY §8).
+#   ingress :4000 from same-namespace pods (frontend in Phase 7g; the in-pod E2E probe;
+#   the Phase 8 edge join extends this with the Traefik peer).
+#   egress: postgres-rw :5432 in nagar-platform (pod label app.kubernetes.io/name=postgres,
+#   verified live on the CNPG instances) + kube-dns :53 UDP+TCP. Everything else is denied
+#   once nagar-app default-deny lands (Phase 9); this policy already enumerates exactly the
+#   service's real flows, so default-deny later changes nothing for it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-auth-service
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-auth-service
+      app.kubernetes.io/component: api
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}          # same-namespace peers only (pre-edge posture)
+      ports:
+        - protocol: TCP
+          port: 4000
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:                          # DNS — always present (SECURITY §8)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

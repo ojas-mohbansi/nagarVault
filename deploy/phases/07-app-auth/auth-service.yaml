@@ -1,0 +1,139 @@
+# authService — Phase 7a (ADR-013 fresh rebuild; charter: PHASES.md §2 micro-phase 7a).
+#
+# EXEMPLAR PARITY: shape per docs/manifests/exemplars/auth-service-deployment.yaml —
+# ServiceAccount, Service :4000 (frozen registry, CONVENTIONS §4), Deployment (replicas 2,
+# maxUnavailable 0), PDB minAvailable 1, NetworkPolicy (networkpolicy.yaml). Deliberate
+# corrections from the exemplar to the LIVE cluster state, each at its point of deviation:
+#   1. DATABASE_URL comes straight from secretKeyRef nagar-postgres-app key `databaseUrl`
+#      (SECURITY §6.2 key map — the map of record; the exemplar's `$(PGPASSWORD)` interpolation
+#      predates the live secret shape, which carries no separate password key).
+#   2. COOKIE_SECURE=false until Phase 8 terminates TLS at the edge (the exemplar's own
+#      annotation mandates true only once edge TLS exists; the cluster-internal E2E gate is HTTP).
+#   3. Pod-template labels carry nagar.io/phase "07" + app.kubernetes.io/part-of (the
+#      exemplar predates the live Kyverno require-nagar-labels policy — §12.23).
+#
+# Secrets consumed already exist from Phase 1 (nagar-jwt, nagar-postgres-app): no new
+# SealedSecret this phase (I-3).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nagar-auth-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-auth-service
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "07"
+    nagar.io/tier: "6"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-auth-service
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 4000          # frozen registry, CONVENTIONS §4
+      targetPort: 4000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-auth-service
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "07"
+    nagar.io/tier: "6"
+spec:
+  replicas: 2
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-auth-service
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-auth-service
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: nagarvault
+        nagar.io/phase: "07"
+        nagar.io/tier: "6"
+        nagar.io/scrape: "true"
+    spec:
+      serviceAccountName: nagar-auth-service
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: auth-service
+          # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
+          image: registry.nagar.internal:5000/nagar-auth-service:phase7a-1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 4000
+              name: http
+          env:
+            # SECURITY §6.2 key map of record: databaseUrl -> DATABASE_URL (see header note 1).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: nagar-postgres-app, key: databaseUrl }
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: nagar-jwt, key: jwtSecret }
+            - name: COOKIE_SECURE
+              value: "false"     # correction 2: true only after Phase 8 edge TLS
+          readinessProbe:
+            httpGet: { path: /dbcheck, port: 4000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 4000 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-auth-service
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-auth-service
+      app.kubernetes.io/component: api

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pin for the Phase 7a authService image (invariant I-5: digest, never a movable tag).
+#
+# Resolution 2026-09-29: built on the host from this tree (python:3.12-slim base; the daemon
+# cannot resolve the k3d registry alias — G0.3), pushed via localhost:35000, digest read back
+# FROM THE REGISTRY HEADER (Docker-Content-Digest) and machine-compared against this file
+# string-for-string before landing (Phase-6 lesson: never retype a digest).
+#   mission/nagar-auth-service:phase7a-1
+#     sha256:adf0ff3c3154a605c71cf4f5931cce611668e6fbb10d84deedabc9cab820832a
+#
+# The base manifest references registry.nagar.internal:5000 (I-11); this component rewrites to
+# the k3d registry the cluster resolves. tag+digest form mirrors the CNPG operand convention.
+images:
+  - name: registry.nagar.internal:5000/nagar-auth-service
+    newName: k3d-nagar.localhost:5000/mission/nagar-auth-service
+    digest: sha256:adf0ff3c3154a605c71cf4f5931cce611668e6fbb10d84deedabc9cab820832a

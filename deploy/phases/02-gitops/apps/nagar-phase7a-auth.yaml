@@ -1,0 +1,34 @@
+# Phase 7a child Application (app-of-apps). Destination nagar-app — already whitelisted in
+# root.yaml (Phase 1), no AppProject change. Registered in apps/kustomization.yaml in the
+# SAME commit (the Phase-5/6 lesson: an unregistered Application file ships nothing).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-phase7a-auth
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "7"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/07-app-auth
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
