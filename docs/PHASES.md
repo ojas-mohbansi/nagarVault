@@ -27,7 +27,7 @@
 | 0 | Documentation suite | **Done (2026-09-29)** | This suite | impossible (foundation) |
 | 1 | Cluster substrate | **Done (2026-09-29, k3d substrate)** | k3s + namespaces + cert-manager + Sealed Secrets + Kyverno/PSS | **mandatory** (all K8s phases need it) |
 | 2 | GitOps control plane | **Done (2026-09-29, k3d substrate)** | Argo CD app-of-apps + `deploy/` skeleton | self-heal/prune lost; manual `kustomize apply` fallback documented |
-| 3 | Object store & cache | Not started | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
+| 3 | Object store & cache | **Done (2026-09-29, k3d substrate)** | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
 | 4 | Messaging | Not started | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
 | 5 | Relational store | Not started | CNPG + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
 | 6 | Vector & LLM tier | Not started | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |

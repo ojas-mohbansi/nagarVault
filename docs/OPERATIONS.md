@@ -167,6 +167,8 @@ Phase 10 exit requires this script green on the Kubernetes stack.
 | 12.10 | Argo `OutOfSync` forever | manual live mutation (I-1 violation) | `argocd app diff`, revert live change or commit it properly; never "fix" by disabling self-heal |
 | 12.11 | Kyverno rejects a manifest | missing labels/probes/digest pin | fix the manifest to satisfy CONVENTIONS §5 and SECURITY §5; do not weaken policy |
 | 12.12 | Upload PUT fails from browser | CORS/edge route misconfig | verify Traefik middleware origins match frontend origin (Phase 8 config) |
+| 12.13 | A changed **Job** spec never lands: sync errors with `spec.template: Invalid value: … field is immutable`, then `Skipping auto-sync: already attempted sync …` for that revision | a Job pod template is immutable, so Argo cannot apply or diff the change; the failed revision is not retried until a new one arrives | declare `argocd.argoproj.io/sync-options: Force=true,Replace=true` on the Job (ADR-016). To un-wedge now: delete the Job (§9.3) and let Argo recreate it, then re-arm auto-sync with a new revision (mirror tag bump) |
+| 12.14 | One StatefulSet is `OutOfSync` after every sync while its siblings are `Synced` | API-server defaults inside `spec.volumeClaimTemplates` (`apiVersion`, `kind`, `spec.volumeMode`) are not normalized by Argo's client-side differ; self-heal then runs *partial* syncs that consume the auto-sync attempt for each revision (it can starve a pending change elsewhere) | `kubectl diff --server-side --force-conflicts -f <sts>` (read-only) to isolate it; declare the defaulted fields in git (ADR-016). Never mask with `ignoreDifferences` |
 
 ## 13. Upgrade & rollback
 

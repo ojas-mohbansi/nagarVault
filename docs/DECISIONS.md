@@ -224,3 +224,85 @@ must be evidenced from the rebuilt services running in-cluster. The rebuild inhe
 greenfield expectation: tests accompany each service (the ingestion service keeps `npm test` /
 `npm run check` per MISSION.md §3). The 7-day drift-clean parity item is evidenced over the
 remaining mission window or honestly marked partial in the handover report.
+
+---
+
+## ADR-015 — MinIO and mc are source-built and staged locally (upstream registries unreachable)
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 3
+
+**Context.** Phase 3 needs a MinIO server image and the `mc` client image. Every MinIO distribution
+channel is unreachable from this network (verified 2026-09-28/29: `docker.io/minio/*` → pull access
+denied, `quay.io/minio/*` → 401, `dl.min.io` / `mirror.gcr.io` / `public.ecr.aws` / bitnami → no
+route). Reachable and sufficient: `docker.io/library/*`, `registry.k8s.io`, `quay.io/argoproj/*`,
+`proxy.golang.org`, `raw.githubusercontent.com`. MinIO is written in Go, so the Go module proxy is
+an adequate source channel. I-11 requires that every image be obtainable into the internal
+registry; ADR-013 §4 already ratifies staging built images into it.
+
+**Decisions.**
+1. **Compile from upstream git tags, pinned by name:** server `RELEASE.2025-10-15T17-29-55Z` (the
+tag the legacy Compose stack ran — parity reference), `mc` `RELEASE.2025-08-13T08-35-41Z`.
+2. **Recipe**: `agentic/tmp/build-minio3.sh` — `golang:1.24-alpine`, `CGO_ENABLED=0`,
+`GOPROXY=https://proxy.golang.org,direct`, `go build -trimpath -ldflags='-s -w'`. Output digests
+recorded: server `36450819e0fa37907d2e8f225ef207f491e8f3a81cd3142e7f6370f0bb26e477`, mc
+`e37fe3ed86cb4944d7d4bd0b1b8ac7fa3b74d54b5b5ce5acec870b8c2bef45bf`.
+3. **Checksum gate at image build**: `images/minio.Dockerfile` / `images/minio-mc.Dockerfile` take
+`ARG *_SHA256` and `sha256sum -c` the staged binary, so a mismatched compile output cannot be
+packaged; both images run as uid 1000 on alpine (non-root, PSS `restricted`).
+4. **Staged into the internal registry and consumed by digest** (I-5): `mission/minio@sha256:
+d8464e6c…`, `mission/minio-mc@sha256:72e8defd…`, pushed via `localhost:35000` and pulled
+in-cluster via `k3d-nagar.localhost:5000` (Day-0 G0.2 transport).
+5. **This is a substrate workaround, not the production plan.** In the air-gapped production
+enclave the vendor's images arrive with the import bundle; when such a path exists these two
+Dockerfiles are deleted and upstream digests are pinned instead.
+
+**Consequences.** Upstream's image-level CVE pipeline no longer covers these two artifacts —
+MinIO CVE tracking is now ours. The SECURITY §7 supply-chain steps (`syft` SBOM → `trivy` gate →
+`cosign sign`) are **not yet produced** for them; recorded as open gap R8 (SECURITY §7 itself marks
+that CI as not-yet-built). Rebuilds require the Go proxy, which is available on the connected build
+host and never needed in-cluster.
+
+---
+
+## ADR-016 — Convergence on purpose-built workloads: declared server defaults and declarative Job replacement
+**Status:** Accepted · **Date:** 2026-09-29 · **Phase:** 3
+
+**Context.** Two divergence traps hit Phase 3, both ending in the same wedged state:
+
+- **(a) Immutable Job template.** The `bucket-init` Job's pod spec changed (an `mc` env-var fix). A
+  Job pod template is immutable, so Argo cannot land the change: a dry run against the live Job
+  returns `spec.template: Invalid value: … field is immutable`. The sync fails and Argo then
+  refuses to retry that revision — `Skipping auto-sync: already attempted sync to [<rev>] with
+  timeout 0s (retrying in 53.6s)` — so the fix sat in git while the live Job kept failing.
+- **(b) Un-normalized server defaults.** The `minio` StatefulSet was `OutOfSync` after *every*
+  sync: the API server defaults `apiVersion`, `kind` and `spec.volumeMode` inside
+  `spec.volumeClaimTemplates`, and Argo's client-side differ does not normalize that subtree. The
+  damage was not cosmetic: because the app never converged, Argo's self-heal issued **partial**
+  syncs (`Resources:[]SyncOperationResource{{Kind:StatefulSet,Name:minio}}`), and each partial sync
+  marked the revision "already attempted" — starving the full auto-sync that would have carried the
+  Job fix. The redis StatefulSet has no `volumeClaimTemplates` and stayed `Synced` with the same
+  class of pod-spec defaults omitted, which localized the drift.
+
+**Decisions.**
+1. **Job replacement is declared in git**, not commanded by hand:
+   `argocd.argoproj.io/sync-options: Force=true,Replace=true` on the Job (upstream's documented
+   option for Jobs whose spec changes). Observed across two cycles: the Job is deleted and
+   recreated **exactly when its desired spec changes**, and is not re-run on syncs where the spec
+   is unchanged — so the idempotent bucket Job does not churn (I-2).
+2. **Server-side defaults are declared in git** for `volumeClaimTemplates` — the Phase-2 precedent
+   for the Kyverno webhook defaults (declare, never mask). `ignoreDifferences` is rejected: it
+   would hide real drift in a storage spec.
+3. **Diagnosis method is now part of the method:** exhaustive desired-vs-live comparison, plus a
+   read-only `kubectl diff --server-side [--force-conflicts]`. A resource that is clean under
+   server-side semantics but drifts under Argo's client-side differ points directly at a subtree
+   Argo does not normalize.
+4. **Server-side diff is deferred, not rejected.** The pinned v3.5.3 controller binary contains the
+   `ServerSideDiff` sync option and `--server-side-diff` / `--server-side-diff-enabled` /
+   `--server-side-diff-concurrency` flags, but adopting them changes the Argo control plane
+   (Phase-2 subtree) and must be verified first. Until then, convention 2 stands for every
+   StatefulSet that uses PVC templates.
+
+**Consequences.** Every future `volumeClaimTemplates` block carries the three declared defaults
+(a convention, not an accident); every Job whose spec may change must carry the sync-options
+annotation or a spec edit silently wedges the app; and the failure mode *OutOfSync forever →
+self-heal partial syncs → auto-sync starvation* is documented with its diagnostic
+(OPERATIONS §12.13–12.14).

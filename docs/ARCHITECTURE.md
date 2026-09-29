@@ -171,7 +171,7 @@ Creation is idempotent (`--if-not-exists`) via a Job (exemplar: [manifests/exemp
 | Store | Databases / buckets / collections | Notes |
 |---|---|---|
 | PostgreSQL | `nagardb` (+ `users`, `sessions`, 5 dept tables, `audit_logs`) | owned by CloudNativePG; tables by idempotent migration Job |
-| MinIO | `raw-media`, `raw-sensitive-media` | buckets via idempotent init Job; CORS handled at edge in K8s (no per-origin bucket config) |
+| MinIO | `raw-media`, `raw-sensitive-media`, `pg-backups` | buckets via idempotent init Job (`deploy/phases/03-object-cache/bucket-init-job.yaml`, matching `docs/manifests/exemplars/minio-statefulset.yaml` and the MISSION.md §3 gate; `pg-backups` is CNPG's backup target, OPERATIONS §7); CORS handled at edge in K8s (no per-origin bucket config) |
 | Redis | `upload-intent:*`, `event:id:*`, `event:src:*` | TTL-based; no persistence required |
 | Qdrant | collection `nagar_schema` | rebuilt by schemaIndexer; 40 chunks from `schema_docs.json` |
 | Ollama | models `bge-m3`, `qwen3:1.7b` | provisioned by checksum-pinned model Job onto PVC |

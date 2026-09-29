@@ -430,3 +430,201 @@ SELF-HEAL-VERIFIED at t+30s  (app: Synced/Healthy)
 - [x] `kustomize build` clean across the phase trees; no files outside the phase subtree +
       third_party/argo-cd + docs ledger touched (I-9)
 - [x] ADR-014 written (transport + Argo v3.5 settings facts); PHASES ledger flipped
+
+---
+
+## Phase 3 — Object store & cache (2026-09-29)
+
+**Entry checklist (PHASES.md §2 Phase 3):** Phase 1 + Phase 2 complete (5/5 Applications Synced/Healthy
+before the tree landed); `nagar-platform` exists at PSA `restricted`; Kyverno Enforce policies live;
+internal-registry round-trip proven (G0.2: push `localhost:35000` → pull `k3d-nagar.localhost:5000`);
+`nagar-minio-server` SealedSecret sealed offline against the in-cluster cert and round-trip verified (ADR-010).
+
+### Deliverables (subtree: `deploy/phases/03-object-cache/`)
+
+- **MinIO** StatefulSet (single node, ADR-006) + headless-style Service, `serviceName: minio`.
+  Image is **source-built** (ADR-015)
+  because every MinIO distribution channel is unreachable from this network; the `mc` client likewise.
+- **Redis** StatefulSet (cluster-internal cache, no PVC — ARCHITECTURE §4.3: no persistence required).
+- **`bucket-init` Job** — idempotent (`mc mb --ignore-existing`), creating the three frozen buckets from
+  ARCHITECTURE §4.3 / MISSION.md §3: `raw-media`, `raw-sensitive-media`, `pg-backups` (the last is also
+  CNPG's backup target, OPERATIONS §7). Matches the canonical exemplar `docs/manifests/exemplars/
+  minio-statefulset.yaml`. (ARCHITECTURE §4.3's MinIO row listed only two buckets — corrected in this
+  commit; the exemplar and MISSION.md §3 were always three.)
+- **NetworkPolicies (SECURITY §8):** `default-deny`, `allow-dns-egress`, `allow-intra-namespace-egress`,
+  `allow-minio-ingress`, `allow-redis-ingress`.
+- **SealedSecret `nagar-minio-server`** in `nagar-platform` (keys `accessKey`, `secretKey`, `mcHostLocal`):
+  sealed offline with `--cert`, applied, keys verified live, plaintext shredded (I-3). Nothing plaintext is
+  tracked: `git ls-files deploy/phases/03-object-cache/secrets` → only `nagar-minio-server-sealed.yaml`.
+- **Digest pins (I-5)** in `digest-pins/` (kustomize Component):
+
+| image | pin |
+|---|---|
+| `mission/minio` | `sha256:d8464e6cc50064010cf17e1a1b74e4cf2fc0d9b23ab6bf0ff521bd2ea0af7576` |
+| `mission/minio-mc` | `sha256:72e8defdcea3777f3935cb0f834294aa7b5bf210f85572939a363e65fda6326e` |
+| `mission/redis` | `sha256:ca0acbb137c1dc3339c8b147a58fd6f42775d4599327b50e7b116c23de501af2` |
+| `mission/busybox` | `sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4` |
+
+  Source-built provenance (ADR-015): server `RELEASE.2025-10-15T17-29-55Z` → binary sha256
+  `36450819e0fa37907d2e8f225ef207f491e8f3a81cd3142e7f6370f0bb26e477`; `mc` `RELEASE.2025-08-13T08-35-41Z` →
+  `e37fe3ed86cb4944d7d4bd0b1b8ac7fa3b74d54b5b5ce5acec870b8c2bef45bf`; both re-gated at image build by
+  `ARG *_SHA256` + `sha256sum -c`.
+- **Landed through GitOps only** (I-1): mirror cycles `phase3-1 … phase3-13`; the imperative calls were
+  limited to the sanctioned transport step (build/push the mirror image + bump `newTag`, ADR-014) and the
+  one `kubectl delete job` prescribed by OPERATIONS §9.3. No `kubectl edit`/`scale` of mission workloads.
+
+### Gate evidence
+
+**G3.1 — the three buckets exist (created by the GitOps Job, not by hand):**
+
+```
+$ kubectl logs -n nagar-platform -l job-name=bucket-init
+Defaulted container "create-buckets" out of: create-buckets, wait-for-minio (init)
+The cluster 'local' is ready
+Bucket created successfully `local/raw-media`.
+Bucket created successfully `local/raw-sensitive-media`.
+Bucket created successfully `local/pg-backups`.
+[2026-09-29 01:21:29 UTC]     0B pg-backups/
+[2026-09-29 01:21:28 UTC]     0B raw-media/
+[2026-09-29 01:21:29 UTC]     0B raw-sensitive-media/
+buckets ready
+
+$ kubectl exec -n nagar-platform minio-0 -- ls /data
+pg-backups
+raw-media
+raw-sensitive-media          # same three, seen on the storage layer
+```
+
+**G3.2 — Redis answers ping:**
+
+```
+$ kubectl exec -n nagar-platform redis-0 -- redis-cli ping
+PONG
+$ … redis-cli info server | grep redis_version
+redis_version:7.4.11
+```
+
+**G3.3 — PersistentVolumeClaims bound:**
+
+```
+$ kubectl get pvc -n nagar-platform
+NAME           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+data-minio-0   Bound    pvc-d296678f-93f3-4b23-8368-d9ddf30e7110   20Gi       RWO            local-path     108m
+$ kubectl get pv | grep nagar
+pvc-d296678f-…   20Gi   RWO   Delete   Bound   nagar-platform/data-minio-0   local-path
+```
+
+**G3.4 — GitOps convergence, zero churn where nothing changed:**
+
+```
+$ kubectl get applications -n nagar-system
+nagar-argocd-self           Synced   Healthy
+nagar-mission-root          Synced   Healthy
+nagar-phase1-substrate      Synced   Healthy
+nagar-phase3-object-cache   Synced   Healthy     ← rev f1e8f4d3
+nagar-phase4-messaging      Synced   Healthy
+
+$ kubectl get pods -n nagar-platform -o custom-columns=…
+minio-0   Running   START 2026-09-29T01:37:56Z   k3d-nagar.localhost:5000/mission/minio@sha256:d8464e6c…
+redis-0   Running   START 2026-09-29T00:39:53Z   k3d-nagar.localhost:5000/mission/redis@sha256:ca0acbb1…   ← untouched
+
+$ docker stats --no-stream k3d-nagar-server-0
+k3d-nagar-server-0   mem=2.318GiB / 7.608GiB
+```
+
+**I-2 (idempotency) and PVC safety, demonstrated, not asserted:** the mc image changed from tag to digest
+pin, which re-created the Job (Force/Replace, ADR-016) and **re-ran it against a populated MinIO**:
+
+```
+$ kubectl logs -n nagar-platform -l job-name=bucket-init     # second run, same three buckets
+Bucket created successfully `local/raw-media`.               ← `--ignore-existing`: no-op, no error
+[2026-09-29 01:21:28 UTC]     0B raw-media/                  ← creation stamps still from run #1
+buckets ready
+```
+
+The same cycle restarted `minio-0` (digest change) while the PVC kept the **same** PV
+(`pvc-d296678f-…`) and `/data` still listed the three buckets — the charter's PVC-safety claim holds
+across pod recreation; deleting the StatefulSet would likewise leave the PVC (k8s semantics).
+
+### Convergence traps hit (→ ADR-016, OPERATIONS §12.13–12.14)
+
+1. **Immutable Job template.** The `bucket-init` pod spec changed (the `mc` fix below). Argo cannot apply
+   or diff a changed Job template — a dry run against the live Job returned
+   `spec.template: Invalid value: … field is immutable` — and after the failed attempt the controller
+   logged `Skipping auto-sync: comparing synced revisions … already attempted sync to [<rev>]`, i.e. the
+   revision is not retried. Fix: declare `argocd.argoproj.io/sync-options: Force=true,Replace=true` **in
+   git**. Observed over two further cycles: the Job is deleted+recreated exactly when its spec changes and
+   is *not* re-run when it does not (no churn — I-2).
+2. **A permanently OutOfSync StatefulSet starved the auto-sync.** `StatefulSet/minio` reported OutOfSync
+   after every sync while every sibling was Synced. Cause: the API server defaults `apiVersion`, `kind` and
+   `spec.volumeMode` inside `spec.volumeClaimTemplates`, and Argo's client-side differ does not normalize
+   that subtree. Consequence (the part that actually blocked this phase): self-heal issued **partial**
+   syncs — `Initialized new operation: … Resources:[]SyncOperationResource{{Group:apps,Kind:StatefulSet,
+   Name:minio}}` — and each partial sync marked the revision "already attempted", so the pending Job fix
+   could not land for a whole revision. Localization evidence: the `redis` StatefulSet omits the same class
+   of pod-spec defaults and stays Synced (it has no `volumeClaimTemplates`).
+
+   Diagnostic that isolated it (read-only, `kubectl diff` is a dry run):
+
+   ```
+   $ kubectl diff --server-side -f agentic/tmp/desired-minio-sts.yaml
+   Error from server (Conflict): Apply failed with 1 conflict: conflict with "argocd-controller": .spec.volumeClaimTemplates
+   $ kubectl diff --server-side --force-conflicts -f agentic/tmp/desired-minio-sts.yaml   # after declaring the fields
+exit=0   # no value difference left
+   ```
+
+   Fix: declare the three fields in git (Phase-2 precedent: declare, never mask with `ignoreDifferences`).
+   Related fact found while diagnosing: the pinned v3.5.3 controller binary does contain the `ServerSideDiff`
+   sync option and `--server-side-diff*` flags; adopting server-side diff is deferred as an Argo
+   control-plane (Phase-2 subtree) change — recorded in ADR-016 §4.
+
+### Failures → fixes (in order; every one landed via its own mirror cycle)
+
+1. `redis` image pulled from the wrong registry path + no explicit uid → local-registry rewrite and explicit
+   `runAsUser` for redis/busybox (PSA `restricted` checks the *effective* uid; `aa8df12e`).
+2. Duplicate `securityContext:` key in the Job pod spec (`yaml` keeps the last — silent authoring bug).
+3. Init flow blocked by the egress policy: the first draft allowed DNS only, which is not the dependency —
+   the Job talks to the MinIO **Service**; replaced with `allow-intra-namespace-egress` (`9cdb9c55`).
+4. `mc` under `readOnlyRootFilesystem` could not write its config → `HOME=/tasks` +
+   `MC_CONFIG_DIR=/tasks/.mc` on the writable volume (`a195c8c5`).
+5. **The real bug:** `mc` derives the alias name from the `MC_HOST_<alias>` suffix *verbatim*, so
+   `MC_HOST_LOCAL` registered alias `LOCAL` while the script called `local` — which then resolved to mc's
+   built-in default `local → http://localhost:9000`, producing an endless
+   `The cluster 'local' is unreachable: Get "http://localhost:9000/minio/health/cluster"`. Proven live in the
+   failing pod (`mc alias list` showed `LOCAL … Src: env` **and** `local → http://localhost:9000` from
+   config). Renamed to `MC_HOST_local` (`502e0f4e`).
+6. Permanent `OutOfSync` on the StatefulSet (trap 2 above, `90c4fe32`) and the I-5 gap that the source-built
+   images were tag-pinned rather than digest-pinned (`f1e8f4d3`).
+
+### Invariants touched
+
+- **I-1** — every workload change reached the cluster through the mirror/Argo path; imperative calls were the
+  sanctioned transport step (ADR-014) plus the §9.3 Job deletion. **I-2** — proven by the Job re-run (above).
+  **I-3** — only the sealed blob is tracked. **I-4** — probes/resources/NetworkPolicies on both workloads.
+  **I-5** — all four images digest-pinned. **I-9** — `git diff --name-only 35cf977d..HEAD` touches only
+  `deploy/phases/03-object-cache/**` plus the `deploy/phases/02-gitops/git-mirror/` transport tag (ADR-014)
+  and the docs ledger.
+- `kustomize build --load-restrictor LoadRestrictionsNone` → 11 docs, and
+  `kubectl apply --dry-run=server` → every doc admitted by the **live** Kyverno policies.
+
+### Open items / risks
+
+- **R7 (memory + legacy stack).** The 15-container legacy Compose stack is no longer present in
+  `docker ps -a` (it disappeared while Phase 3 was in progress; it was never stopped, restarted or deleted by
+  this mission — consistent with ADR-013 §5). Headroom is comfortable: node container
+  `2.318GiB / 7.608GiB`. The pending `~/.wslconfig` 14 GB restart remains an owner decision and is not
+  required for Phase 3.
+- **R8 (supply chain, new).** SECURITY §7's `syft` SBOM → `trivy` gate → `cosign sign` steps are not yet
+  produced for *any* mission image, and for the two source-built images (ADR-015) upstream's image CVE
+  pipeline is unavailable as a backstop. SECURITY §7 itself marks that CI as not-yet-built; the honest
+  position is that digest pinning + the binary checksum gate are the only supply-chain controls in force so
+  far. Proposed home: the Phase 9 hardening pass, where the scan/sign tooling can be vendored like the rest.
+
+### Phase 3 exit criteria — met
+
+- [x] buckets `raw-media` + `raw-sensitive-media` exist (plus `pg-backups`) — G3.1 (Job log + storage layer)
+- [x] Redis passes ping — G3.2 (`PONG`, redis 7.4.11)
+- [x] PVCs bound — G3.3 (`data-minio-0`, 20Gi, local-path)
+- [x] `nagar-phase3-object-cache` Synced/Healthy at rev `f1e8f4d3`; the redis pod was not touched
+- [x] `kustomize build` clean; server-side dry run admitted by live Kyverno; I-9 file scope respected
+- [x] ADR-015 + ADR-016 written; PHASES ledger flipped; OPERATIONS §12.13–12.14 added
