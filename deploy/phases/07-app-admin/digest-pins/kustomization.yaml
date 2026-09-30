@@ -13,7 +13,9 @@ kind: Component
 #     sha256:469126389143f5be54b5717572819e62d08ee9bbf7b01366b6d77ecab92f07db
 #   mission/nagar-admin-service:phase7f-4  (watermark timeout positional — binding rejects kwarg)
 #     sha256:18605dee9c66ea9ba7bf4e552178a8209bcdefeef13db0b9a7b0d97d09d82288
+#   mission/nagar-admin-service:phase7f-5  (watermark takes a TopicPartition OBJECT, G7f.4)
+#     sha256:e67a9f7e8defb2893de514612b0efbf5e83ec20afcbb888205a2800df1225780
 images:
   - name: registry.nagar.internal:5000/nagar-admin-service
     newName: k3d-nagar.localhost:5000/mission/nagar-admin-service
-    digest: sha256:18605dee9c66ea9ba7bf4e552178a8209bcdefeef13db0b9a7b0d97d09d82288
+    digest: sha256:e67a9f7e8defb2893de514612b0efbf5e83ec20afcbb888205a2800df1225780

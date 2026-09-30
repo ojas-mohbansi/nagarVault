@@ -139,9 +139,11 @@ def fetch_dlq_entries(limit: int) -> list[dict]:
         partitions = sorted(meta.topics[DLQ_TOPIC].partitions)
         ends = []
         for p in partitions:
-            # NB: this binding does NOT accept timeout= as a keyword (G7f finding —
-            # "argument given by name ('timeout') and position (2)"); pass it positionally.
-            low, high = consumer.get_watermark_offsets(DLQ_TOPIC, p, HEALTH_TIMEOUT_S)
+            # NB (G7f findings, both found live): this binding rejects timeout= as a
+            # keyword AND requires a TopicPartition OBJECT (not topic+partition ints)
+            # as the first argument — the 2-arg int form raises
+            # "TypeError: expected cimpl.TopicPartition".
+            low, high = consumer.get_watermark_offsets(TopicPartition(DLQ_TOPIC, p), HEALTH_TIMEOUT_S)
             ends.append((DLQ_TOPIC, p, high))
         starts = [TopicPartition(t, p, o) for (t, p, o) in tail_starts(ends, limit)]
         consumer.assign(starts)
