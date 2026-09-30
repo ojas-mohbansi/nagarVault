@@ -2187,3 +2187,67 @@ the platform has a real edge — TLS by the internal CA, CORS, rate limiting, an
 presigned-PUT route — with in-cluster paths untouched.**
 Next charter: Phase 9 — Observability & hardening (Prometheus + Loki, full Kyverno set,
 NetworkPolicy completion, alert rules with runbook anchors, restore drill evidence).
+
+## Substrate maintenance — Docker storage optimization (2026-09-30, k3d substrate)
+
+Trigger: host disk pressure from `docker_data.vhdx` at 123,692,122,112 B (123.7 GB).
+Measured disposition (nothing guessed): `docker system df` → Images 3/428.1 MB,
+Containers 3/2.187 MB, Local Volumes 6/**71.29 GB** (100% active), Build Cache 223
+entries/**25.72 GB** (100% reclaimable). Volume forensics: the five k3d anonymous hex
+volumes map to k3s internal dirs on `k3d-nagar-server-0` (/var/log, /var/lib/cni,
+/var/lib/kubelet, /var/lib/rancher/k3s) plus the shared `k3d-nagar-images`, and one to
+the registry's /var/lib/registry — i.e. ALL visible volume bytes are k3d mission state,
+not stray Docker data. In-volume du: k3s containerd image store **45 GB** (every mission
+tag ever pulled), live PVC storage **4.9 GB** (Postgres/Kafka/MinIO/Qdrant/Ollama —
+protected), kubelet 633 MB, registry payload **21.2 GB** (every version ever pushed).
+Plan (user-approved): backup → build-cache/dangling prune → registry tag-prune + GC →
+destructive rebuild with project-named volumes → Argo resync from git → elevated VHDX
+compaction → weekly hygiene automation; executed in passes, evidence per phase.
+Qdrant collections and Ollama models are intentionally NOT backed up: both rebuild
+idempotently from git-driven Jobs (schema-indexer re-embeds; models Job re-copies).
+
+### Phase A — backup before any destructive step (proof-carrying)
+
+Target dir `C:\Users\styli\.k3d\nagar-backup-2026-09-30\`.
+
+**A1 — nagardb logical dump.** Topology: no CNPG CRD in this substrate — Postgres is a
+plain StatefulSet (`postgres-1` primary: `pg_is_in_recovery()=f`, `postgres-2` replica:
+`=t`). Auth learned live: the CNPG socket at `/controller/run` enforces peer auth
+(FATAL), and the database is **`nagardb`** (not `nagar`) — TCP + `PGPASSWORD` from the
+`nagar-postgres-bootstrap` secret works. Dump from the primary:
+
+    pg_dump -h 127.0.0.1 -U nagar -d nagardb --no-owner --no-privileges
+    → exit 0, 22,846 B, 8/8 CREATE TABLE (audit_logs, ev_bus_telemetry,
+      health_camp_records, nmc_complaints, sessions, traffic_events, users,
+      water_sensor_readings), 8 COPY data sections, users rows present.
+
+Roles (`nmc_officer`, `health_officer`) are phase-5 DDL objects, re-created on restore.
+
+**A2 — raw-media bucket mirror.** In-cluster verifier pattern (fixture
+`deploy/phases/08-edge/e2e/fixtures/nagar-minio-backup-pod.yaml`, PodSecurity-restricted,
+Kyverno-gated, `nagar-minio-server` secretKeyRef envs — credentials never leave the
+pod): `mc mirror --preserve v/raw-media` → **1 object, 62 B** (the G8.4 proof object;
+the bucket is otherwise empty post-7g-cleanup) → tar+gzip → `SHA256SUMS` in-pod →
+BACKUP-READY gate → host copy-out.
+
+Transport lessons (three stacked Windows/MSYS traps, each now named):
+1. `kubectl cp` is unusable Git-Bash→host here: an MSYS dest (`/c/...`) is not recognized
+   as a local file; a Windows dest (`C:/...`) is misread as a REMOTE path (drive colon).
+2. `kubectl exec -- cat /backup/...` — argument-position POSIX paths get Git-prefix-
+   mangled into `C:/Program Files/Git/backup/...` before kubectl sees them.
+3. With that guard set (`MSYS_NO_PATHCONV=1`), a `--kubeconfig $TEMP/...` argument dies
+   (`GetFileAttributesEx /tmp/kubeconfig`): THIS bash exports `TEMP=/tmp`, and MSYS had
+   been silently converting the kubeconfig path all along. The pair is only safe as
+   `KUBECONFIG='<C:/...>'` env + `MSYS_NO_PATHCONV=1` — refining the standing rule.
+Working recipe: env-var kubeconfig + `MSYS_NO_PATHCONV=1 kubectl exec … -- sh -c
+'base64 /backup/…'` (whole-string `sh -c` args are conversion-immune) → `base64 -d` on
+host. Operational miss recorded: deleting the fixture pod in the same command as a
+failed copy destroyed the archive once; re-created via the idempotent fixture — and an
+apply onto a *terminating* pod yields a new pod whose logs are not the old pod's
+(stale `28c4c78b…` vs fresh `ce5a41c5…` hash confusion).
+
+**A3 — proof.** Archive 232 B; local sha256 `ce5a41c54201bfb8849bd0fde81c6167b69e14cbb3367ad2ce48557f22cc0e8b`
+== in-pod `SHA256SUMS` ✔; `tar -tzf` intact (raw-media/events/g8-edge-put-….bin).
+Backup inventory: `nagardb.sql` 22,846 B + `raw-media-backup.tar.gz` 232 B.
+Fixture pod deleted after proof; fixture manifest kept (per G8 doctrine) for closeout
+teardown.

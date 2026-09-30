@@ -1,0 +1,67 @@
+# Substrate-backup fixture (ephemeral; deleted after the copy-out in the same pass).
+# Mirrors the raw-media bucket to an emptyDir, tars it, and stays alive so the
+# host can `kubectl cp` the archive into C:\Users\styli\.k3d\nagar-backup-<date>\.
+# Credentials stay in-pod (secretKeyRef envs); nothing is printed to logs.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nagar-minio-backup
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+    nagar.io/g8-fixture: "true"
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: backup
+      image: k3d-nagar.localhost:5000/mission/minio-mc@sha256:72e8defdcea3777f3935cb0f834294aa7b5bf210f85572939a363e65fda6326e
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: HOME
+          value: /tmp
+        - name: MC_ACCESS
+          valueFrom:
+            secretKeyRef:
+              name: nagar-minio-server
+              key: accessKey
+        - name: MC_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: nagar-minio-server
+              key: secretKey
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      command: ["/bin/sh", "-c"]
+      args:
+        - set -e
+          ; for i in 1 2 3 4 5; do mc alias set v http://minio.nagar-platform.svc.cluster.local:9000 "$MC_ACCESS" "$MC_SECRET" >/dev/null 2>&1 && break; echo "retry $i"; sleep 5; done
+          ; mc mirror --preserve v/raw-media /backup/raw-media
+          ; echo '--- mirror summary ---'
+          ; find /backup/raw-media -type f | wc -l
+          ; du -sb /backup/raw-media
+          ; tar -czf /backup/raw-media-backup.tar.gz -C /backup raw-media
+          ; sha256sum /backup/raw-media-backup.tar.gz > /backup/SHA256SUMS
+          ; cat /backup/SHA256SUMS
+          ; echo BACKUP-READY
+          ; sleep 7200
+      volumeMounts:
+        - name: backup
+          mountPath: /backup
+  volumes:
+    - name: backup
+      emptyDir:
+        sizeLimit: 1Gi
