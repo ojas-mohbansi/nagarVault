@@ -31,7 +31,7 @@
 | 4 | Messaging | **Done (2026-09-29, k3d substrate)** | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
 | 5 | Relational store | **Done (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
 | 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
-| 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c Done (2026-09-30, k3d); 7d Done (2026-09-30, k3d); 7e Done (2026-09-30, k3d); 7f Done (2026-09-30, k3d); 7g not started** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
+| 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c Done (2026-09-30, k3d); 7d Done (2026-09-30, k3d); 7e Done (2026-09-30, k3d); 7f Done (2026-09-30, k3d); 7g Done (2026-09-30, k3d)** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
 | 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
 | 9 | Observability & hardening | Not started | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
 | 10 | Parity cutover & cleanup | Not started | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
@@ -110,7 +110,7 @@ rollback:
 | 7d | slmService | Ollama, Qdrant, query | `/ask` returns SQL + rows — **Done 2026-09-30** (fresh rebuild in `deploy/phases/07-app-slm/`, G7d.1–G7d.7 in the mission log; E2E-SLM-OK with caller-token RBAC inheritance, admin 403 pass-through proven; exposed and fixed the COUNT(*) gate over-block and the indexer's async count-witness race) |
 | 7e | ingestion backend | MinIO, Redis, Kafka, auth | presign→PUT→event→Kafka E2E — **Done 2026-09-30** (fresh rebuild in `deploy/phases/07-app-ingestion/`, G7e.1–G7e.5 in the mission log; full API E2E 202-commit + 200-duplicate + 400 malformed-gates + 200 media PUT, row enriched into `nmc_complaints` by the 7c worker; fixed the service-env NaN-port crash and the minioOk health-path, re-sealed the drifted `nagar-minio` consumer secret) |
 | 7f | adminService | PG, Kafka, schemaIndexer | `/health/cluster` all-up; `/dlq`, `/audit-logs` live — **Done 2026-09-30** (fresh rebuild in `deploy/phases/07-app-admin/`, G7f.1–G7f.5 in the mission log; E2E: all-up health summary, DLQ tail incl. a live malformed→worker→DLQ round-trip, real audit rows, officer 403 + no-auth 401 matrix; `/vector/resync` deferred to 7g per ADR-022) |
-| 7g | frontend + vault-ui | 7a–7f endpoints | browser E2E: login, dashboard, ask |
+| 7g | frontend + vault-ui | 7a–7f endpoints | browser E2E: login, dashboard, ask — **Done 2026-09-30** (fresh rebuild in `deploy/phases/07-app-ui/`, G7g.1–G7g.3 in the mission log; E2E through the BFF: real logins + httponly cookie relay, officer ask with RBAC-inherited rows, admin 403 `table-rbac` pass-through, health-officer query allowed, PII probe 403 `pii-column`, no-cookie 401 + bad-creds 401; injector round-trip 202 → row in `nmc_complaints`; second qdrant segment-corruption panic recovered via `/reindex` — §12.33; BFF architecture per ADR-023) |
 
 ### Phase 8 — Edge & TLS
 - **Files:** `deploy/phases/08-edge/` — Traefik IngressRoutes (port map: `/`→frontend, `/api`→

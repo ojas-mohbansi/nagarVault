@@ -1842,3 +1842,118 @@ cross-phase 4005 ingress widening in `deploy/phases/06-vector-llm/networkpolicie
 - [x] `/dlq` live — G7f.4 (3 real entries incl. a live malformed→worker→DLQ round-trip)
 - [x] `/audit-logs` live — G7f.4 (real allowed/blocked rows from the 7b/7d gates)
 - [x] Non-admin 403 + platform gates — G7f.4/G7f.5 (13/13 apps, all trees build)
+## Phase 7g — frontend + vault-ui (2026-09-30, k3d substrate)
+
+Fresh rebuild per ADR-013 in `deploy/phases/07-app-ui/` (both UI apps in one phase
+subtree; frozen legacy dirs stay deleted, I-10). Contracts read before code:
+CONVENTIONS §4 (3001 public edge target, 5173 dev overlay never edge-exposed),
+ARCHITECTURE §3.4 (UI chatbot consumes slm `/ask`) + Tier 9 dependency ordering,
+SECURITY §2/§3/§6.2/§8, the deployed contracts of authService (`/login` Credentials =
+{username,password}, Set-Cookie httponly host-only; `/whoami`), slmService (`/ask`
+{question≤2000} → {sql, rows, row_count, role}; 403 gate verdicts structured),
+ingestion (`/api/v1/events` envelope), plus the admin-RBAC rule proven in 7b/7f.
+Anything undocumented was decided as the smallest consistent choice and recorded in
+ADR-023: **server-side BFF** (browser talks only to :3001; cookie relayed as Bearer
+server-side; login body whitelisted; Set-Cookie re-emitted host-only/httponly;
+`/ask` responses whitelisted to {sql, rows, row_count, role}) and a **proxying
+injector** (fixed method+path allowlist, credential redaction in logs, operator-staged
+ephemeral token at pod `/tmp/injector-token`).
+
+### G7g.1 — TDD + build: red → green, Next standalone
+
+12 hermetic tests watched red (modules absent → import failure), then green: cookie→
+Bearer extraction, login-body whitelisting (legacy `user_id` field dropped),
+Set-Cookie rewriting (host-only/httponly preserved, Domain never set), `/ask` response
+whitelist, frozen-registry upstream defaults + env overrides; injector target
+resolution (rejects scheme-relative/absolute/`..` escapes), method+path allowlist,
+header redaction, synthetic envelope construction. Test/impl contract mismatch on the
+cookie-attr key caught by the suite and fixed in the TEST (impl shape was the sane
+one). Next 16.3.1 standalone build clean (routes: /, /login, /dashboard, /api/*).
+
+### G7g.2 — Landing: 14/14 Apps on the first cycle; qdrant panic #2 recovered
+
+Images `phase7g-1` (frontend, vault-ui) — digests registry-header read, machine-verified
+(`PIN-MATCHES-REGISTRY`, both). The 7f lesson was pre-applied (pod-level securityContext
+from the start) and Kyverno admitted first try: Application `nagar-phase7g-ui` +
+registration same commit, mirror `phase7g-1` → **14/14 Applications Synced/Healthy,
+no human touch**. Frontend polished to `phase7g-2` (+`/api/whoami` route, structured
+gate-verdict pass-through; digest re-verified; mirror `phase7g-2`). During E2E the
+officer/admin asks 503'd with "retrieval or generation backend unreachable" while slm
+`/health` was ok and ollama embed fine: direct qdrant probe showed the SECOND segment-
+corruption panic of the mission (`OutputTooSmall` unwrap, §12.33). Recovered via
+schemaIndexer `POST /reindex` → `{upserted: 40, points_count: 40}`; search probe
+200 with 5 hits; `/ask` immediately green. No durable data touched (rebuildable cache,
+established precedent).
+
+### G7g.3 — E2E through the UI surface (`E2E-RESULT`, 8/8 PASS + injector round-trip)
+
+Fixtures minted inside the auth pod (e2e-7g-001 adm7g/admin, e2e-7g-002 off7g/officer,
+e2e-7g-004 offhealth7g/ROLE_HEALTH_OFFICER), passwords via operator stdin only, driver
+run INSIDE a frontend pod (§12.26: the BFF is the subject; its chartered egress flows
+are the ones under test):
+
+- officer `/api/login` → 200 {status:ok, role:nmc_officer} with **httponly Set-Cookie
+  relayed** (token never enters browser JS)
+- officer `/api/whoami` → 200 {sub: e2e-7g-002, role: nmc_officer} — cookie→Bearer
+  relay server-side
+- officer `/api/ask` → **200 {sql: "SELECT COUNT(*) FROM nmc_complaints", row_count: 1,
+  role: nmc_officer}** — real NL → bge-m3 → qdrant RAG → qwen3 (temperature=0,
+  think=false) → queryService with the OFFICER's token → rows, all through the BFF
+- admin `/api/ask` → **403 {reason: table-rbac, verdict: blocked}** — the SECURITY §3
+  admin wall proven through the UI (pass-through of the structured verdict)
+- `/api/ask` without cookie → 401; bad credentials → 401 (rate-limit still upstream)
+- ROLE_HEALTH_OFFICER `/api/ask` (health-camps question) → **200** (the role 7b's wall
+  gates for health tables — allowed where chartered)
+- PII probe ("patient phone number and name") → **403 {reason: pii-column}** — the
+  denylist enforced through the UI
+- injector: staged admin token at `/tmp/injector-token` → POST form-equivalent →
+  **202 {eventId: evt-f1e857b6…, topic: nmc.complaints.raw.restricted.v1}** →
+  7c worker enriched the row (`source_system='vault-ui'`, ward 7, description verbatim)
+
+Two operator-side stumbles documented for the record: staged the fixture PASSWORD
+instead of the minted token (injector correctly 401'd it — the auth chain working);
+`printf '%s'` without newline made `read` kill the pipe chain. Both fixed in-place.
+
+### Platform gates + cleanup
+
+14/14 Applications Synced/Healthy; ALL-TREES-BUILD (27 trees incl. 07-app-ui);
+node 8.3/13.65 GiB (60%) after +3 UI pods; disk 376G free. Cleanup: injector row
+deleted (1), fixture users+sessions deleted (3 users, 2 sessions), pod staging
+removed (driver + injector token), local token/password files shredded. The frontend
+driver is versioned at `deploy/phases/07-app-ui/e2e/e2e-frontend.mjs` with the
+read-per-line choreography in its header.
+
+### Session lessons
+
+(1) First mirror-cycle Healthy with zero admission retries — pre-applying the 7f
+pod-securityContext lesson is the difference between one cycle and four. (2) "Backend
+unreachable" can be a lie told by a panicking cache: health checks metadata-green,
+search panics — probe the real operation, not the health endpoint (§12.33). (3) Staging
+the wrong secret class (password vs token) failed CLOSED everywhere it touched — the
+contract work of 7a–7f is what made the mistake cheap.
+
+### Invariants touched
+
+**I-1** — mirror/Argo only; out-of-band: §9.4 mirror advances ×2, qdrant `/reindex`
+recovery (documented, rebuildable cache), deletion of my own fixtures. **I-2** —
+injector token TTL'd by process lifetime; nothing durable written. **I-3** — no secrets
+in git; all fixture material ephemeral + shredded. **I-4** — probes/resources/PDB
+(frontend ×2)/NetworkPolicies/pod-securityContext to the letter. **I-5** — phase7g-1/2
+digests registry-header read, machine-verified. **I-6** — 3001/5173 unchanged. **I-7**
+— no alerts touched. **I-8** — ADR-023 written (BFF + injector proxy; the one
+architectural choice 7g required). **I-9** — scope: `deploy/phases/07-app-ui/**`,
+app-of-apps files, mirror tags. **I-10** — frozen files untouched. **I-11/I-12** —
+internal registry only; all trees build.
+
+### Phase 7g exit criteria — met
+
+- [x] Browser-flow E2E: login, dashboard, ask — G7g.3 (real logins + cookie relay,
+      whoami identity, officer ask with RBAC-inherited rows through the full SLM chain)
+- [x] Authz boundaries enforced where chartered — G7g.3 (admin 403 table-rbac,
+      PII 403, health-officer allowed, no-cookie 401, bad-creds 401)
+- [x] Injector flow — G7g.3 (202 → Kafka → worker → `nmc_complaints` row)
+- [x] Platform gates — G7g.2/G7g.5 (14/14 apps, all trees build, headroom OK)
+
+**Phase 7 complete: all seven app-tier services rebuilt fresh and verified live.**
+Next charter: Phase 8 — Edge & TLS (Traefik IngressRoutes, cert-manager internal CA,
+CORS, rate-limit middleware; browser presigned PUT from the frontend origin).
