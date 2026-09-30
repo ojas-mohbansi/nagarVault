@@ -1,5 +1,8 @@
 # Phase 7f — cluster-internal E2E (run from an admin pod, §12.26: it owns the flows).
-#   cat tokens | kubectl exec -i <admin-pod> -- sh -c 'E2E_ADMIN=$(head -1) E2E_OFFICER=$(tail -1) python /tmp/e2e7f.py'
+#   cat tokens | kubectl exec -i <admin-pod> -- sh -c '
+#     read -r E2E_ADMIN; read -r E2E_OFFICER; export E2E_ADMIN E2E_OFFICER; python /tmp/e2e7f.py'
+# ($(head -1)/$(tail -1) in ONE sh -c consumes the whole pipe into the first var —
+# the G7f officer-403 401s were exactly that; read -r per line is the fix.)
 # Both tokens come from real authService /logins (minted adm7f admin + off7f officer);
 # shredded afterwards. Covers:
 #   1. /health/cluster  — per-dependency booleans, all = AND

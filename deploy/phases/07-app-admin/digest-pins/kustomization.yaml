@@ -11,7 +11,9 @@ kind: Component
 #     sha256:6d6af092956b9a28dcadef5ac7f11ac4f95f871120db830079cb014246d57d6c
 #   mission/nagar-admin-service:phase7f-3  (stateless DLQ tail via get_watermark_offsets, G7f.4)
 #     sha256:469126389143f5be54b5717572819e62d08ee9bbf7b01366b6d77ecab92f07db
+#   mission/nagar-admin-service:phase7f-4  (watermark timeout positional — binding rejects kwarg)
+#     sha256:18605dee9c66ea9ba7bf4e552178a8209bcdefeef13db0b9a7b0d97d09d82288
 images:
   - name: registry.nagar.internal:5000/nagar-admin-service
     newName: k3d-nagar.localhost:5000/mission/nagar-admin-service
-    digest: sha256:469126389143f5be54b5717572819e62d08ee9bbf7b01366b6d77ecab92f07db
+    digest: sha256:18605dee9c66ea9ba7bf4e552178a8209bcdefeef13db0b9a7b0d97d09d82288
