@@ -99,6 +99,12 @@ spec:
         app.kubernetes.io/managed-by: argocd
         nagar.io/phase: "08"
         nagar.io/tier: "1"
+      annotations:
+        # Cold-config-reload trigger (G8.3): the provider can hold a stale failed
+        # dynamic-config build after its informers replay mid-apply; a pod-template
+        # annotation bump rolls the pod so Traefik rebuilds from the settled live
+        # state (the k8s configmap-checksum idiom, applied deliberately).
+        nagar.io/config-reload: "phase8-9-middlewares-per-ns"
     spec:
       serviceAccountName: traefik-edge
       automountServiceAccountToken: true
