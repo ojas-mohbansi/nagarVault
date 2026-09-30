@@ -711,9 +711,13 @@ deviation.
   without touching any app phase. Traefik's dashboard is NOT exposed. MinIO keeps its
   `namespace + nagar-app` ingress posture and gains only the nagar-system Traefik flow on 9000.
 - **Field repairs (2026-09-30, G8.3):** bring-up exposed three live defects, each fixed through
-  git (I-1) rather than imperative mutation: (a) Traefik v3.5 on k3s 1.33.3 requires
-  `--ping.manpage=false` — with EPHT < 2.9 the default manpage registry lookup silently kills
-  the ping entrypoint's router, so readiness 404s crash-looped an otherwise-serving proxy;
+  git (I-1) rather than imperative mutation: (a) Traefik's ping endpoint must ride a DEDICATED
+  plaintext entrypoint (`--entryPoints.ping.address=:8082` + `--ping.entrypoint=ping`, probes
+  moved to it): on the deployed build (3.5.6, sha256:e157892e…) attaching ping to the TLS
+  entrypoint makes `/ping` 404 while the entrypoint otherwise serves — reproduced on plain
+  Docker, so it is image behavior. (An earlier k3s-EPHT/manPage hypothesis was tested against
+  the pinned image and falsified — `--ping.manpage=false` is rejected by this build and was
+  removed; recorded here so the wrong theory does not resurface as fact.)
   (b) the `traefik-edge` NetworkPolicy needed port-scoped API-server egress (443/6443, no peer —
   the Phase-4 `allow-kafka-api-egress` pattern): without it the kubernetescrd provider's
   reflectors get `connection refused` and the container exits on cache-sync timeout;

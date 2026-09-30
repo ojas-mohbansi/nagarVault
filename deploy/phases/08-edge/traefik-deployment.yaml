@@ -102,14 +102,17 @@ spec:
           image: registry.nagar.internal:5000/traefik:v3.5
           args:
             - "--entryPoints.websecure.address=:443"
+            - "--entryPoints.ping.address=:8082"
             - "--providers.kubernetescrd.allowExternalNameServices=false"
             - "--providers.kubernetesingress=false"
+            # Ping rides a DEDICATED plaintext entrypoint on this build (3.5.6,
+            # sha256:e157892e…): attached to the TLS entrypoint, /ping 404s even while
+            # the entrypoint serves TLS — reproduced on plain Docker, so it is image
+            # behavior, not substrate. (The earlier k3s-EPHT/manPage hypothesis was
+            # tested and falsified: --ping.manpage=false is rejected by this build.
+            # Evidence trail in ADR-024 field repairs and the mission log G8.3.)
             - "--ping=true"
-            - "--ping.entrypoint=websecure"
-            # traefik v3.5 on k3s 1.33.3 (EPHT < 2.9): the default manpage registry
-            # lookup must be disabled or the ping entrypoint silently loses its /ping
-            # router (404 on an otherwise-serving TLS endpoint — G8.3 evidence).
-            - "--ping.manpage=false"
+            - "--ping.entrypoint=ping"
             - "--api.dashboard=false"
             - "--log.level=INFO"
             - "--accesslog=true"
@@ -124,18 +127,20 @@ spec:
           ports:
             - containerPort: 443
               name: websecure
+            - containerPort: 8082
+              name: ping
           readinessProbe:
             httpGet:
               path: /ping
-              port: 443
-              scheme: HTTPS
+              port: ping
+              scheme: HTTP
             initialDelaySeconds: 4
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /ping
-              port: 443
-              scheme: HTTPS
+              port: ping
+              scheme: HTTP
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
