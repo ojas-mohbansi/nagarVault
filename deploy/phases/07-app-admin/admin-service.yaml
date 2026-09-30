@@ -46,6 +46,12 @@ spec:
         nagar.io/phase: "07"
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: admin-service
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
