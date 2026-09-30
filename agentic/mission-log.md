@@ -2141,5 +2141,49 @@ untouched. **I-11/I-12** — internal-registry digest only; no manifest tree alt
 
 TLS chain ✓ · CORS allow/deny ✓ · rate limit attributed ✓ · presigned PUT byte-intact
 (with browser-host discrepancy recorded) ✓ · authz 401/403 ✓ · in-cluster paths intact ✓.
-Step-5 closeout (platform gates, OPERATIONS §12.34, PHASES ledger flip, fixture teardown)
-remains for the next pass, per plan.
+
+### G8.7 — Closeout: platform gates, charter exit criteria, ledger flip
+
+Platform gates, live:
+
+    15/15 Applications Synced/Healthy (nagar-system, incl. nagar-phase8-edge)
+    ALL-TREES-BUILD: 39/39 kustomization trees build (top-level 14/14)
+    node k3d-nagar-server-0: 246m CPU, 6735Mi/48% memory
+    disk: 356G free (63% used)
+    g8 fixtures remaining in cluster: 0 (verifier pod deleted after G8.4; its manifest
+      stays versioned at deploy/phases/08-edge/e2e/fixtures/ for re-use/audit)
+
+Charter exit criteria, exercised verbatim from OPERATIONS §11:
+
+    step 1: curl -sf https://<edge>/auth/ | grep ok
+            -> {"status":"ok","service":"authService"}  SMOKE-1-OK
+    step 2: curl -si -X POST https://<edge>/auth/login -d '{...}' | head -1
+            -> HTTP/1.1 200 OK
+               Set-Cookie: session_token=<redacted>; HttpOnly; Max-Age=3600;
+                          Path=/; SameSite=lax; Secure
+
+Invocation finding: the script's literal curl form silently returns `000` on this
+substrate — the host has no 80/443 mapping (ADR-024) AND its trust store does not hold
+the internal CA. Documented as an invocation note in §11 (port-forward + `--resolve` +
+`-k` + `--ssl-no-revoke`; one-shot spawn→poll→prove→kill), with the troubleshooting row
+**§12.34**. The probe/poll step exists because cold forwards occasionally serve nothing for
+the first seconds. Securing smoke step 2 required the seeded admin8 credential set and the
+`Secure` cookie landed by the phase — the charter's HTTPS requirement is exactly what the
+COOKIE_SECURE flip (field repair d) was for.
+
+Second §12 row from this session: **§12.35** — `envFrom` injects secret keys verbatim;
+canonical-name consumers (`MINIO_ACCESS_KEY`) see empty vars and fall back to anonymous
+(the G8.4 verifier's AccessDenied detour).
+
+**Ledger flip: Phase 8 → Done (2026-09-30, k3d substrate)** in `docs/PHASES.md` §1,
+with the charter block carrying the exit evidence and the one recorded deviation: the
+literal browser-origin presigned PUT is blocked upstream by 7e's presigner (no external-
+host env — minted URLs carry cluster-internal DNS), proven instead via the equivalent
+edge path; `PRESIGN_PUBLIC_URL` in 7e is the follow-up that closes it. AGENTS.md §7
+refreshed: Phases 1–8 done, 9–10 remain.
+
+Charter exit criteria — met (with the recorded deviation above). **Phase 8 complete:
+the platform has a real edge — TLS by the internal CA, CORS, rate limiting, and the
+presigned-PUT route — with in-cluster paths untouched.**
+Next charter: Phase 9 — Observability & hardening (Prometheus + Loki, full Kyverno set,
+NetworkPolicy completion, alert rules with runbook anchors, restore drill evidence).

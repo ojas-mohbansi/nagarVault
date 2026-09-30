@@ -190,6 +190,13 @@ curl -si -X POST https://<edge>/auth/login -H 'Content-Type: application/json' \
 
 Phase 10 exit requires this script green on the Kubernetes stack.
 
+> **Invocation on the air-gapped substrate (proven Phase 8, G8.7):** the host has no 80/443 mapping
+> by design (ADR-024) and its trust store does not hold the internal CA, so run the steps through a
+> `kubectl -n nagar-system port-forward svc/traefik-edge <port>:443` tunnel with
+> `--resolve k3d.nagar.internal:<port>:127.0.0.1` and `curl -k` (or `--cacert` with the exported
+> CA); Windows schannel clients additionally need `--ssl-no-revoke`. Without `-k` every step
+> silently reports `000`.
+
 ## 12. Troubleshooting matrix (symptom → cause → fix)
 
 | # | Symptom | Likely cause | Fix |
@@ -235,6 +242,8 @@ Phase 10 exit requires this script green on the Kubernetes stack.
 
 | 12.32 | A two-token E2E run returns 401 where 403 was expected — the "second" token is empty or equals the first | `$(head -1)`/`$(tail -1)` inside ONE `sh -c` each consume the WHOLE stdin pipe; `head` swallows both lines and the second var is empty (Phase-7f officer-403 matrix showed 401s for this reason) | pipe tokens with `read -r VAR1; read -r VAR2; export …` inside the pod shell; keep the driver's header comment as the executable choreography so the next run copies the working shape |
 | 12.33 | slmService `/ask` returns 503 "retrieval or generation backend unreachable" while `/health` reports every dependency ok, and direct qdrant `points/search` returns 500 `task panicked with message "called \`Result::unwrap()\` on an \`Err\` value: OutputTooSmall"` | qdrant segment corruption (second occurrence: Phase 7d G7d.4 and Phase 7g G7g.2) — the panic happens at search time while collection metadata (`/collections/...`) stays green, so health checks pass. The collection is a rebuildable cache (40 chunks from `schema_docs.json`), not durable data | rebuild via schemaIndexer `POST /reindex` from the indexer pod (Phase 7d recovery; 7g recovery returned `{upserted: 40, points_count: 40}` and search resumed 200 with 5 hits). Verify with a direct search probe before re-running any `/ask` E2E. If it recurs frequently, investigate qdrant on-disk payload segments (ADR-021-adjacent storage) |
+| 12.34 | Probing the edge from the operator host: every curl returns `000` (or schannel cert/revocation errors) although all pods are Healthy | two stacked host-side facts, not a cluster fault: the host has no 80/443 mapping (ADR-024 — the edge is reachable only through a `kubectl -n nagar-system port-forward svc/traefik-edge <port>:443` tunnel) and the host trust store does not contain the internal CA, so plain `curl https://k3d.nagar.internal/...` fails TLS before any router is reached | spawn the port-forward inline (spawn → poll with a `-sk` probe until 200 → prove → kill in ONE command; cross-command forwards die with their parent shell), add `--resolve k3d.nagar.internal:<port>:127.0.0.1`, `-k` and `--ssl-no-revoke` (Windows schannel). Full shape in the §11 invocation note; leak check with `tasklist //FI "IMAGENAME eq kubectl.exe"` (Phase 8, G8.7) |
+| 12.35 | A verifier/init pod built with `envFrom: secretRef` gets `Access Denied` from the service it calls (mc/S3/psql), while the same secret works for the workload that owns it | `envFrom` injects secret keys VERBATIM (`accessKey`, `secretKey`, `password`) — images expecting canonical variable names (`MINIO_ACCESS_KEY`, `PGPASSWORD`) see empty variables and silently fall back to anonymous/default credentials (Phase 8 G8.4 verifier) | map names explicitly with `env[].valueFrom.secretKeyRef` (`name: MC_ACCESS, valueFrom: {secretKeyRef: {name: <secret>, key: accessKey}}`); remember pods are immutable (delete + re-apply) and admission enforces PodSecurity restricted + Kyverno resource limits on any ad-hoc pod (I-4) |
 
 ## 13. Upgrade & rollback
 

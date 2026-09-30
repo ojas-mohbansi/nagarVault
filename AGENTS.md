@@ -2,7 +2,7 @@
 
 > **Read this file first. It is the single entry point to the repository.**
 > If any other document, README, script, or comment contradicts this file, this file wins.
-> Last architecture review: 2026-09-29.
+> Last architecture review: 2026-09-30.
 
 ---
 
@@ -139,15 +139,17 @@ Reading order is enforced by review. If your change touches data plane, read §4
 
 ## 7. Current state of the world
 
-**Phase 0 (this documentation suite) is complete. Phases 1–5 are implemented and verified on
+**Phase 0 (this documentation suite) is complete. Phases 1–8 are implemented and verified on
 the disposable k3d substrate (see `docs/PHASES.md` for the ledger and `agentic/mission-log.md`
-for gate evidence); Phases 6–10 are not yet implemented.**
+for gate evidence); Phases 9–10 are not yet implemented.**
 
-- The runtime substrate today is **Docker Compose** (frozen per I-10). The Kubernetes manifests in
-  `docs/manifests/exemplars/` are canonical reference shapes, not yet applied anywhere.
+- The runtime substrate today is **the k3d cluster reconciled by Argo CD** (Phases 1–8). The
+  manifests in `docs/manifests/exemplars/` remain canonical reference shapes for review, not the
+  reconciled source — `deploy/phases/` is.
 - `docs/PHASES.md` §1 defines each phase's charter, exit criteria, rollback, and skip-consequence.
-- Until Phase 10 completes, this repository is in **transition**: Compose remains the only runnable
-  path, and that is intentional and documented.
+- Until Phase 10 completes, this repository is in **transition**: the frozen legacy stack is gone
+  (rebuilt from scratch per ADR-013), the parity cutover checklist and README rewrite are pending,
+  and that is intentional and documented.
 
 ---
 

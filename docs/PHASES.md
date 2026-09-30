@@ -32,7 +32,7 @@
 | 5 | Relational store | **Done (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
 | 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
 | 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c Done (2026-09-30, k3d); 7d Done (2026-09-30, k3d); 7e Done (2026-09-30, k3d); 7f Done (2026-09-30, k3d); 7g Done (2026-09-30, k3d)** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
-| 8 | Edge & TLS | Not started | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
+| 8 | Edge & TLS | **Done (2026-09-30, k3d substrate)** | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
 | 9 | Observability & hardening | Not started | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
 | 10 | Parity cutover & cleanup | Not started | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
 
@@ -114,11 +114,25 @@ rollback:
 
 ### Phase 8 — Edge & TLS
 - **Files:** `deploy/phases/08-edge/` — Traefik IngressRoutes (port map: `/`→frontend, `/api`→
-  ingestion, `/auth`→auth, `/admin`→admin), cert-manager internal-CA `Certificate`s, CORS
-  middleware (replaces per-bucket MinIO CORS), rate-limit middleware (defense-in-depth).
+  ingestion, `/auth`→auth, `/admin`→admin; plus `/minio`→minio for presigned PUTs), cert-manager
+  internal-CA `Certificate`s, CORS middleware (replaces per-bucket MinIO CORS), rate-limit
+  middleware (defense-in-depth).
 - **Exit:** OPERATIONS §11 smoke steps 1–2 pass over HTTPS; browser presigned PUT works from the
   frontend origin.
 - **Rollback:** edge-only; in-cluster paths unaffected.
+- **Done 2026-09-30 (k3d substrate, ADR-024):** all routes live — 15/15 Applications
+  Synced/Healthy; OPERATIONS §11 smoke steps 1–2 green over HTTPS (`SMOKE-1-OK`; login 200 with a
+  `Secure` cookie; invocation note added to §11 — host-side `-k` + port-forward per §12.34).
+  Six E2E gates green (G8.1–G8.7 in the mission log): TLS chain to `CN=nagar-edge-ca` with the
+  TLS-1.1 floor held, CORS preflight allow/deny matrix, rate-limit burst with both 429 shapes
+  attributed (edge Retry-After vs auth in-app), presigned PUT through the edge byte-intact into
+  MinIO, 401/403 authz matrix with admin contrast, in-cluster verbatim `/api` + native-path flows
+  unaffected. Charter deviation, recorded: the literal *browser*-origin presigned PUT is blocked by
+  7e's presigner — `MINIO_URL` has no external-host env, so minted URLs carry cluster-internal DNS
+  (proven via the equivalent edge path; a `PRESIGN_PUBLIC_URL` env is the 7e follow-up). Traefik
+  v3 field rules live-proven and encoded in ADR-024: per-namespace middlewares/TLSOptions,
+  parenthesized host disjunctions, vendored 10-CRD bundle + RBAC incl. endpointslices/nodes,
+  dedicated plaintext ping entrypoint, strip map for native-path upstreams (§6 correction).
 
 ### Phase 9 — Observability & hardening
 - **Files:** `deploy/phases/09-observability/` + NetworkPolicy completion + full Kyverno set
