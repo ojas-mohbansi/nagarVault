@@ -1,10 +1,45 @@
 # Phase 8 — routes + middlewares (ADR-024 §5–6; port map frozen in CONVENTIONS §4).
 # No StripPrefix: upstreams keep native paths; the frontend BFF path map is unchanged.
+#
+# TRAEFIK v3 RULE (G8.3): middlewares MUST live in the IngressRoute's namespace —
+# cross-namespace references are rejected ("middleware nagar-system/edge-headers is not
+# in the IngressRoute namespace nagar-app") and the router is silently not created.
+# The shared middleware set is therefore declared once per route namespace.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: edge-headers
-  namespace: nagar-system
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    frameDeny: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-ratelimit
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+    period: 1m
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-headers
+  namespace: nagar-platform
   labels:
     app.kubernetes.io/part-of: nagarvault
     nagar.io/phase: "08"
@@ -20,7 +55,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: edge-cors
-  namespace: nagar-system
+  namespace: nagar-platform
   labels:
     app.kubernetes.io/part-of: nagarvault
     nagar.io/phase: "08"
@@ -43,20 +78,6 @@ spec:
     accessControlAllowCredentials: true
     accessControlMaxAge: 600
     addVaryHeader: true
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: edge-ratelimit
-  namespace: nagar-system
-  labels:
-    app.kubernetes.io/part-of: nagarvault
-    nagar.io/phase: "08"
-spec:
-  rateLimit:
-    average: 10
-    burst: 20
-    period: 1m
 ---
 apiVersion: traefik.io/v1alpha1
 kind: TLSOption
@@ -87,7 +108,6 @@ spec:
       kind: Rule
       middlewares:
         - name: edge-headers
-          namespace: nagar-system
       services:
         - name: frontend
           port: 3001
@@ -114,7 +134,6 @@ spec:
       kind: Rule
       middlewares:
         - name: edge-headers
-          namespace: nagar-system
       services:
         - name: ingestion
           port: 3000
@@ -141,9 +160,7 @@ spec:
       kind: Rule
       middlewares:
         - name: edge-headers
-          namespace: nagar-system
         - name: edge-ratelimit
-          namespace: nagar-system
       services:
         - name: auth-service
           port: 4000
@@ -170,7 +187,6 @@ spec:
       kind: Rule
       middlewares:
         - name: edge-headers
-          namespace: nagar-system
       services:
         - name: admin-service
           port: 4001
@@ -197,9 +213,7 @@ spec:
       kind: Rule
       middlewares:
         - name: edge-headers
-          namespace: nagar-system
         - name: edge-cors
-          namespace: nagar-system
       services:
         - name: minio
           port: 9000
