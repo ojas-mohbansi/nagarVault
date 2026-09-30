@@ -23,7 +23,12 @@ metadata:
     nagar.io/phase: "08"
 rules:
   - apiGroups: [""]
-    resources: ["services", "endpoints", "endpointslices", "secrets"]
+    resources: ["services", "endpoints", "secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  # EndpointSlices live in discovery.k8s.io, not core — the provider's informer needs
+  # them at cluster scope (G8.3: their denial stalls cache sync exactly like a missing CRD).
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["traefik.io"]
     resources:

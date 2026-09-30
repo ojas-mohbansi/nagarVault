@@ -7,6 +7,14 @@ kind: Component
 # (Docker-Content-Digest) and machine-compared against this file before landing.
 #   mission/traefik:v3.5
 #     sha256:e157892efcf505bb9b3e5c79011ebf398e5f583acd240572e1a47f0b2044c74a
+#
+# CRD vendor provenance (2026-09-30): ../traefik-crd.yaml is the OFFICIAL v3.5 bundle,
+# fetched from raw.githubusercontent.com/traefik/traefik/v3.5 (kubernetes-crd-definition-v1.yml,
+# 184,437 bytes) and kept byte-identical: sha256:1f0a915765915aac3293274db2344145fa41b28c1162d7c1a0ce833b0efb890b.
+# It replaces the earlier 4-CRD hand-pruned copy: the kubernetescrd provider watches TEN
+# traefik.io kinds, and the missing traefikservices/tlsstores informers stalled the
+# provider's cache sync, leaving Traefik serving its default cert with zero routers
+# (G8.3; do not prune CRD bundles — prune nothing the informer set references).
 images:
   - name: registry.nagar.internal:5000/traefik
     newName: k3d-nagar.localhost:5000/mission/traefik
