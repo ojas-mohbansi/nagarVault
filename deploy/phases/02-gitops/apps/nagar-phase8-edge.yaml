@@ -1,0 +1,36 @@
+# Phase 8 child Application (app-of-apps). The edge tree spans three namespaces
+# (nagar-system Traefik + certificates, nagar-app auth patch, nagar-platform MinIO NP).
+# Argo destinations are single-namespace per Application, so the root Application uses
+# ServerSideApply with the resources' own namespace declarations (they are absolute in
+# the manifests; destination.namespace is the default for namespace-less objects).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nagar-phase8-edge
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "8"
+spec:
+  project: nagar
+  source:
+    repoURL: git://git-repo-mirror.nagar-system.svc.cluster.local:9418/nagarvault.git
+    targetRevision: HEAD
+    path: deploy/phases/08-edge
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nagar-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
