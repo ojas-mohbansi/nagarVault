@@ -2334,3 +2334,67 @@ bash loop plus CRLF map rows — redone in Python for a trustworthy result; an e
 PASS=0 run was my own URL bug, full ref in the repo path position, fixed and rerun);
 Argo **15/15 Applications Synced/Healthy**. One-shot GC container removed; live
 registry restored to service. No volume pruned, no Phase D work performed.
+
+### Phase D — destructive rebuild with project-named volumes (all gates green)
+
+Goal state reached: the 45 GB containerd store and the five hex anonymous volumes are
+gone; every surviving volume is project-named; the pruned 21.1 GB pinned registry
+payload lives in `nagar-registry-data`.
+
+**Sequence, each step gated on the previous proof:**
+1. Baseline: 6 volumes / 71.17 GB, cluster healthy, 15/15 Argo (pre-rebuild).
+2. Pre-created the six named volumes (`k3d-nagar-server-0-{k3s,kubelet,cni,logs,images}`,
+   `nagar-registry-data`).
+3. Registry payload copy old→new in one container with both mounts (`cp -a`, src :ro),
+   behind a `docker stop k3d-nagar.localhost` write fence: **1,473 files == 1,473
+   files; 22,638,365,576 B vs 22,638,386,056 B** (+20,480 B = five 4 KiB directory-entry
+   artifacts, zero data-file difference). MSYS guard `MSYS_NO_PATHCONV=1` now required
+   for `docker run … sh -c` too (first attempt had `/from` rewritten to
+   `C:/Program Files/Git/from` — same trap family, new command surface).
+4. Copy proven AS A REGISTRY: two temp `registry:2` instances (old volume :35100, copy
+   :35101) → catalogs identical (24 repos), tag sets identical (21 tags), and
+   **21/21 pinned digests src == dst == git**.
+5. `k3d cluster delete nagar` → containers gone; `k3d registry delete nagar.localhost`
+   → payload survived (its content is in my copied named volume, not the deleted
+   container). **Finding: k3d's delete removed the five hex anonymous volumes itself**
+   — they were k3d-managed cluster volumes, not orphans; formal `volume inspect`
+   proof recorded for all five IDs.
+6. Registry recreated on the named volume (`k3d registry create nagar.localhost
+   --port 35000 -v nagar-registry-data:/var/lib/registry`) → catalog 200/24 repos.
+7. Cluster recreated per the G0 recipe (same image, `--registry-use
+   nagar.localhost:35000`, `C:/...` storage bind, `--disable=traefik@server:0`) plus
+   four named-volume binds (`k3s`, `kubelet`, `cni`, `logs`).
+
+**Two debug episodes (systematic, both recorded):**
+- Create attempt #1 failed ("No nodes found" during k3d's pre-create cleanup): the
+  stale `k3d-nagar` docker NETWORK had survived both deletes — the registry container
+  kept it alive by attachment. `docker network disconnect` + `network rm` cleared it;
+  registry stayed healthy (catalog 200).
+- Attempt #2 failed again; the first two runs were judged from `tail -3` (rollback
+  lines only — self-inflicted blindness). Full log capture exposed the real error:
+  **"Duplicate mount point: /k3d/images"** — k3d manages `/k3d/images` itself and
+  auto-creates its own project-named `k3d-nagar-images` volume; my explicit `-images`
+  bind collided. Lesson restated: never diagnose from a truncated tail; capture the
+  whole log. Attempt #3 (without the `-images` bind) → `Cluster 'nagar' created
+  successfully!`.
+
+**Continuity proof on the rebuilt substrate:** kubeconfig regenerated
+(host.docker.internal→127.0.0.1), **new API port 62398** (recorded; was 57306);
+`node/k3d-nagar-server-0` Ready on a **fresh containerd store of 246 MB** (was 45 GB);
+registry catalog 200 with 24 repositories; **21/21 pinned digests HEAD-match their
+git digests**; server-0 mounts verified as the four named volumes + `k3d-nagar-images`
++ the storage bind. Argo is absent on the fresh cluster (`applications` resource
+unknown) — **expected pre-Phase-E**, not a failure.
+
+**Cleanup of superseded volumes (gated, by ID):** all five hex IDs proven gone
+(via k3d delete, step 5); my now-redundant empty `k3d-nagar-server-0-images` removed
+BY ID (k3d owns the images volume). **No blind `docker volume prune` was ever run.**
+
+**Final state:** volumes 6/6 project-named — `k3d-nagar-images`,
+`k3d-nagar-server-0-{cni,k3s,kubelet,logs}`, `nagar-registry-data`;
+`docker system df`: Images 4/460 MB, Containers 4/1.987 MB, **Local Volumes 22.89 GB
+(was 71.17 GB — −48.3 GB)**, Build Cache 0; containerd store 246 MB; registry payload
+21.1 GB (the pinned working set, proven). Containers: `k3d-nagar-server-0`,
+`k3d-nagar-serverlb`, `k3d-nagar.localhost`, `k3d-nagar-tools` (k3d's helper node).
+Next per plan: Phase E — Argo bootstrap re-apply, 15-app resync from git, admin8
+re-seed; then the one-time VHDX compaction and the weekly hygiene automation.
