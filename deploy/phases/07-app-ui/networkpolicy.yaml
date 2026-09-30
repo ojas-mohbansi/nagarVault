@@ -1,0 +1,103 @@
+# NetworkPolicy: ONLY the flows these UI pods need (SECURITY §8:
+# frontend → auth, slm HTTP — the BFF's two upstreams; the vault-ui injector's single
+# flow is the ingestion proxy). Ingress: same-namespace peers only until the Phase-8
+# edge lands (frontend becomes the public edge target then).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-frontend
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-frontend
+      app.kubernetes.io/component: ui
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}          # same-namespace peers only (pre-edge posture)
+      ports:
+        - protocol: TCP
+          port: 3001
+  egress:
+    - to:                          # authService — /login, /whoami, /logout (BFF)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-auth-service
+      ports:
+        - protocol: TCP
+          port: 4000
+    - to:                          # slmService — /ask (BFF)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-slm-service
+      ports:
+        - protocol: TCP
+          port: 4004
+    - to:                          # DNS — always present (SECURITY §8)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-ui
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-vault-ui
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-vault-ui
+      app.kubernetes.io/component: devtool
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector: {}          # same-namespace peers only (dev overlay)
+      ports:
+        - protocol: TCP
+          port: 5173
+  egress:
+    - to:                          # ingestion API — the injector's only flow
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-ingestion
+      ports:
+        - protocol: TCP
+          port: 3000
+    - to:                          # DNS — always present (SECURITY §8)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

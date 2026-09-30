@@ -1,0 +1,192 @@
+# Phase 7g — frontend (3001) + vault-ui injector (5173). Port registry frozen (§4).
+# Pod-level securityContext is MANDATORY (Kyverno require-pod-security-context — the
+# 7f admission lesson: client dry-runs cannot see it). Frontend ×2 + PDB; vault-ui is
+# the ×1 dev overlay (I-4 PDB condition applies to replicas > 1).
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-frontend
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ui
+    nagar.io/phase: "07"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-frontend
+    app.kubernetes.io/component: ui
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-frontend
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: ui
+    nagar.io/phase: "07"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-frontend
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-frontend
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: ui
+        nagar.io/phase: "07"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
+          image: registry.nagar.internal:5000/nagar-frontend:phase7g-1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /app/.next/cache
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: AUTH_URL
+              value: http://auth-service.nagar-app.svc.cluster.local:4000
+            - name: SLM_URL
+              value: http://slm-service.nagar-app.svc.cluster.local:4004
+          readinessProbe:
+            httpGet: { path: /login, port: 3001 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /login, port: 3001 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-frontend
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "07"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-frontend
+      app.kubernetes.io/component: ui
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-ui
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-vault-ui
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: devtool
+    nagar.io/phase: "07"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-vault-ui
+    app.kubernetes.io/component: devtool
+  ports:
+    - name: http
+      port: 5173
+      targetPort: 5173
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-ui
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/name: nagar-vault-ui
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: devtool
+    nagar.io/phase: "07"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-vault-ui
+      app.kubernetes.io/component: devtool
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-vault-ui
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: devtool
+        nagar.io/phase: "07"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vault-ui
+          # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
+          image: registry.nagar.internal:5000/nagar-vault-ui:phase7g-1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - containerPort: 5173
+              name: http
+          readinessProbe:
+            httpGet: { path: /, port: 5173 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: 5173 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}

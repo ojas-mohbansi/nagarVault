@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for the Phase 7g UI images (invariant I-5).
+#
+# Resolution 2026-09-30: built on the host from this tree, pushed via localhost:35000,
+# digests read from the registry headers (Docker-Content-Digest) and machine-compared
+# against this file before landing.
+#   mission/nagar-frontend:phase7g-1
+#     sha256:2ae254b70e1fceb9cce1014e5ee786e2e400c871f84753fc51721ec09d54c41d
+#   mission/nagar-vault-ui:phase7g-1
+#     sha256:8648c4ea0bf81fb5e4a251a53a61582ac53475deb142912cf84472110be3bb04
+images:
+  - name: registry.nagar.internal:5000/nagar-frontend
+    newName: k3d-nagar.localhost:5000/mission/nagar-frontend
+    digest: sha256:2ae254b70e1fceb9cce1014e5ee786e2e400c871f84753fc51721ec09d54c41d
+  - name: registry.nagar.internal:5000/nagar-vault-ui
+    newName: k3d-nagar.localhost:5000/mission/nagar-vault-ui
+    digest: sha256:8648c4ea0bf81fb5e4a251a53a61582ac53475deb142912cf84472110be3bb04

@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Phase 7g — frontend + vault-ui (charter: PHASES.md §2 micro-phase 7g). Phase boundary =
+# directory boundary (I-9); nothing outside this subtree is touched except the
+# app-of-apps registration.
+resources:
+  - ui-deployment.yaml
+  - networkpolicy.yaml
+components:
+  - digest-pins
