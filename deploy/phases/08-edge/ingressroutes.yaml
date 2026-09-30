@@ -5,6 +5,11 @@
 # cross-namespace references are rejected ("middleware nagar-system/edge-headers is not
 # in the IngressRoute namespace nagar-app") and the router is silently not created.
 # The shared middleware set is therefore declared once per route namespace.
+#
+# STRIP MAP (ADR-024 §6 correction, G8.3): upstreams serve NATIVE paths, so the edge
+# strips the routing prefix where it differs from the upstream's own: /auth→/login,
+# /admin→/health/cluster, /minio→/<bucket>/<object>. /api and / are VERBATIM —
+# ingestion's API natively lives under /api/v1/… and the frontend serves at root.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -34,6 +39,32 @@ spec:
     average: 10
     burst: 20
     period: 1m
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-strip-auth
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  stripPrefix:
+    prefixes:
+      - /auth
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-strip-admin
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  stripPrefix:
+    prefixes:
+      - /admin
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -105,6 +136,19 @@ spec:
   minVersion: VersionTLS12
   sniStrict: true
 ---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-strip-minio
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  stripPrefix:
+    prefixes:
+      - /minio
+---
 # / -> frontend (public edge; CONVENTIONS §4)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
@@ -173,6 +217,7 @@ spec:
       middlewares:
         - name: edge-headers
         - name: edge-ratelimit
+        - name: edge-strip-auth
       services:
         - name: auth-service
           port: 4000
@@ -198,6 +243,7 @@ spec:
       kind: Rule
       middlewares:
         - name: edge-headers
+        - name: edge-strip-admin
       services:
         - name: admin-service
           port: 4001
@@ -224,6 +270,7 @@ spec:
       middlewares:
         - name: edge-headers
         - name: edge-cors
+        - name: edge-strip-minio
       services:
         - name: minio
           port: 9000
