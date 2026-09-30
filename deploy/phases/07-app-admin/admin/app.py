@@ -114,16 +114,17 @@ def fetch_audit_rows(limit: int) -> list[dict]:
 
 def tail_starts(partitions_with_end: list, limit: int) -> list:
     """[(topic, partition, end_offset)] -> [(topic, partition, start_offset)] for a
-    bounded tail read (pure; hermetically tested). position() returns TopicPartition
-    OBJECTS (G7f: a tuple-unpack of them is a TypeError), so the unpack happens here
-    over plain tuples only."""
+    bounded tail read (pure; hermetically tested). End offsets come from
+    get_watermark_offsets as plain ints — never from position(), whose
+    TopicPartition objects must not be tuple-unpacked (G7f finding)."""
     return [(t, p, max(0, o - limit)) for (t, p, o) in partitions_with_end]
 
 
 def fetch_dlq_entries(limit: int) -> list[dict]:
-    """Bounded tail of the DLQ via a dedicated consumer group. Group offsets are
-    committed at the END of the batch, so a crash mid-tail just re-reads a few
-    messages next time (inspection is read-only in spirit; I-2 safe re-run)."""
+    """Bounded, STATELESS tail of the DLQ via a dedicated consumer group. Offsets come
+    from get_watermark_offsets (concrete end offsets) and are NEVER committed — the
+    group exists only to own a stable identity per pod; every inspection re-reads the
+    live tail (I-2: safe forever, no cluster state mutated)."""
     from confluent_kafka import Consumer, TopicPartition
 
     group_id = os.environ.get("ADMIN_DLQ_GROUP", "admin-dlq-inspect")
@@ -136,11 +137,10 @@ def fetch_dlq_entries(limit: int) -> list[dict]:
     try:
         meta = consumer.list_topics(DLQ_TOPIC, timeout=HEALTH_TIMEOUT_S)
         partitions = sorted(meta.topics[DLQ_TOPIC].partitions)
-        tps = [TopicPartition(DLQ_TOPIC, p, OFFSET_END) for p in partitions]
-        consumer.assign(tps)
-        # position() returns TopicPartition OBJECTS — never tuple-unpack them at the call
-        # site (G7f finding); tail_starts does the arithmetic over attribute triples.
-        ends = [(tp.topic, tp.partition, tp.offset) for tp in consumer.position(tps)]
+        ends = []
+        for p in partitions:
+            low, high = consumer.get_watermark_offsets(DLQ_TOPIC, p, timeout=HEALTH_TIMEOUT_S)
+            ends.append((DLQ_TOPIC, p, high))
         starts = [TopicPartition(t, p, o) for (t, p, o) in tail_starts(ends, limit)]
         consumer.assign(starts)
         entries, deadline = [], time.time() + max(2.0, HEALTH_TIMEOUT_S * 2)
@@ -156,14 +156,12 @@ def fetch_dlq_entries(limit: int) -> list[dict]:
                 msg.value(), topic=msg.topic(), partition=msg.partition(), offset=msg.offset(),
             ))
         entries.sort(key=lambda e: (e["partition"], e["offset"]))
-        consumer.commit(offsets=tps, asynchronous=False)  # keep the group parked at END
         return entries
     finally:
         consumer.close()
 
 
 GET_TIMEOUT_S = 5
-OFFSET_END = -1
 
 
 def parse_dlq_value(value: bytes, topic: str, partition: int, offset: int) -> dict:

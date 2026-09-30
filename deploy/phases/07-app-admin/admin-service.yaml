@@ -55,7 +55,7 @@ spec:
       containers:
         - name: admin-service
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
-          image: registry.nagar.internal:5000/nagar-admin-service:phase7f-2
+          image: registry.nagar.internal:5000/nagar-admin-service:phase7f-3
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
