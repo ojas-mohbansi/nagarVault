@@ -1734,3 +1734,111 @@ I-12** — internal registry only; all trees build.
 - [x] Malformed input rejected per the envelope contract — G7e.4 (400 unknown-department,
       400 missing-description; unverifiable attachment 409 by the statObject gate)
 - [x] Platform gates green — G7e.5 (12/12 apps, all trees build, headroom OK)
+
+## Phase 7f — adminService (2026-09-30, k3d substrate)
+
+Fresh rebuild per ADR-013 in `deploy/phases/07-app-admin/`. Contracts read before code:
+ARCHITECTURE §4.1 adminService rows (all admin JWT), §4.2 DLQ registry (adminService
+inspects; enrichWorker produces), SECURITY §3 (admin scope lives only here) / §6.2
+(nagar-jwt, nagar-postgres-app) / §8 (egress = PG + Kafka + schemaIndexer + DNS), Phase-5
+audit_logs DDL, the 7c DLQ wrapper from `worker/enrich.py record_to_dlq`.
+
+### G7f.1 — TDD: 14 hermetic tests, red → green
+
+Watched red (module absent → collection error), then green. The suite pins: the DLQ
+wrapper byte-shape exactly as the 7c worker emits it ({dlqReason, detail, originalTopic,
+raw} + topic/partition/offset), garbage-DLQ-message survival, bounded /dlq + /audit-logs
+reads with validation-rejected (422) out-of-range limits, per-dependency health booleans
+with `all` = AND, officer 403 on every admin endpoint, cross-service jti denylist (7b
+lesson), wrong iss/aud 401, public / and /dbcheck. The TDD loop caught a real bug before
+any deploy: `all` was initially hardcoded `True` in the response literal.
+
+### G7f.2 — Image + manifests + landing
+
+Image `phase7f-1`, digest read from the registry header and machine-compared with the
+rendered pin (`PIN-MATCHES-REGISTRY`). Service `admin-service` :4001 (tier convention
+name — no `*_PORT` env read exists anywhere in the image, so the 7e service-link class
+cannot recur), Deployment ×2 with pod+container securityContext, writable /tmp emptyDir,
+probes, PDB minAvailable 1, NetworkPolicy egress = postgres-rw 5432 + Strimzi 29092 +
+schema-indexer 4005 + DNS only. Application `nagar-phase7f-admin` + apps registration in
+the same commit; mirror `phase7f-1` → Application created, then Kyverno BLOCKED the
+Deployment: pod-level `runAsNonRoot`/`seccompProfile` mandatory (SECURITY §5 autogen
+policy) — client dry-runs cannot see admission; fixed (commit c80d76cb), mirror
+`phase7f-2` → Synced/Healthy, probes green through the policy.
+
+### G7f.3 — Real admin JWT + first E2E pass (harness exposes three findings)
+
+Admin + officer tokens minted as throwaway fixtures (`adm7f` user_id e2e-7f-001, `off7f`
+user_id e2e-7f-002) INSIDE the auth pod with its own hash/insert code, then real
+`POST /login` → 200 cookies, staged to the admin pod via operator stdin only. First
+E2E-RESULT findings: (1) `/dlq` 503 — my `position()` tuple-unpack (TopicPartition
+objects are not tuples); (2) `schemaIndexer:false` — phase-6's ingress policy for 4005
+was namespace-only; its own comment pre-authorized the widening ("one-rule change when
+7f ships"), applied per the 7b/6 cross-phase precedent (commit 42ecaab, mirror
+phase7f-3); (3) officer matrix 401-not-403 — my `$(head -1)` stdin bug, not a code bug.
+
+### G7f.4 — DLQ binding gauntlet, then the full green E2E (`E2E-RESULT`, 8/8 PASS)
+
+Three successive confluent-kafka 2.11.1 binding quirks, each probed live against the
+worker image (same lib pin) before patching: `timeout=` keyword rejected on
+`get_watermark_offsets`; the `(topic, partition:int)` form rejected
+("expected cimpl.TopicPartition" — needs a TopicPartition OBJECT); and committing
+OFFSET_END placeholders fails `_NO_OFFSET`, so the tail is now STATELESS (watermark
+end-offsets, nothing committed — inspection never mutates cluster state, I-2). Images
+phase7f-3/4/5, all digests registry-header read + machine-verified. Final E2E
+(mirror phase7f-6, rev 6578379f):
+
+- `/health/cluster` 200 {db:true, kafka:true, schemaIndexer:true, all:true}
+- `/dlq?limit=20` 200 — 3 entries: offset 0-1 are the PRE-EXISTING phase-4 gate
+  evidence (untouched, documented artifacts); offset 2 is MY fixture B
+  (`e2e7f-malformed-1790727526008`): a structurally invalid envelope produced directly
+  to `nmc.complaints.raw.restricted.v1` from the worker pod, DLQ'd by the 7c worker
+  ("missing or non-string eventId", originalTopic + raw preserved byte-exact) — the
+  full producer→DLQ→inspect round-trip live
+- `/audit-logs?limit=5` 200 — real 7b/7d gate rows (allowed + pii-column blocked)
+- officer token → 403 on all three admin endpoints; no token → 401
+- adminService → ingestion connection refused = NetworkPolicy enforcing exactly the
+  documented flows (SECURITY §8) — refusal IS the proof
+- fixture A out-of-band from an ingestion pod: `POST /api/v1/events` missing
+  description → 400 "missing required payload field for complaints: description"
+  (API layer rejects before Kafka; no DLQ entry created — correct per contract)
+
+### G7f.5 — Platform gates + cleanup
+
+13/13 Applications Synced/Healthy; ALL-TREES-BUILD (25 trees, Components skipped by
+design); node 8.4/13.65 GiB (61%), disk 382G free. Cleanup: fixture users + sessions
+deleted (2+2), pod staging removed, token file shredded. DLQ messages retained
+(append-only inspection evidence; offsets 0-1 pre-date 7f, offset 2 documented here).
+Driver versioned at `deploy/phases/07-app-admin/e2e/e2e-cluster.py` with the corrected
+read-per-line choreography in its header.
+
+### Session lessons
+
+(1) Client dry-runs cannot see admission: Kyverno's pod-security policy blocked a
+deployment whose container-level securityContext looked complete — pod-level context is
+a separate mandatory block. (2) When a live harness errors inside a vendor binding,
+probe the exact call shape in-cluster against the same pinned version BEFORE patching —
+three quirks resolved in one probe cycle each. (3) Stdin choreography is part of the
+E2E: one `read -r` per token, documented in the driver header. (4) A phase's own
+comments can pre-authorize future widening (4005 ingress) — read them before treating a
+refusal as a defect.
+
+### Invariants touched
+
+**I-1** — mirror/Argo only; out-of-band: §9.4 mirror advances ×6, deletion of my own
+fixtures/users. **I-2** — DLQ inspection now stateless (no commits at all). **I-3** —
+sealed blobs only; tokens staged ephemerally via stdin, shredded. **I-4** —
+probes/resources/PDB/NetworkPolicy/pod-securityContext to the letter (Kyverno-enforced).
+**I-5** — phase7f-1..5 digests registry-header read, machine-verified. **I-6** — 4001
+unchanged. **I-7** — no alerts touched. **I-8** — ADR-022 written (/vector/resync
+deferral; adminService consumer-group choice documented in code). **I-9** — scope:
+`deploy/phases/07-app-admin/**`, app-of-apps files, mirror tags, plus the pre-authorized
+cross-phase 4005 ingress widening in `deploy/phases/06-vector-llm/networkpolicies.yaml`.
+**I-10** — frozen files untouched. **I-11/I-12** — internal registry only; all trees build.
+
+### Phase 7f exit criteria — met
+
+- [x] `/health/cluster` all-up — G7f.4 (db/kafka/schemaIndexer all true, all:true)
+- [x] `/dlq` live — G7f.4 (3 real entries incl. a live malformed→worker→DLQ round-trip)
+- [x] `/audit-logs` live — G7f.4 (real allowed/blocked rows from the 7b/7d gates)
+- [x] Non-admin 403 + platform gates — G7f.4/G7f.5 (13/13 apps, all trees build)
