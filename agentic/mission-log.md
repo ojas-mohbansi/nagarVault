@@ -2398,3 +2398,53 @@ BY ID (k3d owns the images volume). **No blind `docker volume prune` was ever ru
 `k3d-nagar-serverlb`, `k3d-nagar.localhost`, `k3d-nagar-tools` (k3d's helper node).
 Next per plan: Phase E — Argo bootstrap re-apply, 15-app resync from git, admin8
 re-seed; then the one-time VHDX compaction and the weekly hygiene automation.
+
+### Phase E — bootstrap the rebuilt substrate from git; secrets resealed; platform green
+
+**Bootstrap source:** OPERATIONS §2/§3 + the §12.20 replay recipe (mission-log "bootstrap
+is one SSA of the phase tree"). Discovery: on a virgin cluster `02-gitops` cannot land
+first (no namespaces) — the true order is **phase-1 tree first** (namespaces, Kyverno,
+cert-manager, sealed-secrets controller), then `02-gitops`. Both builds gated green
+before apply (126 + 75 docs); CRD-ordering churn on the first 01-apply was resolved by
+the sanctioned re-apply after `crd Established` (idempotent by design). Applications
+sync from the in-cluster git mirror at `phase8-15` == local HEAD for deploy/ manifests.
+
+**The Sealed Secrets wall (found before it failed the platform):** the rebuild gave the
+controller a NEW keypair, and G1.2's notes record the old private key as **ephemeral by
+design** (shredded post-drill) — the five old sealed blobs were mathematically dead.
+Executed OPERATIONS §4 (one-time per cluster): fresh values generated in shell, never
+displayed; all five blobs resealed offline with kubeseal 0.28.0 against the new
+controller cert (10-yr keypair, extracted from `sealed-secrets-keyjvwxv` after my
+guessed name 404'd); data-key shapes byte-compared to the old files; ADR-011 ¶5
+honored (one `nagar` password pinned identically into `databaseUrl` and the bootstrap
+basic-auth secret); MinIO keys shared across `nagar-minio`/`nagar-minio-server`
+including the `MC_HOST_local` URL form. Committed `d02b0094` and shipped via the
+mirror cycle (tag `phase8-16`; two build-gated failures recorded: the payload must be
+`payload/nagarvault.git` beside `git-mirror/Dockerfile`, context = `git-mirror/`).
+**Landing split, git-evidenced:** the `nagar-platform` pair rides its phase trees via
+Argo (controller log: "Unsealed successfully" ×2); the `nagar-app` trio lands via the
+G1.2 bootstrap ritual `kubectl apply -f deploy/phases/01-substrate/secrets/` (the
+directory is referenced by no kustomization — matches G1.2 line 276 verbatim).
+
+**Timing finding:** the 15 Applications synced the PRE-reseal mirror revision first;
+secret-consuming pods sat in CreateContainerConfigError (correct fail-closed) until
+the resealed trio landed, then Kubernetes/Argo self-healed to 14/14 Running — the only
+live actions were the sanctioned ritual apply and pod deletes of Deployment-owned
+pods. `nagar-db-migrate` ran clean against the fresh `nagardb` (DDL + officer roles).
+
+**Idempotent Jobs end-state:** `bucket-init` Complete (buckets recreated),
+`nagar-kafka-topics` Complete, `nagar-db-migrate` Complete, `nagar-ollama-models`
+Complete (models re-copied), and `nagar-schema-index` — **Failed then fixed**: the Job
+has no dependency wait, launched while ollama was still creating, exhausted backoff
+before deps were up (pods garbage-collected, logs lost; evidence from Job conditions
++ events). Sanctioned re-run per OPERATIONS §8 (delete Job → Argo recreates):
+`INDEX-SYNC-OK — 40 documents, 40 points, dim=1024` (re-embed gate met; the one
+dependency-probe refusal in its log is the recorded race, retried by the Job itself).
+
+**Proofs (Phase E gates):** node `k3d-nagar-server-0` Ready; **15/15 Applications
+Synced/Healthy**; admin re-seeded via the sanctioned OPERATIONS §5 ritual
+(`seed_admin.py --username admin8 --user-id admin8-001 --password …`, stdout
+discarded, password never displayed — idempotent re-run safe); edge proof through the
+rebuilt stack: `POST /auth/login → 200`, `whoami → role: admin` (cookie jar shredded,
+port-forward killed). Remaining from the master plan: VHDX compaction (Phase F) and
+the weekly hygiene automation (Phase G).
