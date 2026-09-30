@@ -1,0 +1,451 @@
+# Traefik v3.5 CRDs — vendored subset (traefik.io/v1alpha1): IngressRoute, Middleware,
+# TLSOption, ServersTransport (ServersTransport shipped for completeness of the group's
+# status subresource wiring). Pruned from the upstream full bundle; labels added so the
+# mission's label policies admit them. Upstream source: traefik v3.5 Helm chart
+# crds.yml (github.com/traefik/traefik/helm), pruned to these kinds for ADR-024.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+  name: ingressroutes.traefik.io
+spec:
+  group: traefik.io
+  names:
+    kind: IngressRoute
+    listKind: IngressRouteList
+    plural: ingressroutes
+    singular: ingressroute
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .spec.entryPoints
+          name: EntryPoints
+          type: string
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: IngressRoute is the CRD implementation of a Traefik HTTP Router.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: IngressRouteSpec defines the desired state of an IngressRoute.
+              properties:
+                entryPoints:
+                  items:
+                    type: string
+                  type: array
+                routes:
+                  items:
+                    description: Route holds the HTTP route configuration.
+                    properties:
+                      kind:
+                        enum: [Rule]
+                        type: string
+                      match:
+                        type: string
+                      middlewares:
+                        items:
+                          description: MiddlewareRef is a reference to a Middleware resource.
+                          properties:
+                            name:
+                              type: string
+                            namespace:
+                              type: string
+                          required: [name]
+                          type: object
+                        type: array
+                      priority:
+                        type: integer
+                      services:
+                        items:
+                          description: Service defines an upstream to proxy traffic to.
+                          properties:
+                            name:
+                              type: string
+                            namespace:
+                              type: string
+                            passHostHeader:
+                              type: boolean
+                            port:
+                              anyOf:
+                                - type: integer
+                                - type: string
+                              x-kubernetes-int-or-string: true
+                            responseForwarding:
+                              properties:
+                                flushInterval:
+                                  type: string
+                              type: object
+                            scheme:
+                              type: string
+                            serversTransport:
+                              type: string
+                            sticky:
+                              properties:
+                                cookie:
+                                  properties:
+                                    httpOnly:
+                                      type: boolean
+                                    name:
+                                      type: string
+                                    sameSite:
+                                      type: string
+                                    secure:
+                                      type: boolean
+                                  type: object
+                              type: object
+                            strategy:
+                              type: string
+                            weight:
+                              type: integer
+                          required: [name]
+                          type: object
+                        type: array
+                    required: [kind, match]
+                    type: object
+                  type: array
+                tls:
+                  description: TLS contains the TLS certificates configuration of the routes.
+                  properties:
+                    certResolver:
+                      type: string
+                    domains:
+                      items:
+                        description: Domain holds a domain name with SANs.
+                        properties:
+                          main:
+                            type: string
+                          sans:
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      type: array
+                    options:
+                      description: Options is a reference to a TLSOption resource.
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      required: [name]
+                      type: object
+                    secretName:
+                      type: string
+                    store:
+                      type: string
+                  type: object
+              required: [routes]
+              type: object
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+          required: [metadata, spec]
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+  name: middlewares.traefik.io
+spec:
+  group: traefik.io
+  names:
+    kind: Middleware
+    listKind: MiddlewareList
+    plural: middlewares
+    singular: middleware
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Middleware is the CRD implementation of a Traefik Middleware.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: MiddlewareSpec defines the desired state of a Middleware.
+              properties:
+                headers:
+                  description: Headers holds the custom header configuration.
+                  properties:
+                    accessControlAllowCredentials:
+                      type: boolean
+                    accessControlAllowHeaders:
+                      items:
+                        type: string
+                      type: array
+                    accessControlAllowMethods:
+                      items:
+                        type: string
+                      type: array
+                    accessControlAllowOriginList:
+                      items:
+                        type: string
+                      type: array
+                    accessControlAllowOriginListRegex:
+                      items:
+                        type: string
+                      type: array
+                    accessControlExposeHeaders:
+                      items:
+                        type: string
+                      type: array
+                    accessControlMaxAge:
+                      format: int64
+                      type: integer
+                    addVaryHeader:
+                      type: boolean
+                    browserXssFilter:
+                      type: boolean
+                    contentSecurityPolicy:
+                      type: string
+                    contentTypeNosniff:
+                      type: boolean
+                    customFrameOptionsValue:
+                      type: string
+                    customRequestHeaders:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    customResponseHeaders:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    frameDeny:
+                      type: boolean
+                    hostsProxyHeaders:
+                      items:
+                        type: string
+                      type: array
+                    permissionsPolicy:
+                      type: string
+                    referrerPolicy:
+                      type: string
+                    stsIncludeSubdomains:
+                      type: boolean
+                    stsPreload:
+                      type: boolean
+                    stsSeconds:
+                      format: int64
+                      type: integer
+                  type: object
+                rateLimit:
+                  description: RateLimit holds the rate limiting configuration for a given router.
+                  properties:
+                    average:
+                      format: int64
+                      type: integer
+                    burst:
+                      format: int64
+                      type: integer
+                    period:
+                      type: string
+                    sourceCriterion:
+                      description: SourceCriterion defines the criterion for grouping requests.
+                      properties:
+                        ipStrategy:
+                          properties:
+                            depth:
+                              type: integer
+                            excludedIPs:
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        requestHeaderName:
+                          type: string
+                        requestHost:
+                          type: boolean
+                      type: object
+                  type: object
+              type: object
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+          required: [metadata, spec]
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+  name: tlsoptions.traefik.io
+spec:
+  group: traefik.io
+  names:
+    kind: TLSOption
+    listKind: TLSOptionList
+    plural: tlsoptions
+    singular: tlsoption
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: TLSOption is the CRD implementation of a Traefik TLS Option.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: TLSOptionSpec defines the desired state of a TLSOption.
+              properties:
+                alpnProtocols:
+                  items:
+                    type: string
+                  type: array
+                cipherSuites:
+                  items:
+                    type: string
+                  type: array
+                clientAuth:
+                  description: ClientAuth defines the parameters of the client authentication.
+                  properties:
+                    caFiles:
+                      items:
+                        format: byte
+                        type: string
+                      type: array
+                    clientAuthType:
+                      enum: [NoClientCert, RequestClientCert, RequireAndVerifyClientCert, RequireAnyClientCert, VerifyClientCertIfGiven]
+                      type: string
+                  type: object
+                curvePreferences:
+                  items:
+                    type: string
+                  type: array
+                maxVersion:
+                  type: string
+                minVersion:
+                  type: string
+                preferServerCipherSuites:
+                  type: boolean
+                sniStrict:
+                  type: boolean
+              type: object
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+          required: [metadata, spec]
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+  name: serverstransports.traefik.io
+spec:
+  group: traefik.io
+  names:
+    kind: ServersTransport
+    listKind: ServersTransportList
+    plural: serverstransports
+    singular: serverstransport
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: ServersTransport is the CRD implementation of a Traefik ServersTransport.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: ServersTransportSpec defines the desired state of a ServersTransport.
+              properties:
+                certificatesSecrets:
+                  items:
+                    type: string
+                  type: array
+                disableHTTP2:
+                  type: boolean
+                forwardingTimeouts:
+                  properties:
+                    dialTimeout:
+                      type: string
+                    idleConnTimeout:
+                      type: string
+                    readIdleTimeout:
+                      type: string
+                    responseHeaderTimeout:
+                      type: string
+                  type: object
+                insecureSkipVerify:
+                  type: boolean
+                maxIdleConnsPerHost:
+                  type: integer
+                rootCAs:
+                  items:
+                    type: string
+                  type: array
+                serverName:
+                  type: string
+                spiffe:
+                  properties:
+                    ids:
+                      items:
+                        type: string
+                      type: array
+                    trustDomain:
+                      type: string
+                  type: object
+              type: object
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+          required: [metadata, spec]
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}

@@ -1,0 +1,69 @@
+# Phase 8 — internal CA + edge certificate (ADR-024 §4; OPERATIONS §12.4 is the runbook).
+# Bootstrap pattern: a self-signed ClusterIssuer signs the CA certificate; a CA ClusterIssuer
+# backed by that Secret issues the edge leaf. No ACME (air gap).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: nagar-edge-ca-bootstrap
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nagar-edge-ca
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  isCA: true
+  commonName: nagar-edge-ca
+  secretName: nagar-edge-ca-keypair
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  duration: 8760h        # 1y CA
+  renewBefore: 720h
+  issuerRef:
+    name: nagar-edge-ca-bootstrap
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: nagar-edge-ca
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  ca:
+    secretName: nagar-edge-ca-keypair
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: edge-tls
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  secretName: edge-tls
+  duration: 2160h       # 90d leaf
+  renewBefore: 360h
+  commonName: k3d.nagar.internal
+  dnsNames:
+    - k3d.nagar.internal
+    - k3d-nagar.localhost
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: nagar-edge-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -1,0 +1,117 @@
+# Phase 8 — NetworkPolicy for the edge (SECURITY §8: "default deny … ingress from Traefik
+# only" + "browser → MinIO presigned PUT via edge route").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: traefik-edge
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik-edge
+      app.kubernetes.io/component: edge
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 443
+  egress:
+    # / -> frontend
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-frontend
+      ports:
+        - protocol: TCP
+          port: 3001
+    # /api -> ingestion
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-ingestion
+      ports:
+        - protocol: TCP
+          port: 3000
+    # /auth -> authService
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-auth-service
+      ports:
+        - protocol: TCP
+          port: 4000
+    # /admin -> adminService
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-admin-service
+      ports:
+        - protocol: TCP
+          port: 4001
+    # /minio -> MinIO
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+    # DNS — always present
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Widen MinIO ingress to include the Traefik flow (the ONLY widening; namespace +
+# nagar-app per SECURITY §8, now + nagar-system/traefik-edge:9000).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-minio-edge-ingress
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik-edge
+      ports:
+        - protocol: TCP
+          port: 9000

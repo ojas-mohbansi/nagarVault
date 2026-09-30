@@ -1,0 +1,161 @@
+# Phase 8 — Traefik edge (ADR-024). In-cluster deployment + LoadBalancer Service on 443.
+# Labels per CONVENTIONS §5 (component: edge, tier per ARCHITECTURE §4.4 ordering).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik-edge
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "08"
+    nagar.io/tier: "1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: traefik-edge
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+rules:
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "endpointslices", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["traefik.io"]
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - tlsoptions
+      - tlsstores
+      - serverstransports
+      - serverstransporttcps
+      - traefikservices
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: traefik-edge
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik-edge
+subjects:
+  - kind: ServiceAccount
+    name: traefik-edge
+    namespace: nagar-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik-edge
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "08"
+    nagar.io/tier: "1"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik-edge
+      app.kubernetes.io/component: edge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traefik-edge
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: edge
+        app.kubernetes.io/managed-by: argocd
+        nagar.io/phase: "08"
+        nagar.io/tier: "1"
+    spec:
+      serviceAccountName: traefik-edge
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: traefik
+          # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
+          image: registry.nagar.internal:5000/traefik:v3.5
+          args:
+            - "--entryPoints.websecure.address=:443"
+            - "--providers.kubernetescrd.allowExternalNameServices=false"
+            - "--providers.kubernetesingress=false"
+            - "--api.dashboard=false"
+            - "--log.level=INFO"
+            - "--accesslog=true"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - containerPort: 443
+              name: websecure
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 4
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-edge
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: edge
+    nagar.io/phase: "08"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: traefik-edge
+    app.kubernetes.io/component: edge
+  ports:
+    - name: websecure
+      port: 443
+      targetPort: 443
+      protocol: TCP

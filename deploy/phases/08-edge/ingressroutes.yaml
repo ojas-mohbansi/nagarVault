@@ -1,0 +1,210 @@
+# Phase 8 — routes + middlewares (ADR-024 §5–6; port map frozen in CONVENTIONS §4).
+# No StripPrefix: upstreams keep native paths; the frontend BFF path map is unchanged.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-headers
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    frameDeny: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-cors
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  headers:
+    accessControlAllowMethods:
+      - GET
+      - PUT
+      - POST
+      - HEAD
+      - OPTIONS
+    accessControlAllowHeaders:
+      - Content-Type
+      - Authorization
+      - x-amz-date
+      - x-amz-content-sha256
+      - Range
+    accessControlAllowOriginListRegex:
+      - "https://(k3d\\.nagar\\.internal|k3d-nagar\\.localhost)"
+    accessControlAllowCredentials: true
+    accessControlMaxAge: 600
+    addVaryHeader: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: edge-ratelimit
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  rateLimit:
+    average: 10
+    burst: 20
+    period: 1m
+---
+apiVersion: traefik.io/v1alpha1
+kind: TLSOption
+metadata:
+  name: edge-tls-options
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  minVersion: VersionTLS12
+  sniStrict: true
+---
+# / -> frontend (public edge; CONVENTIONS §4)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edge-frontend
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)"
+      kind: Rule
+      middlewares:
+        - name: edge-headers
+          namespace: nagar-system
+      services:
+        - name: frontend
+          port: 3001
+  tls:
+    secretName: edge-tls
+    options:
+      name: edge-tls-options
+      namespace: nagar-system
+---
+# /api -> ingestion (browser JSON events; presign/commit)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edge-ingestion
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/api`)"
+      kind: Rule
+      middlewares:
+        - name: edge-headers
+          namespace: nagar-system
+      services:
+        - name: ingestion
+          port: 3000
+  tls:
+    secretName: edge-tls
+    options:
+      name: edge-tls-options
+      namespace: nagar-system
+---
+# /auth -> authService (public edge; rate-limited at the edge first — defense-in-depth)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edge-auth
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/auth`)"
+      kind: Rule
+      middlewares:
+        - name: edge-headers
+          namespace: nagar-system
+        - name: edge-ratelimit
+          namespace: nagar-system
+      services:
+        - name: auth-service
+          port: 4000
+  tls:
+    secretName: edge-tls
+    options:
+      name: edge-tls-options
+      namespace: nagar-system
+---
+# /admin -> adminService (admin JWT enforced upstream — SECURITY §3)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edge-admin
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/admin`)"
+      kind: Rule
+      middlewares:
+        - name: edge-headers
+          namespace: nagar-system
+      services:
+        - name: admin-service
+          port: 4001
+  tls:
+    secretName: edge-tls
+    options:
+      name: edge-tls-options
+      namespace: nagar-system
+---
+# /minio -> MinIO (browser presigned PUT route ONLY; CORS middleware lives here — ADR-024 §6)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edge-minio
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/minio`)"
+      kind: Rule
+      middlewares:
+        - name: edge-headers
+          namespace: nagar-system
+        - name: edge-cors
+          namespace: nagar-system
+      services:
+        - name: minio
+          port: 9000
+  tls:
+    secretName: edge-tls
+    options:
+      name: edge-tls-options
+      namespace: nagar-system

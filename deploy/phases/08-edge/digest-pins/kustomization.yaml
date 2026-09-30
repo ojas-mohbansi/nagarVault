@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pin for the Phase 8 Traefik edge image (invariant I-5).
+#
+# Resolution 2026-09-30: traefik:v3.5 pulled on the host, staged into the internal
+# registry via localhost:35000, digest read from the registry header
+# (Docker-Content-Digest) and machine-compared against this file before landing.
+#   mission/traefik:v3.5
+#     sha256:e157892efcf505bb9b3e5c79011ebf398e5f583acd240572e1a47f0b2044c74a
+images:
+  - name: registry.nagar.internal:5000/traefik
+    newName: k3d-nagar.localhost:5000/mission/traefik
+    digest: sha256:e157892efcf505bb9b3e5c79011ebf398e5f583acd240572e1a47f0b2044c74a
