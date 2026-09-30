@@ -2304,3 +2304,33 @@ summary:
       phase7e-1..2, schema-indexer phase6-1..2, query phase7b-1, slm phase7d-1,
       frontend phase7g-1
 
+**Execution (gated, abort-on-error).** Live registry stopped (`docker stop
+k3d-nagar.localhost` → `exited`), one-shot `nagar-registry-gc` (registry:2,
+`REGISTRY_STORAGE_DELETE_ENABLED=true`) mounted the SAME volume, catalog re-verified
+(24 repos, 200) before any delete. All 82 planned tags deleted by digest:
+**82/82 accepted (202), 0 errors, 0 already-gone**. Post-delete tag inventory equals
+the committed KEEP rows exactly (21 tagged manifests; the three digest-referenced
+repos — git-repo-mirror, postgres-15-alpine, python-builder — keep their manifests
+with tags unlinked, which is all k3s's digest-based mirror pulls need).
+Garbage-collect: dry-run enumerated 96 eligible blobs → real GC deleted them →
+**after-size 21.1 GB, 676 blobs** (22,638,365,576 B).
+
+**Estimate miss, documented honestly:** the plan projected 21.2 → 5–8 GB; reality is
+21.2 → 21.1 GB. The deletion set was exactly right (82/82, zero pinned touched); the
+size model was wrong. Payload anatomy after GC: the two largest blobs are ~2.24 GB and
+~1.82 GB (pinned ollama-models / strimzi-kafka class layers), then a ladder of ~117 MB
+identical-size shared base layers — the 69 old mirror tags and superseded service tags
+were near-total layer-sharers, so their manifests' deletion freed only 96 blobs
+(tiny config/manifest layers), while **the surviving ~21 GB IS the pinned current
+image set itself**. Conclusion for the VHDX goal: registry surgery removes
+reconstructable history but not the working set; the real byte lever is Phase D
+(cluster rebuild wipes the 45 GB containerd store) plus compaction, not more registry
+work. Nothing further to prune without deleting pinned images.
+
+**Continuity proof (after `docker start k3d-nagar.localhost`):** catalog HTTP 200 with
+24 repositories; **21/21 pinned digests HEAD-resolve to their exact git-pinned digests**
+(PASS=21 FAIL=0; first attempt reported 63 fake "passes" from a broken `rev`-based
+bash loop plus CRLF map rows — redone in Python for a trustworthy result; an earlier
+PASS=0 run was my own URL bug, full ref in the repo path position, fixed and rerun);
+Argo **15/15 Applications Synced/Healthy**. One-shot GC container removed; live
+registry restored to service. No volume pruned, no Phase D work performed.
