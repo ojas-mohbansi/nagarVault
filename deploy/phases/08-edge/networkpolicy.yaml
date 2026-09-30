@@ -129,3 +129,108 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+---
+# Edge receiving-side widenings (ADR-024 §5): each app-tier default-deny ingress NP
+# (Phase 7) must admit the Traefik flow on its service port, or the edge routes 502 —
+# verified live in G8.3 (auth 502 until this existed). One widening NP per upstream,
+# declared HERE (phase-local, zero edits to 7x trees), same shape as the MinIO
+# widening above: source = the traefik-edge pod, scoped by namespace + pod label.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-edge-ingress
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-frontend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik-edge
+      ports:
+        - protocol: TCP
+          port: 3001
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingestion-edge-ingress
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-ingestion
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik-edge
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-auth-edge-ingress
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-auth-service
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik-edge
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-admin-edge-ingress
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-admin-service
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik-edge
+      ports:
+        - protocol: TCP
+          port: 4001
