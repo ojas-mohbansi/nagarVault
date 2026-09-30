@@ -2285,9 +2285,10 @@ registry**; 12 are superseded older pins (past mirror/schema-indexer/ingestion/
 frontend tags) with no surviving tag — recorded, left alone. Pre-delete computation
 ran read-only (curl `--noproxy '*'` — Python-spawned curl stalls through the Windows
 proxy without it; second Windows-specific lesson of this phase) and wrote the full
-map to `agentic/phase-c-tagmap.txt` (103 rows: 21 `KEEP-PIN`, 82 `DELETE`) with the
-machine plan in `agentic/phase-c-plan.json` (pin set, keep set, per-tag digests,
-delete plan, anomalies). Sanity gates before any deletion: the 21 pinned repo:tag
+map to `agentic/phase-c-tagmap.txt` (103 rows: 21 `KEEP-PIN`, 82 `DELETE`, digest per
+tag — the delete set is reconstructable from these rows; the computation/deletion
+scripts were one-shot tools, kept out of the tree at the deletion-first pass). Sanity
+gates before any deletion: the 21 pinned repo:tag
 rows all carry the exact digests from git; zero pinned digest appears in the delete
 set; manifest-body media-type probe found no multi-arch index riding a to-delete tag,
 so no protected children. Full per-tag map preserved in-tree for reconstructability;
@@ -2454,8 +2455,9 @@ the weekly hygiene automation (Phase G).
 `docker_data.vhdx` **123,692,122,112 B (123.7 GB) → 46,125,809,664 B (46.1 GB) —
 ≈ 77.6 GB reclaimed on the host disk.** Optimize-VHD is absent on this Windows edition
 (Hyper-V module), so the diskpart fallback ran (attach readonly → compact vdisk →
-detach), elevated via the sanctioned prompt, logs in `agentic/ops/phase-f-compact.ps1`
-+ `%TEMP%\phase-f-compaction.log`. Compact itself: clean (progress to 100%, detach
+detach), elevated via the sanctioned prompt (script in git history at
+`agentic/ops/phase-f-compact.ps1`; log at `%TEMP%\phase-f-compaction.log`). Compact
+itself: clean (progress to 100%, detach
 successful).
 
 **The failure the script's own death caused, and the systematic repair:** the elevated
@@ -2466,7 +2468,8 @@ Desktop then failed to boot with `wsl-bootstrap … detecting disk: no sd* disk 
 `AttachDisk/MountDisk/HCS/ERROR_SHARING_VIOLATION`. Systematic read of the backend logs
 showed the WWID line was the downstream symptom: WSL could not attach the disk at all
 (sharing violation — my leftover host attachment), so the in-VM bootstrap never saw
-its device. A repair script (`agentic/ops/phase-f-repair.ps1`, elevated) detached the
+its device. A repair pass (elevated diskpart detach; script in git history at
+`agentic/ops/phase-f-repair.ps1`) detached the
 orphaned attachment (and proved along the way that the data VHDX is a raw unpartitioned
 disk — no GPT DiskId exists to restore, so the "identity regenerated" theory was
 falsified); a clean Docker Desktop restart after that came up healthy. Two lessons in
