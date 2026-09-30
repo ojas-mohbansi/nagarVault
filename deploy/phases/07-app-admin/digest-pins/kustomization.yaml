@@ -7,7 +7,9 @@ kind: Component
 # header (Docker-Content-Digest) and machine-compared against this file before landing.
 #   mission/nagar-admin-service:phase7f-1
 #     sha256:22681d4e89e7bf09c5d7740e480830a63c87230f4203d53d435b850ac62fbbd9
+#   mission/nagar-admin-service:phase7f-2  (DLQ tail_starts fix + officer-token 403 proof, G7f.4)
+#     sha256:6d6af092956b9a28dcadef5ac7f11ac4f95f871120db830079cb014246d57d6c
 images:
   - name: registry.nagar.internal:5000/nagar-admin-service
     newName: k3d-nagar.localhost:5000/mission/nagar-admin-service
-    digest: sha256:22681d4e89e7bf09c5d7740e480830a63c87230f4203d53d435b850ac62fbbd9
+    digest: sha256:6d6af092956b9a28dcadef5ac7f11ac4f95f871120db830079cb014246d57d6c

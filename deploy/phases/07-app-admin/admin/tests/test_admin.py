@@ -83,6 +83,16 @@ def test_parse_dlq_value_survives_garbage():
     assert parsed["offset"] == 7
 
 
+def test_tail_starts_bounded_tail_arithmetic():
+    """tail read starts at end-limit per partition; never negative (empty partition)."""
+    starts = admin.tail_starts(
+        [("nmc.complaints.dlq.v1", 0, 41), ("nmc.complaints.dlq.v1", 1, 0)], 50
+    )
+    assert starts == [("nmc.complaints.dlq.v1", 0, 0), ("nmc.complaints.dlq.v1", 1, 0)]
+    starts = admin.tail_starts([("nmc.complaints.dlq.v1", 0, 4321)], 50)
+    assert starts == [("nmc.complaints.dlq.v1", 0, 4271)]
+
+
 # --------------------------------------------------------------------------- /dlq
 
 def test_dlq_returns_entries_and_passes_limit(client, monkeypatch):

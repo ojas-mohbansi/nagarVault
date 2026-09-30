@@ -112,6 +112,14 @@ def fetch_audit_rows(limit: int) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def tail_starts(partitions_with_end: list, limit: int) -> list:
+    """[(topic, partition, end_offset)] -> [(topic, partition, start_offset)] for a
+    bounded tail read (pure; hermetically tested). position() returns TopicPartition
+    OBJECTS (G7f: a tuple-unpack of them is a TypeError), so the unpack happens here
+    over plain tuples only."""
+    return [(t, p, max(0, o - limit)) for (t, p, o) in partitions_with_end]
+
+
 def fetch_dlq_entries(limit: int) -> list[dict]:
     """Bounded tail of the DLQ via a dedicated consumer group. Group offsets are
     committed at the END of the batch, so a crash mid-tail just re-reads a few
@@ -127,21 +135,19 @@ def fetch_dlq_entries(limit: int) -> list[dict]:
     })
     try:
         meta = consumer.list_topics(DLQ_TOPIC, timeout=HEALTH_TIMEOUT_S)
-        partitions = list(meta.topics[DLQ_TOPIC].partitions)
+        partitions = sorted(meta.topics[DLQ_TOPIC].partitions)
         tps = [TopicPartition(DLQ_TOPIC, p, OFFSET_END) for p in partitions]
         consumer.assign(tps)
-        consumer.seek(*()) if False else None  # seek happens via committed offsets below
-        # Position at the END minus `limit` messages: read the tail deterministically.
-        end = consumer.position(tps)
-        starts = [TopicPartition(t, p, max(0, o - limit)) for (t, p, o) in end]
+        # position() returns TopicPartition OBJECTS — never tuple-unpack them at the call
+        # site (G7f finding); tail_starts does the arithmetic over attribute triples.
+        ends = [(tp.topic, tp.partition, tp.offset) for tp in consumer.position(tps)]
+        starts = [TopicPartition(t, p, o) for (t, p, o) in tail_starts(ends, limit)]
         consumer.assign(starts)
         entries, deadline = [], time.time() + max(2.0, HEALTH_TIMEOUT_S * 2)
-        got = {p.partition: 0 for p in starts}
+        got = {tp.partition: 0 for tp in starts}
         while time.time() < deadline and sum(got.values()) < limit * len(starts):
             msg = consumer.poll(0.5)
             if msg is None:
-                if any(v == 0 for v in got.values()) and time.time() > deadline - 1:
-                    break
                 continue
             if msg.error():
                 continue
@@ -150,7 +156,7 @@ def fetch_dlq_entries(limit: int) -> list[dict]:
                 msg.value(), topic=msg.topic(), partition=msg.partition(), offset=msg.offset(),
             ))
         entries.sort(key=lambda e: (e["partition"], e["offset"]))
-        consumer.commit(offsets=end, asynchronous=False)
+        consumer.commit(offsets=tps, asynchronous=False)  # keep the group parked at END
         return entries
     finally:
         consumer.close()
