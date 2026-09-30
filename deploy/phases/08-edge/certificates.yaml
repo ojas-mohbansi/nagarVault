@@ -1,6 +1,19 @@
 # Phase 8 — internal CA + edge certificate (ADR-024 §4; OPERATIONS §12.4 is the runbook).
 # Bootstrap pattern: a self-signed ClusterIssuer signs the CA certificate; a CA ClusterIssuer
 # backed by that Secret issues the edge leaf. No ACME (air gap).
+#
+# Namespace placement rule (learned the hard way in G8.3 — see ADR-024 field repairs):
+#   1. The CA Certificate MUST live in the `cert-manager` namespace: ClusterIssuers read
+#      their `ca.secretName` from the controller's --cluster-resource-namespace
+#      (cert-manager here), regardless of where the issuing Certificate sits. The first
+#      cut declared the CA Certificate in nagar-system; cert-manager dutifully created
+#      the Secret there while the ClusterIssuer kept failing with
+#      `secrets "nagar-edge-ca-keypair" not found`.
+#   2. Each leaf Certificate MUST live in the namespace of the IngressRoute(s) that
+#      reference its Secret: IngressRoutes resolve `tls.secretName` in their OWN
+#      namespace. Routes live in nagar-app (frontend/api/auth/admin) and nagar-platform
+#      (minio), so the leaf is declared once per route namespace — same CN/SANs,
+#      independently keyed copies, both signed by the same internal CA.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -15,7 +28,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: nagar-edge-ca
-  namespace: nagar-system
+  namespace: cert-manager
   labels:
     app.kubernetes.io/part-of: nagarvault
     nagar.io/phase: "08"
@@ -44,11 +57,37 @@ spec:
   ca:
     secretName: nagar-edge-ca-keypair
 ---
+# Leaf copy 1 — routes in nagar-app (edge-frontend/edge-ingestion/edge-auth/edge-admin).
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: edge-tls
-  namespace: nagar-system
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  secretName: edge-tls
+  duration: 2160h       # 90d leaf
+  renewBefore: 360h
+  commonName: k3d.nagar.internal
+  dnsNames:
+    - k3d.nagar.internal
+    - k3d-nagar.localhost
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: nagar-edge-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Leaf copy 2 — routes in nagar-platform (edge-minio).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: edge-tls
+  namespace: nagar-platform
   labels:
     app.kubernetes.io/part-of: nagarvault
     nagar.io/phase: "08"
