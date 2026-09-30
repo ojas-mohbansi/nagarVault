@@ -10,6 +10,12 @@
 # strips the routing prefix where it differs from the upstream's own: /auth→/login,
 # /admin→/health/cluster, /minio→/<bucket>/<object>. /api and / are VERBATIM —
 # ingestion's API natively lives under /api/v1/… and the frontend serves at root.
+#
+# PRECEDENCE RULE (G8.3, proven live): `&&` binds tighter than `||` in Traefik rule
+# syntax — an unparenthesized `Host(A) || Host(B) && PathPrefix(/x)` matches EVERY
+# path via its bare Host(A) disjunct, and Traefik's longest-rule tiebreak then routes
+# all traffic to the highest-path router (observed: /auth/ served by MinIO). The host
+# disjunction MUST be parenthesized: (Host(A) || Host(B)) && PathPrefix(/x).
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -162,7 +168,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)"
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && PathPrefix(`/`)"
       kind: Rule
       middlewares:
         - name: edge-headers
@@ -187,7 +193,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/api`)"
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && PathPrefix(`/api`)"
       kind: Rule
       middlewares:
         - name: edge-headers
@@ -212,7 +218,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/auth`)"
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && PathPrefix(`/auth`)"
       kind: Rule
       middlewares:
         - name: edge-headers
@@ -239,7 +245,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/admin`)"
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && PathPrefix(`/admin`)"
       kind: Rule
       middlewares:
         - name: edge-headers
@@ -265,7 +271,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`) && PathPrefix(`/minio`)"
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && PathPrefix(`/minio`)"
       kind: Rule
       middlewares:
         - name: edge-headers
