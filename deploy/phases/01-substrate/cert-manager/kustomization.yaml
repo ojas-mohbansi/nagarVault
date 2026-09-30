@@ -13,5 +13,6 @@ resources:
 # per-entry target selector is allowed (kustomize restriction).
 patches:
   - path: cert-manager-patches.yaml
+  - path: cert-manager-le-args-patch.yaml
 components:
   - ../digest-pins

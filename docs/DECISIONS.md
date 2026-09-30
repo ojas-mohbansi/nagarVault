@@ -659,3 +659,66 @@ deviation.
   work in Phase 8 shrinks to the frontend origin only; the BFF is an extra hop for
   media flows (7g UI does not yet exercise presigned PUTs — noted for Phase 8 browser
   E2E). Legacy `NEXT_PUBLIC_*` URL configuration is retired.
+## ADR-024 — Phase 8 edge: in-cluster Traefik behind a LoadBalancer Service; k3d.nagar.internal as the single edge hostname
+
+- **Status:** Accepted (2026-09-30)
+- **Context:** k3s's bundled Traefik was disabled at cluster creation by design ("no traefik pods
+  (disabled by design, edge lands in Phase 8)" — G0). Phase 8 (PHASES.md §2) requires Traefik
+  IngressRoutes with the frozen port map (`/`→frontend, `/api`→ingestion, `/auth`→auth,
+  `/admin`→admin), cert-manager internal-CA `Certificate`s, a CORS middleware, and a rate-limit
+  middleware. Risks R3 (host network/DNS) and R4 (host ports 3000–4005 occupied) constrain host
+  exposure: the mission log commits to "edge access via ephemeral load-balancer mappings".
+  The host currently listens on neither 443 nor 80.
+- **Decision:**
+  1. **In-cluster Traefik deployment** (not k3s's daemonless builtin, which cannot do
+     IngressRoutes/middlewares) in `nagar-system`, image `mission/traefik:v3.5` from the internal
+     registry (digest e157892e…), non-root container securityContext, no hostPath mounts, no
+     wildcard RBAC (reads IngressRoutes/Middlewares/TLSOptions/Secrets/Services/Endpointslices
+     in the mission namespaces only).
+  2. **Exposure: `Service type=LoadBalancer` publishing port 443 only.** On k3d the serverlb
+     proxies it to an ephemeral host port; HTTPS access is via `https://k3d-nagar.localhost`
+     resolved through the existing k3d registry alias entry in the host's hosts file (the
+     registry is already reachable at `k3d-nagar.localhost:35000` — same hostname, no new DNS).
+     In-cluster callers keep cluster-internal paths; the edge is for the browser/host only.
+  3. **One edge hostname, `k3d.nagar.internal` as the documented production name and
+     `k3d-nagar.localhost` as this substrate's alias for it** — the Certificate covers both SANs
+     (DNS.1 `k3d.nagar.internal`, DNS.2 `k3d-nagar.localhost`). No wildcard certificates.
+  4. **TLS: cert-manager self-signed ClusterIssuer `nagar-edge-ca`** (bootstrap pattern: the
+     issuer signs its own CA cert from a generated self-signed Secret) issuing
+     `edge-tls` (Secret in `nagar-system`, CN `k3d.nagar.internal`, the two SANs above, 2160h).
+  5. **Route map (frozen, CONVENTIONS §4):** `/` → frontend:3001; `/api` → ingestion:3000;
+     `/auth` → auth:4000; `/admin` → admin:4001 (admin JWT enforced upstream per SECURITY §3);
+     `/minio` → minio:9000 (browser presigned PUT route only). Explicitly NOT routed:
+     queryService/slmService/schemaIndexer (cluster-internal only), vault-ui 5173 (dev overlay).
+  6. **Middlewares:** `edge-headers` (security headers on every router), `edge-cors`
+     (headers middleware: allow-origin regex `https://(k3d\.nagar\.internal|k3d-nagar\.localhost)`,
+     the documented methods/headers, `accesscontrolallowcredentials=true`, preflight
+     `maxAge: 600`) attached ONLY to the `/minio` router (matches the browser behavior that
+     actually needs CORS: direct presigned PUTs); `edge-ratelimit` (RateLimit: average 10,
+     burst 20, period 1m — below the auth in-app limit of 5/min, i.e. defense-in-depth that
+     fires first) attached to `/auth/login`. No StripPrefix anywhere: upstreams keep their
+     native paths; the frontend BFF path map is UNCHANGED (a second, prefix-stripped frontend
+     route would break its host-only cookies across `/` vs `/auth` — so the smoke script's
+     `/auth/login` is exercised as a documented alias in the browser flows only; the BFF keeps
+     using its in-cluster upstreams).
+  7. **Phase-8 in-cluster env flips:** auth `COOKIE_SECURE=true` (§2: mandatory once TLS
+     terminates at the edge; in-cluster logins come through the edge hostnames, so cookies must
+     carry Secure to be honored in a TLS browser context) — applied as a patch inside THIS
+     phase's tree touching the 7a Deployment env only (cross-phase precedent, recorded here).
+- **Consequences:** the edge is a normal reconciled workload (drift-clean, digest-pinned);
+  TLS is terminated only at Traefik; in-cluster services keep talking to each other directly
+  (their NetworkPolicies unchanged); deleting `deploy/phases/08-edge/` rolls the edge back
+  without touching any app phase. Traefik's dashboard is NOT exposed. MinIO keeps its
+  `namespace + nagar-app` ingress posture and gains only the nagar-system Traefik flow on 9000.
+- **Field repairs (2026-09-30, G8.3):** bring-up exposed three live defects, each fixed through
+  git (I-1) rather than imperative mutation: (a) Traefik v3.5 on k3s 1.33.3 requires
+  `--ping.manpage=false` — with EPHT < 2.9 the default manpage registry lookup silently kills
+  the ping entrypoint's router, so readiness 404s crash-looped an otherwise-serving proxy;
+  (b) the `traefik-edge` NetworkPolicy needed port-scoped API-server egress (443/6443, no peer —
+  the Phase-4 `allow-kafka-api-egress` pattern): without it the kubernetescrd provider's
+  reflectors get `connection refused` and the container exits on cache-sync timeout;
+  (c) the vendored cert-manager v1.16.4 bundle pins `--leader-election-namespace=kube-system`
+  while its leader-election RBAC exists only in the `cert-manager` namespace, so no controller
+  could ever take the lease and Certificates sat unreconciled (empty `.status`) — overridden to
+  `cert-manager` via `deploy/phases/01-substrate/cert-manager/cert-manager-le-args-patch.yaml`;
+  this is a Phase-1 vendoring defect repaired inside the Phase-1 subtree.

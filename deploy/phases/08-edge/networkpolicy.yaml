@@ -88,6 +88,20 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # API-server egress for the kubernetescrd provider: Traefik lists/watches
+    # IngressRoutes, Services, EndpointSlices and Secrets before it serves. Without
+    # this rule the reflectors die with `dial tcp 10.43.0.1:443: connection refused`
+    # and the provider exits ("controller caches to sync"), crash-looping the pod —
+    # the same shape Phase 4 hit with the Kafka brokers. Port-scoped with no peer for
+    # the identical substrate reason recorded there: on k3s the API server is a host
+    # process no NetworkPolicy peer can name, and the ClusterIP (443) is rewritten to
+    # the node API port (6443) by DNAT before egress policy evaluates, so both forms
+    # are allowed and everything else stays denied (I-11: no route off-box).
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
 ---
 # Widen MinIO ingress to include the Traefik flow (the ONLY widening; namespace +
 # nagar-app per SECURITY §8, now + nagar-system/traefik-edge:9000).

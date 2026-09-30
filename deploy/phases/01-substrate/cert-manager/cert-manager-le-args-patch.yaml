@@ -1,0 +1,51 @@
+# Leader-election namespace override for the vendored cert-manager v1.16.4 bundle.
+#
+# Defect: the static bundle pins `--leader-election-namespace=kube-system` in BOTH the
+# controller and the cainjector (matching its upstream install.yaml, which assumes a
+# kube-system-promiscuous install). This cluster installs cert-manager into its own
+# `cert-manager` namespace, where the bundle's `cert-manager:leaderelection` Role and
+# RoleBindings live — so with the pinned arg both controllers try to acquire their
+# `cert-manager-*` Lease in kube-system and are denied:
+#   User "system:serviceaccount:cert-manager:cert-manager" cannot get resource "leases"
+#   in the namespace "kube-system"
+# With no leader the controller loops idle and never reconciles Certificates. Symptom
+# observed in Phase 8 (G8): Certificate `edge-tls` had an empty .status and no
+# CertificateRequest was ever created.
+#
+# Fix: override the arg to `cert-manager` — the upstream chart default and the namespace
+# where the bundle's own leader-election RBAC actually grants access. The whole `args`
+# list is restated because strategic-merge replaces the list atomically.
+#
+# Repaired live 2026-09-30 during the Phase 8 gate; this commit makes git match the
+# cluster again (I-1: cluster state = git state) and makes the repair reproducible.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: cert-manager
+  name: cert-manager-cainjector
+spec:
+  template:
+    spec:
+      containers:
+        - name: cert-manager-cainjector
+          args:
+            - --v=2
+            - --leader-election-namespace=cert-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: cert-manager
+  name: cert-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: cert-manager-controller
+          args:
+            - --v=2
+            - --cluster-resource-namespace=$(POD_NAMESPACE)
+            - --leader-election-namespace=cert-manager
+            - --acme-http01-solver-image=quay.io/jetstack/cert-manager-acmesolver:v1.16.4
+            - --max-concurrent-challenges=60
