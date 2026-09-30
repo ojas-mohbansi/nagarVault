@@ -2270,3 +2270,37 @@ unchanged — **15/15 Argo Applications Synced/Healthy**. Docker-side residue is
 the remaining bulk (45 GB containerd store + 21.2 GB registry payload inside the 71.29 GB
 of volume state) belongs to phases C–D: registry tag-prune + GC, then the destructive
 rebuild with project-named volumes, VHDX compaction, and hygiene automation.
+
+### Phase C — internal registry tag-prune + garbage-collect (evidence-first)
+
+Target: `k3d-nagar.localhost` (registry:2), payload volume
+`8812c59388f104f3856fd8f827ad9e9f9082b5ba3721d42d5aa8373f912c9b5f` at /var/lib/registry,
+**before-size 21.2 GB** (in-container `du -sh`). Catalog: **24 repositories, 103 tags**
+(bulk: `git-repo-mirror` × 69 phase tags; per-service superseded chains:
+admin ×5, ingestion ×3, schema-indexer ×3, query/slm/frontend ×2 each).
+
+Source of truth: `deploy/phases/*/digest-pins/kustomization.yaml` — **33 distinct
+sha256 digests referenced by git**, of which **21 resolve to a live tag in this
+registry**; 12 are superseded older pins (past mirror/schema-indexer/ingestion/
+frontend tags) with no surviving tag — recorded, left alone. Pre-delete computation
+ran read-only (curl `--noproxy '*'` — Python-spawned curl stalls through the Windows
+proxy without it; second Windows-specific lesson of this phase) and wrote the full
+map to `agentic/phase-c-tagmap.txt` (103 rows: 21 `KEEP-PIN`, 82 `DELETE`) with the
+machine plan in `agentic/phase-c-plan.json` (pin set, keep set, per-tag digests,
+delete plan, anomalies). Sanity gates before any deletion: the 21 pinned repo:tag
+rows all carry the exact digests from git; zero pinned digest appears in the delete
+set; manifest-body media-type probe found no multi-arch index riding a to-delete tag,
+so no protected children. Full per-tag map preserved in-tree for reconstructability;
+summary:
+
+    KEEP-PIN  (21) — one current tag per mission repo, digest == git pin, e.g.
+      mission/busybox:day0, mission/cnpg-operator:1.30.1, mission/cnpg-postgresql:15.17-system-trixie,
+      mission/minio:phase3, mission/minio-mc:phase3, mission/redis:phase3,
+      mission/strimzi-{operator,kafka}:1.2.0(-kafka-4.2.0), mission/qdrant:v1.15.1,
+      mission/ollama:0.12.6, mission/ollama-models:phase6-1, mission/schema-indexer:phase6-3,
+      mission/traefik:v3.5, mission/nagar-{auth,query,slm,admin,enrich-worker,frontend,vault-ui,ingestion}:current
+    DELETE    (82) — every superseded tag whose manifest digest is NOT git-referenced,
+      incl. git-repo-mirror:phase2..phase8-14 (68), admin phase7f-1..4, ingestion
+      phase7e-1..2, schema-indexer phase6-1..2, query phase7b-1, slm phase7d-1,
+      frontend phase7g-1
+
