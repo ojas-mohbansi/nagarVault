@@ -723,6 +723,14 @@ deviation.
   reflectors get `connection refused` and the container exits on cache-sync timeout;
   (c) the vendored cert-manager v1.16.4 bundle pins `--leader-election-namespace=kube-system`
   while its leader-election RBAC exists only in the `cert-manager` namespace, so no controller
-  could ever take the lease and Certificates sat unreconciled (empty `.status`) — overridden to
+  could ever take the lease and Certificates sat unreconciled (empty `.status`) —  overridden to
   `cert-manager` via `deploy/phases/01-substrate/cert-manager/cert-manager-le-args-patch.yaml`;
-  this is a Phase-1 vendoring defect repaired inside the Phase-1 subtree.
+  this is a Phase-1 vendoring defect repaired inside the Phase-1  subtree; (d) the §7
+  COOKIE_SECURE flip was attempted twice and both kustomize forms are falsified: a JSON6902
+  target in 08-edge is silently INERT (kustomize cannot patch objects outside its build — no
+  error, no effect), and a duplicate `auth-service` Deployment document is invalid under
+  ServerSideApply (empty image merges over the live object: `image: Required value`, failing
+  the phase8-5 sync five times with a SharedResourceWarning). Landed instead as the ADR-024
+  §7-sanctioned cross-phase amendment in the 7a manifest itself (`COOKIE_SECURE: "true"`),
+  where the object lives — patch as data is impossible across phase trees; the amendment is
+  a one-line value flip recorded in the 7a file and here.

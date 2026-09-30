@@ -9,6 +9,11 @@ resources:
   - certificates.yaml
   - ingressroutes.yaml
   - networkpolicy.yaml
-  - cookie-secure-patch.yaml
+# COOKIE_SECURE flip (ADR-024 §7): applied as a one-line value amendment in the 7a
+# manifest itself — kustomize cannot patch an object outside this tree (a JSON6902
+# target here is silently inert; a duplicate Deployment object here is invalid under
+# SSA: "image: Required value", failed the phase8-5 sync 5×). Both falsified forms are
+# recorded in ADR-024 field repairs (d); the tree comment above documents the I-9
+# sanctioned exception.
 components:
   - digest-pins
