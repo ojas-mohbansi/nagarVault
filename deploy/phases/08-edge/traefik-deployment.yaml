@@ -30,6 +30,13 @@ rules:
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
+  # This build (3.5.6) also runs a Node informer at cluster scope — a third RBAC gap
+  # found only by watching the live reflectors; read-only node metadata, documented in
+  # the mission log G8.3 (the deployed informer set is the authority, not the classic
+  # Traefik RBAC recipe).
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["traefik.io"]
     resources:
       - ingressroutes
