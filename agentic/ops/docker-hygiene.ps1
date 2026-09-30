@@ -15,7 +15,11 @@ function Log($m) {
   if (-not $Quiet) { Write-Host $m }
 }
 
-if (-not (docker info 2>$null)) { Log "engine down; aborting this run (nothing pruned)"; exit 1 }
+# Engine-up gate MUST use the exit code, not output presence: under a dead
+# endpoint docker.exe still prints its error banner on stdout (52 lines), so
+# an output-based test never detects a down engine (proven in verification).
+docker info 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) { Log "engine down; aborting this run (nothing pruned)"; exit 1 }
 
 Log "=== hygiene run start ==="
 Log ((docker system df | Out-String).Trim())
@@ -26,10 +30,13 @@ Log "builder prune (until=168h): $((docker builder prune -f --filter 'until=168h
 # dangling images only (untagged, unreferenced - never tagged/pinned layers)
 Log "dangling image prune: $((docker image prune -f 2>&1 | Select-Object -Last 1))"
 
-# exited containers EXCLUDING anything k3d-managed
+# exited containers EXCLUDING anything k3d-managed (k3d names are always
+# 'k3d-*' prefixed; docker inspect returns a leading slash - strip it and
+# prefix-match, so e.g. 'my-nonk3d-app' is NOT falsely protected)
 $removed = 0
 foreach ($id in @(docker ps -aq --filter status=exited 2>$null)) {
-  if ((docker inspect $id --format '{{.Name}}' 2>$null) -like '*k3d*') { continue }
+  $name = (docker inspect $id --format '{{.Name}}' 2>$null).TrimStart('/')
+  if ($name -like 'k3d*') { continue }
   docker rm $id | Out-Null
   $removed++
 }
