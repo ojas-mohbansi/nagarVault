@@ -2448,3 +2448,65 @@ discarded, password never displayed — idempotent re-run safe); edge proof thro
 rebuilt stack: `POST /auth/login → 200`, `whoami → role: admin` (cookie jar shredded,
 port-forward killed). Remaining from the master plan: VHDX compaction (Phase F) and
 the weekly hygiene automation (Phase G).
+
+### Phase F — VHDX compaction (diskpart fallback; a repair lesson recorded)
+
+`docker_data.vhdx` **123,692,122,112 B (123.7 GB) → 46,125,809,664 B (46.1 GB) —
+≈ 77.6 GB reclaimed on the host disk.** Optimize-VHD is absent on this Windows edition
+(Hyper-V module), so the diskpart fallback ran (attach readonly → compact vdisk →
+detach), elevated via the sanctioned prompt, logs in `agentic/ops/phase-f-compact.ps1`
++ `%TEMP%\phase-f-compaction.log`. Compact itself: clean (progress to 100%, detach
+successful).
+
+**The failure the script's own death caused, and the systematic repair:** the elevated
+PowerShell process was torn down the moment diskpart returned, so the script's restart
+step and done-marker never ran — and, critically, **the VHDX was left ATTACHED**. Docker
+Desktop then failed to boot with `wsl-bootstrap … detecting disk: no sd* disk in
+/sys/block with wwid ending adf0f0c03179…` and a sibling
+`AttachDisk/MountDisk/HCS/ERROR_SHARING_VIOLATION`. Systematic read of the backend logs
+showed the WWID line was the downstream symptom: WSL could not attach the disk at all
+(sharing violation — my leftover host attachment), so the in-VM bootstrap never saw
+its device. A repair script (`agentic/ops/phase-f-repair.ps1`, elevated) detached the
+orphaned attachment (and proved along the way that the data VHDX is a raw unpartitioned
+disk — no GPT DiskId exists to restore, so the "identity regenerated" theory was
+falsified); a clean Docker Desktop restart after that came up healthy. Two lessons in
+the ledger: (1) never diagnose from a truncated log tail — the WWID error was a decoy;
+(2) long-running elevated scripts must be resilient to process teardown: the script
+that leaves the machine in a *valid* state before its slowest step, not after.
+
+**Return-to-service proof:** engine up, k3d containers back (`k3d-nagar-tools` needed
+one `docker start` — it had been killed mid-flight), node Ready, **48 pods
+Running/Completed with zero failures**, Argo **15/15 Synced/Healthy**, registry catalog
+200/24 repos, **21/21 pinned digests HEAD-verified** (one earlier spot-check MISMATCH
+was a cold-start empty response, superseded by the full warm check).
+
+### Phase G — weekly Docker hygiene automation
+
+`agentic/ops/docker-hygiene.ps1` — safe by construction: prunes build cache older than
+7 days, dangling images, and exited NON-k3d containers; **never touches volumes** (the
+k3d mission state lives exclusively there); starts Docker Desktop if the engine is down
+and aborts the run if it does not come up; before/after `docker system df` into
+`%TEMP%\docker-hygiene.log`. Test-run verified live (one stale cache record pruned,
+volumes byte-identical, k3d containers respected). Registered as scheduled task
+**"NagarVault Docker Hygiene"** (Sundays 03:00, `StartWhenAvailable` so a powered-off
+host catches up): state=Ready, next run 2026-10-04 03:00. Residual reclaimable at
+registration time: build cache 123.7 MB (aging out weekly), dangling 0 B.
+
+### Mission outcome — storage optimization complete (all phases)
+
+| Metric | Before | After |
+|---|---|---|
+| docker_data.vhdx on host disk | 123.7 GB | **46.1 GB (−77.6 GB)** |
+| Docker-visible volume bytes | 71.29 GB (5 hex + 1 named) | 40.7 GB (6 project-named) |
+| k3s containerd store | 45 GB (60+ stale tags) | 246 MB fresh → ~17 GB after mission re-pull (current digests only) |
+| Registry payload | 21.2 GB (103 tags) | 21.1 GB (21 tagged manifests, digest-referenced only) |
+| Build cache | 25.72 GB | ~0.65 GB warm working set (auto-aged weekly) |
+| Volume naming | 5 anonymous hex + 1 k3d | 6/6 project-named |
+| Live state | — | Argo 15/15 Synced/Healthy; edge login proven; sealed secrets re-issued |
+
+Every deleted byte was either reclaimable cache, unreferenced tag history, or a stale
+containerd layer; the pinned working set, all live PVC data (backed up in Phase A
+before any destructive step), and the sealed-secret identities were preserved or
+re-issued through sanctioned procedures. The Phase-A backup was never needed. Git
+commits this mission: `b0e64464`, `c1d88027`, `c26670ca`, `f4533e30`, `6635c932`,
+`d02b0094`, `237ccc2b`, plus this log update; **nothing pushed**.
