@@ -104,7 +104,7 @@ spec:
         # dynamic-config build after its informers replay mid-apply; a pod-template
         # annotation bump rolls the pod so Traefik rebuilds from the settled live
         # state (the k8s configmap-checksum idiom, applied deliberately).
-        nagar.io/config-reload: "phase8-9-middlewares-per-ns"
+        nagar.io/config-reload: "phase8-11-tlsoptions-per-ns"
     spec:
       serviceAccountName: traefik-edge
       automountServiceAccountToken: true
