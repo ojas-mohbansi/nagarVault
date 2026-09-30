@@ -104,6 +104,8 @@ spec:
             - "--entryPoints.websecure.address=:443"
             - "--providers.kubernetescrd.allowExternalNameServices=false"
             - "--providers.kubernetesingress=false"
+            - "--ping=true"
+            - "--ping.entrypoint=websecure"
             - "--api.dashboard=false"
             - "--log.level=INFO"
             - "--accesslog=true"

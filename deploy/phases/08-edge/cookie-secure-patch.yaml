@@ -8,6 +8,10 @@ metadata:
   name: auth-service
   namespace: nagar-app
 spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-auth-service
+      app.kubernetes.io/component: api
   template:
     metadata:
       labels:
