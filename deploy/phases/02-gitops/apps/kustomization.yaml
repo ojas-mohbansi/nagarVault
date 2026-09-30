@@ -16,3 +16,4 @@ resources:
   - nagar-phase7d-slm.yaml
   - nagar-phase7e-ingestion.yaml
   - nagar-phase7f-admin.yaml
+  - nagar-phase7g-ui.yaml
