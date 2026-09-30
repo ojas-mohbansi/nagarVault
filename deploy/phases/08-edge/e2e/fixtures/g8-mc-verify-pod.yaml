@@ -1,0 +1,50 @@
+# G8.4 byte-verification fixture (ephemeral; deleted at Phase 8 closeout).
+# Verifies, from inside the cluster and without exporting any secret, that the
+# object PUT through the edge /minio route landed in MinIO byte-intact.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: g8-mc-verify
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+    nagar.io/g8-fixture: "true"
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: verify
+      image: k3d-nagar.localhost:5000/mission/minio-mc@sha256:72e8defdcea3777f3935cb0f834294aa7b5bf210f85572939a363e65fda6326e
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: HOME
+          value: /tmp
+        - name: MC_ACCESS
+          valueFrom:
+            secretKeyRef:
+              name: nagar-minio-server
+              key: accessKey
+        - name: MC_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: nagar-minio-server
+              key: secretKey
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      command: ["/bin/sh", "-c"]
+      args:
+        - for i in 1 2 3 4 5; do mc alias set v http://minio.nagar-platform.svc.cluster.local:9000 "$MC_ACCESS" "$MC_SECRET" >/dev/null 2>&1 && mc stat v/raw-media/events/g8-edge-put-1790787078927.bin && echo ---stored-bytes-sha256--- && mc cat v/raw-media/events/g8-edge-put-1790787078927.bin | sha256sum && exit 0; echo "retry $i"; sleep 5; done; exit 1
+

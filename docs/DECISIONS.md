@@ -701,6 +701,17 @@ deviation.
      route would break its host-only cookies across `/` vs `/auth` — so the smoke script's
      `/auth/login` is exercised as a documented alias in the browser flows only; the BFF keeps
      using its in-cluster upstreams).
+     **Correction (2026-09-30, G8 E2E — the "No StripPrefix anywhere" claim above is
+     live-FALSIFIED):** upstreams serve their native paths and do NOT self-strip, so the edge
+     strips the routing prefix wherever it differs from the upstream's own: `/auth`, `/admin`,
+     `/minio` carry StripPrefix (auth natively serves `/login`/`/whoami`/`/create`/`/logout`,
+     admin `/health/cluster`/`/dlq`/`/audit-logs`, MinIO S3 paths); `/` and `/api` remain
+     VERBATIM (ingestion natively serves `/api/v1/…`, frontend at root). Proven in G8.4/G8.6:
+     a presigned PUT through `/minio/<bucket>/<key>` reaches MinIO (200 + ETag + byte-identical
+     object), and `/api/v1/...` arrives untouched (ingestion's native JSON 404). The BFF keeps
+     its in-cluster upstreams regardless, so the cookie concern above never touches the
+     stripped routes. `edge-ratelimit` in fact attaches to the whole `/auth` router
+     (PathPrefix(`/auth`)), not `/auth/login` alone — G8.3 shows it counting login attempts.
   7. **Phase-8 in-cluster env flips:** auth `COOKIE_SECURE=true` (§2: mandatory once TLS
      terminates at the edge; in-cluster logins come through the edge hostnames, so cookies must
      carry Secure to be honored in a TLS browser context) — applied as a patch inside THIS

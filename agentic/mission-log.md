@@ -1957,3 +1957,189 @@ internal registry only; all trees build.
 **Phase 7 complete: all seven app-tier services rebuilt fresh and verified live.**
 Next charter: Phase 8 — Edge & TLS (Traefik IngressRoutes, cert-manager internal CA,
 CORS, rate-limit middleware; browser presigned PUT from the frontend origin).
+
+## Phase 8 — Edge & TLS (2026-09-30, k3d substrate)
+
+Charter: Traefik in-cluster behind a LoadBalancer Service, cert-manager internal-CA
+leaf certificates, CORS + rate-limit middlewares, TLS termination at the edge with
+in-cluster traffic untouched (ADR-024; PHASES.md §2). All bring-up defects were fixed
+through git via the mirror cycle — 13 commits, `16a4052d`..`22a263b8`, each recorded in
+ADR-024 field repairs (a)–(d): dedicated ping entrypoint (k3s-EPHT theory tested and
+falsified on the pinned image), CA Certificate in the cert-manager namespace, leaf
+certificates split per route namespace, COOKIE_SECURE landed in the 7a manifest (both
+cross-tree patch forms proven inert or invalid), vendored 10-CRD v3.5 bundle + RBAC
+repairs (nodes, endpointslices, per-namespace middlewares/TLSOptions), one NetworkPolicy
+per widened upstream, parenthesized host disjunctions (`&&` binds tighter than `||`),
+strip-prefix map for upstreams that serve native paths, cold-config reload annotation.
+Mirror tags phase8-1..phase8-15; phase8-15 Synced/Healthy across all 15 Applications.
+Full login proof (openssl chain to `CN=nagar-edge-ca`, `GET /auth/` 200, `POST /auth/login`
+setting a `Secure` cookie) was green before this section's gate run.
+
+### G8.1 — TLS: leaf chains to the internal CA; protocol floor holds
+
+Re-proven against the live edge (inline port-forward spawn→prove→kill on a fresh port,
+CA at `/tmp/nagar-edge-ca.pem` re-extracted from `cert-manager/nagar-edge-ca-keypair`,
+558 B, `notAfter 2027-09-30`):
+
+    $ openssl s_client -connect 127.0.0.1:8448 -servername k3d.nagar.internal \
+        -CAfile /tmp/nagar-edge-ca.pem -verify_return_error
+    depth=1 CN=nagar-edge-ca
+    depth=0 CN=k3d.nagar.internal
+     0 s:CN=k3d.nagar.internal
+       i:CN=nagar-edge-ca
+    Verify return code: 0 (ok)
+
+Served leaf: `subject=CN=k3d.nagar.internal`, `issuer=CN=nagar-edge-ca`,
+SAN `DNS:k3d.nagar.internal, DNS:k3d-nagar.localhost` — exactly the ADR-024 §4 pair.
+Protocol floor (`edge-tls-options` minVersion VersionTLS12): TLS-1.1-only handshake
+`curl --tls-max 1.1` → `000` (curl exit, handshake refused); TLS-1.2-only → `200`.
+Two self-inflicted instrument defects recorded for honesty: (1) the first chain probe
+passed curl's `--ssl-no-revoke` to openssl, which has no such flag and silently produced
+no output — rerun cleanly; (2) `curl --tlsv1.1` sets a *floor*, so it climbed to 1.2 and
+"passed" — the ceiling flag `--tls-max` is the correct probe.
+
+### G8.2 — CORS: preflight allowlist behaves as configured
+
+Preflight on `/minio/raw-media/...` (deployed `edge-cors` read before probing):
+
+    Origin: https://k3d-nagar.localhost  ->
+    HTTP/1.1 200 OK
+    Access-Control-Allow-Origin: https://k3d-nagar.localhost
+    Access-Control-Allow-Methods: GET,PUT,POST,HEAD,OPTIONS
+    Access-Control-Allow-Headers: Content-Type,Authorization,x-amz-date,x-amz-content-sha256,Range
+    Access-Control-Allow-Credentials: true
+    Access-Control-Max-Age: 600
+
+    Origin: https://evil.example.com ->
+    HTTP/1.1 200 OK
+    Access-Control-Allow-Methods: ...            # same methods/headers/max-age echo
+    (no Access-Control-Allow-Origin — the browser-enforced negative; CORS blocks in
+     the client, so the middleware correctly reflects nothing for foreign origins)
+
+Non-preflight GET with allowed Origin: `Access-Control-Allow-Origin` + `Vary: Origin`
+(addVaryHeader) + MinIO's `Access-Control-Expose-Headers`, and the edge-headers STS
+header present on the same response (`Strict-Transport-Security: max-age=31536000;
+includeSubDomains`) — headers and CORS compose on one router.
+
+### G8.3 — Rate limit: both layers fire, correctly attributable
+
+32 rapid `POST /auth/login` (wrong credentials) through the edge:
+requests 1–10 pass to auth (`401 {"detail":"invalid credentials"}`), 11–21 answer
+`429 {"detail":"login rate limit exceeded"}` with **no** Retry-After (FastAPI JSON —
+auth's in-app limiter), 22–27 answer `429 Too Many Requests` **with `Retry-After: 3→1`**
+(Traefik's edge middleware — plain-text body, Retry-After header), 28 flips back to the
+app shape (a sliding-window slot freed mid-burst), 29–32 edge shape again
+(`Retry-After: 6→5`). Attribution is unambiguous: Traefik's 429 carries `Retry-After`
+and a non-JSON body; auth's 429 is the JSON detail form. Defense-in-depth shown live:
+edge bucket (average 10 / burst 20 / 1m on the whole `/auth` router) exhausts behind the
+app limiters, then meters recovery.
+Finding (not a defect): auth's limiter is an in-process per-IP deque (5/min) with
+**2 replicas**, so the effective app-side cap observed was ~10/min and refills landed
+per-pod mid-burst — the edge bucket is the only global control, which is exactly why it
+belongs at the edge. The 7a contract tests the single-process limiter and is unchanged.
+
+### G8.4 — Presigned PUT through the edge: bytes land intact
+
+`POST /api/v1/uploads/presign` with the admin8 Bearer JWT via the edge `/api` route →
+201-shaped body: `uploads=1, ttlSeconds=600`, `attachmentId 9044134c-8675-475a-9356-1d832f5840e8`,
+`bucket raw-media`, `objectKey events/9044134c-…/g8-edge-proof.bin`.
+
+**Discrepancy, recorded:** the minted URL host is
+`minio.nagar-platform.svc.cluster.local:9000` — cluster-internal DNS that no browser can
+resolve. 7e's presigner endpoint comes from `MINIO_URL` and offers **no external-host env**
+(`runtime.js` reads only `MINIO_URL`; the Deployment sets the in-cluster Service URL), so
+the literal browser flow cannot be exercised end-to-end today. Proven instead by the
+equivalent path, with the discrepancy logged for the phase closeout: (1) an edge-origin
+presigned PUT URL (`https://k3d.nagar.internal:8448/raw-media/...?X-Amz-...`) was minted
+*inside* the ingestion pod via its own SDK+secret env (credentials never left the pod;
+`X-Amz-Credential`/`X-Amz-Signature` masked on display); (2) the browser-adapter path
+rewrite `/raw-media/...` → `/minio/raw-media/...` applied (SigV4 signs only the host
+header, so the edge strip is signature-neutral — and the first attempt without the
+rewrite proved the point by falling to the `/` catch-all: 404 + Next.js HTML); (3) PUT
+through the edge → `HTTP/1.1 200 OK`, `Etag: "ac2bf4ac11014d92e9d8e3fd6ed99ccb"`.
+Byte verification in-cluster (fixture pod `g8-mc-verify`, nagar-platform, mc + the
+pod-local `nagar-minio-server` secret): `mc stat` reports `Size: 62 B`,
+`ETag ac2bf4ac11014d92e9d8e3fd6ed99ccb`, `Content-Type application/octet-stream`; stored
+sha256 `f9345d8b4081a4a0bb98723acc7ac36c53136dffa8724f702100ea64b3f4169d` == local sha256;
+local md5 == PUT ETag == stat ETag. Verifier fixture kept at
+`deploy/phases/08-edge/e2e/fixtures/g8-mc-verify-pod.yaml` (raw Pod, not in the phase
+kustomization — the tree still builds); its bring-up re-earned three older lessons and
+added one: PodSecurity `restricted` + Kyverno `require-resources-limits` both gate ad-hoc
+pods (I-4 is enforced at admission, not on trust), `envFrom` injects secret keys verbatim
+(`accessKey`, not `MINIO_ACCESS_KEY` — map explicitly), pods are immutable (delete +
+re-apply), and MinIO briefly refuses fresh connections right after its own restart —
+the verifier retries. Verifier pod deleted after the proof.
+
+### G8.5 — Authz negatives: 401 without a session, 403 without the role
+
+Officer seeded through the sanctioned admin-gated creation path (7a contract), never
+seed_admin: `POST /auth/create` with the admin Bearer → `200
+{"status":"ok","user_id":"officer8-279fa8df","username":"officer8","role":"nmc_officer"}`
+(random 28-hex password, never displayed; user created in-band to prove the /create gate
+itself). Officer login 200; `whoami` echoes `role: nmc_officer`.
+
+    GET /admin/health/cluster, no JWT      -> 401 {"detail":"missing session"}
+    GET /admin/health/cluster, officer JWT -> 403 {"detail":"admin role required"}
+    GET /admin/dlq,             officer JWT -> 403
+    GET /admin/audit-logs,      officer JWT -> 403
+    GET /admin/health/cluster, admin JWT   -> 200 {db, kafka, schemaIndexer, all}
+
+SECURITY §3 holds at the edge: identity (401) and role (403) are enforced upstream by
+adminService, with the admin-only contrast proving the 403 is role-based, not route
+breakage. Officer cookie jar shredded after the run.
+
+### G8.6 — In-cluster flows unaffected by the edge (no StripPrefix regression)
+
+- BFF-native path: exec in a frontend pod → `auth-service.nagar-app.svc.cluster.local:4000/whoami`
+  with the admin Bearer → `status: 200 | role: admin | sub set: true` — in-cluster traffic
+  never touches the edge, native `/whoami` path intact.
+- Edge `/api` is VERBATIM (no strip): `GET /api/v1/events/evt-g8-nonexistent` →
+  `404 {"detail":"unknown eventId"}` — ingestion's native contract, prefix not stripped.
+- Edge `/` catch-all serves the frontend (`307`, 4948 B body).
+
+### Substrate event during the gate run (documented, no git change)
+
+Freebuff restarted mid-run: Docker Desktop engine down → k3d containers came back on
+their own (server-0, serverlb), broker `nagar-dual-role-0` restarted and reloaded
+metadata from disk (KRaft durability), and ingestion exhausted restart backoff while
+Kafka was down (`ECONNREFUSED :29092` crashloop). Recovery: relaunched Docker Desktop
+detached (`Start-Process`), regenerated the kubeconfig via `k3d kubeconfig get nagar`
+(sed host.docker.internal→127.0.0.1; API port **57306 again**), re-extracted the CA,
+waited for the broker's readiness, then cleared ingestion's backoff by deleting its pods
+(Deployment recreated them; no live-state drift). All 15 Applications back to
+Synced/Healthy. Noted: fast-failing consumers should survive broker restarts more
+gracefully, but this is substrate lifecycle, not a phase-8 defect.
+
+### Session lessons
+
+(1) `--ssl-no-revoke` is a curl/schannel flag — openssl rejects unknown options
+silently in pipelines; check tool boundaries before composing flags. (2) `curl --tlsvN`
+is a floor; protocol-floor proofs need `--tls-max`. (3) Windows Python has no `/dev/stdin`
+— keep secret material in shell variables, never through stdin files. (4) `kubectl run
+--overrides` does not survive MSYS quoting — write small verbatim YAML fixtures instead
+(and remember pods are immutable: delete + re-apply). (5) `envFrom` injects secret keys
+verbatim; images expecting canonical variable names need explicit `secretKeyRef` envs.
+(6) After an engine restart, statefulsets self-heal but fast-crash consumers exhaust
+restart backoff — clear with a pod delete, then let the Deployment converge. (7) An
+in-memory per-IP limiter behind N replicas is N× weaker than its spec; the only global
+rate control is the one at the shared edge.
+
+### Invariants touched
+
+**I-1** — all changes via git (this log, ADR-024 §6 correction, verifier fixture); live
+ops limited to pod deletions of Deployment-owned pods + the fixture, documented above.
+**I-2** — verifier is an idempotent retry loop. **I-3** — officer password generated and
+never displayed; cookie jars and presigned URLs shredded; credentials masked in any
+shown output. **I-4** — fixture pod passed PodSecurity restricted + Kyverno resource gates
+at admission. **I-5** — fixture image digest-pinned. **I-6** — no ports touched.
+**I-7** — no alerts touched. **I-8** — ADR-024 §6 strip-map falsification corrected in
+the ADR itself. **I-9** — changes confined to `agentic/mission-log.md`,
+`docs/DECISIONS.md`, `deploy/phases/08-edge/e2e/fixtures/`. **I-10** — frozen files
+untouched. **I-11/I-12** — internal-registry digest only; no manifest tree altered.
+
+### G8 E2E gates — 6/6 GREEN
+
+TLS chain ✓ · CORS allow/deny ✓ · rate limit attributed ✓ · presigned PUT byte-intact
+(with browser-host discrepancy recorded) ✓ · authz 401/403 ✓ · in-cluster paths intact ✓.
+Step-5 closeout (platform gates, OPERATIONS §12.34, PHASES ledger flip, fixture teardown)
+remains for the next pass, per plan.
