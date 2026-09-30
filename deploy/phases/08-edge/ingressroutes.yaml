@@ -1,5 +1,6 @@
-# Phase 8 — routes + middlewares (ADR-024 §5–6; port map frozen in CONVENTIONS §4).
-# No StripPrefix: upstreams keep native paths; the frontend BFF path map is unchanged.
+# Phase 8 — routes + middlewares (ADR-024 §5–6 as corrected below; port map frozen in
+# CONVENTIONS §4). Strip policy: see STRIP MAP — the original "no StripPrefix" bullet
+# was falsified live in G8.3 (upstreams serve native paths and do not self-strip).
 #
 # TRAEFIK v3 RULE (G8.3): middlewares MUST live in the IngressRoute's namespace —
 # cross-namespace references are rejected ("middleware nagar-system/edge-headers is not
