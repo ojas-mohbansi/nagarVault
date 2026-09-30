@@ -9,10 +9,12 @@ kind: Component
 #     sha256:2ae254b70e1fceb9cce1014e5ee786e2e400c871f84753fc51721ec09d54c41d
 #   mission/nagar-vault-ui:phase7g-1
 #     sha256:8648c4ea0bf81fb5e4a251a53a61582ac53475deb142912cf84472110be3bb04
+#   mission/nagar-frontend:phase7g-2  (+/api/whoami route, structured gate-verdict pass-through)
+#     sha256:2239a6181583d7ea2687b08a2117eb39288a2c17825414e168dc889fc1a54e4b
 images:
   - name: registry.nagar.internal:5000/nagar-frontend
     newName: k3d-nagar.localhost:5000/mission/nagar-frontend
-    digest: sha256:2ae254b70e1fceb9cce1014e5ee786e2e400c871f84753fc51721ec09d54c41d
+    digest: sha256:2239a6181583d7ea2687b08a2117eb39288a2c17825414e168dc889fc1a54e4b
   - name: registry.nagar.internal:5000/nagar-vault-ui
     newName: k3d-nagar.localhost:5000/mission/nagar-vault-ui
     digest: sha256:8648c4ea0bf81fb5e4a251a53a61582ac53475deb142912cf84472110be3bb04

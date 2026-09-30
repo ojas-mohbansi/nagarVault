@@ -15,7 +15,7 @@ export default function DashboardPage() {
   const [result, setResult] = useState<AskResult | null>(null);
 
   useEffect(() => {
-    fetch("/api/login")
+    fetch("/api/whoami")
       .then(async (r) => {
         if (!r.ok) throw new Error(String(r.status));
         return r.json();

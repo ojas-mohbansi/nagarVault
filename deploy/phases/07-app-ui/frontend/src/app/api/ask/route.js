@@ -29,8 +29,10 @@ export async function POST(request) {
   });
   const payload = await r.json().catch(() => ({ detail: 'upstream returned non-JSON' }));
   if (r.status !== 200) {
+    // Gate verdicts arrive as structured detail ({reason, verdict}) from the query
+    // service via slm — pass them through so the officer sees WHY they were blocked.
     return NextResponse.json(
-      { detail: typeof payload?.detail === 'string' ? payload.detail : 'ask failed' },
+      { detail: payload?.detail ?? 'ask failed' },
       { status: r.status },
     );
   }

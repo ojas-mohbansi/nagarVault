@@ -59,7 +59,7 @@ spec:
       containers:
         - name: frontend
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
-          image: registry.nagar.internal:5000/nagar-frontend:phase7g-1
+          image: registry.nagar.internal:5000/nagar-frontend:phase7g-2
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
