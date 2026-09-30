@@ -633,3 +633,29 @@ deviation.
   deferral. Revisit when 7g (frontend needs a resync button) or Phase 8 (TLS + service
   identity) lands — at that point either give schemaIndexer a real auth story or have
   adminService call it over a mutually-authenticated path.
+## ADR-023 — UI tier talks to the cluster through a server-side BFF; injector proxies ingestion
+
+- **Status:** Accepted (2026-09-30)
+- **Context:** ARCHITECTURE §4.1 gives the browser services no cross-origin story before
+  Phase 8 (CORS middleware lands with the edge). The legacy frontend called
+  `NEXT_PUBLIC_*` URLs directly from the browser and carried an obsolete `user_id`
+  login field; SECURITY §6.2 lists no UI-held secrets; the vault-ui injector needs to
+  reach ingestion (5173 injector → 3000 API) but ingestion serves no CORS either.
+- **Decision:**
+  1. The frontend (3001) is a **server-side BFF**: the browser talks only to :3001;
+     Next route handlers (`/api/login`, `/api/whoami`, `/api/ask`) forward to
+     authService/slmService with the session cookie relayed as `Bearer <token>`;
+     login bodies are whitelisted to `{username, password}`; the Set-Cookie is
+     re-emitted host-only/httponly/path=/; `/ask` responses are whitelisted to
+     `{sql, rows, row_count, role}`. The UI holds zero secrets; no browser-visible
+     service DNS names; every backend contract is enforced server-side.
+  2. The vault-ui injector (5173, dev overlay, never edge-exposed) **proxies** the
+     ingestion calls server-side over a fixed method+path allowlist, with credential
+     headers redacted from logs. Its operator stages an ephemeral session token at
+     pod `/tmp/injector-token` (shredded after use) — the browser never holds it.
+  3. Both UI pods keep exactly two dependency egress flows (frontend → auth+slm;
+     injector → ingestion) plus DNS, matching SECURITY §8's enumeration.
+- **Consequences:** browser JS never sees a bearer token or a backend hostname; CORS
+  work in Phase 8 shrinks to the frontend origin only; the BFF is an extra hop for
+  media flows (7g UI does not yet exercise presigned PUTs — noted for Phase 8 browser
+  E2E). Legacy `NEXT_PUBLIC_*` URL configuration is retired.
