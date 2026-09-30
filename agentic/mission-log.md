@@ -2251,3 +2251,22 @@ apply onto a *terminating* pod yields a new pod whose logs are not the old pod's
 Backup inventory: `nagardb.sql` 22,846 B + `raw-media-backup.tar.gz` 232 B.
 Fixture pod deleted after proof; fixture manifest kept (per G8 doctrine) for closeout
 teardown.
+
+### Phase B — host-level clean (no cluster impact)
+
+Guard order honored: live-state snapshot → prune → re-verify, volumes never listed for
+pruning. Before/after `docker system df` (identical except Build Cache):
+
+    BEFORE: Images 3/428.1MB · Containers 3/2.187MB · Volumes 6/71.29GB (all active)
+            Build Cache 223 entries / 25.72GB (100% reclaimable)
+    ops:    docker builder prune -af → "Total: 25.72GB" (223→0 entries)
+            docker image prune -f (dangling only) → 0B
+            docker container prune -f (exited only)  → 0B
+    AFTER:  Images/Containers/Volumes byte-identical · Build Cache 0B
+
+Cluster continuity proof: all three k3d containers `Up` on both sides of the prune
+(server-0, serverlb, registry), 6/6 volumes preserved, and post-prune Kubernetes state
+unchanged — **15/15 Argo Applications Synced/Healthy**. Docker-side residue is now zero;
+the remaining bulk (45 GB containerd store + 21.2 GB registry payload inside the 71.29 GB
+of volume state) belongs to phases C–D: registry tag-prune + GC, then the destructive
+rebuild with project-named volumes, VHDX compaction, and hygiene automation.
