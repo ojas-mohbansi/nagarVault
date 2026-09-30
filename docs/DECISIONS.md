@@ -613,3 +613,23 @@ keeps the session warm), so a compromised model file is detectable by re-running
 gate. RWO is sufficient on a single-node substrate; if the platform ever spans nodes, this is the
 surface to revisit (RWX or per-node staging). The manifests reference this ADR at the point of
 deviation.
+
+## ADR-022 — adminService ships 7f without POST /vector/resync
+
+- **Status:** Accepted (2026-09-30)
+- **Context:** ARCHITECTURE §4.1 lists four adminService endpoints: `/health/cluster`,
+  `/audit-logs`, `/dlq`, `/vector/resync`. The Phase-7f charter's exit criteria name only
+  the first three. `/vector/resync` is a POST that triggers schemaIndexer `POST /reindex`,
+  which §4.1 itself marks as `internal` — the indexer has no JWT gate of its own, and
+  there is no documented service-to-service credential story yet (the edge and TLS arrive
+  in Phase 8; the frontend in 7g).
+- **Decision:** Implement the three read/inspect endpoints in 7f and defer
+  `/vector/resync` to the 7g/Phase 8 window. Do not ship an admin-JWT proxy that
+  forwards to an unauthenticated internal endpoint: it would let any holder of an admin
+  JWT trigger a collection rebuild while the call chain behind it remains unauthenticated
+  — a gate in front of an open door.
+- **Consequences:** adminService intentionally implements 3 of the 4 §4.1 rows; the
+  handler is absent, not stubbed (no fake 200s). The Phase-7f ledger records the
+  deferral. Revisit when 7g (frontend needs a resync button) or Phase 8 (TLS + service
+  identity) lands — at that point either give schemaIndexer a real auth story or have
+  adminService call it over a mutually-authenticated path.
