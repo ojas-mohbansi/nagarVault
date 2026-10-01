@@ -783,3 +783,56 @@ deviation.
   the frontend (falsifies the signature and hides the contract in a UI); pointing
   `MINIO_URL` itself at the edge (breaks statObject/health and widens NetworkPolicy); a second
   API field with an internal URL (extra capability token with no browser consumer).
+
+---
+
+## ADR-026 — Phase 9 observability: hand-authored manifests, API-based log collection, edge-derived service signals
+
+- **Status:** Accepted (2026-10-02)
+- **Context:** ADR-011 chose "kube-prometheus-stack + Loki". That chart cannot be used as-is
+  here: ADR-002 forbids Helm in deployment paths (the repo's pattern is vendored, digest-pinned
+  install manifests), the kube-prometheus-stack render assumes its own operator CRDs, node
+  exporter and a resource budget several times what this 16 GB host affords, and a large part of
+  its output (node/cAdvisor coverage, hundreds of bundled dashboards) is not needed for the
+  phase's exit criteria (dashboards populated, one alert fired with its runbook, restore drill
+  evidenced). Two live facts also shaped the build: (a) PSS `restricted` — enforced in every
+  mission namespace — rejects `hostPath` volumes outright, so a file-tailing log collector is not
+  admissible in any form; (b) no mission service exposes `/metrics`.
+- **Decision:**
+  1. **Manifests, not a chart or operator.** Prometheus, Alertmanager, kube-state-metrics,
+     Grafana, Loki, Alloy and kafka-exporter are declared directly in
+     `deploy/phases/09-observability/`, single-replica, digest-pinned, with resource
+     requests/limits sized for the host. Alert rules are Prometheus rule files (`runbook_url`
+     anchors per I-7), not `PrometheusRule` CRs; scrape configuration is a hand-written
+     `kubernetes_sd` config that names every job's namespace, pod label and port explicitly.
+     ADR-011's *substance* (Prometheus metrics, Loki logs, Jaeger deferred) is unchanged.
+  2. **The edge exposes its own metrics on the existing `ping` entrypoint.** One added
+     `--metrics.prometheus.entryPoint=ping` flag in `deploy/phases/08-edge/traefik-deployment.yaml`
+     (a recorded cross-phase amendment, same precedent as ADR-024 §7 / ADR-025): `/metrics`
+     answers on :8082 next to `/ping`, so **no new port enters the edge's frozen registry** and
+     the phase-9 NetworkPolicy widening (`allow-prometheus-scrape-traefik`) is the only other
+     change the scrape needs.
+  3. **Log collection tails the API, not the node filesystem.** Grafana Alloy
+     (`loki.source.kubernetes` + RBAC on `pods/log`) replaces Promtail, which cannot run under
+     PSS restricted. Cost, stated: the API server streams pod logs instead of the node reading
+     its disk — acceptable at single-node scale and revisited if the cluster grows. Related
+     deferrals, recorded rather than hidden: `verifyImages` (no signed images exist until the
+     Phase 10 supply-chain pass), the optional `policy-reporter` UI (Kyverno's native
+     PolicyReports + metrics cover reporting), and app-tier `/metrics` — until a service exposes
+     one, `Ingest5xxRate` is computed from Traefik's service counters and SECURITY §8's
+     `nagar.io/scrape` convention is labeled unfulfilled.
+  4. **New ports are registered, not invented at the edge.** Grafana listens on **3300** (its
+     image default 3000 is already the ingestion API's registered port), and CONVENTIONS §4
+     gains the observability rows plus the two pre-existing metrics ports (cert-manager 9402,
+     CNPG 9187). Nothing in this tier is exposed through Traefik.
+- **Consequences:** Phase 9's exit criteria are met with a stack that fits the host; dashboards,
+  rules and scrape configs are all git-owned and Argo-pruned; the Kyverno "full set" is
+  enforce-mode where the cluster is compliant today (nagar-app/nagar-observability) and
+  audit-mode in `nagar-platform` until the CNPG operator's image is pinned/signed.
+- **Alternatives rejected:** vendoring the kube-prometheus-stack render (fails ADR-002's spirit and
+  the RAM budget; drags an operator that duplicates CRDs this repo does not otherwise use);
+  Prometheus Operator CRDs without the chart (still an operator + CRDs for one replica's worth of
+  config); running Promtail in a non-mission namespace or with a PSS carve-out (SECURITY §5's
+  namespace-wide posture is worth more than the API load it saves); instrumenting every service
+  for `/metrics` inside this phase (cross-phase code churn across six services; deferred with the
+  edge-derived substitute named above).

@@ -1,0 +1,327 @@
+# Phase 9 — Grafana. Dashboards are provisioned from git (config-as-code, no clickops
+# that Argo would prune): two datasources (Prometheus, Loki) and two dashboards whose
+# panels were chosen to be non-empty on this cluster the moment it came up.
+#
+# Reachability: in-cluster only. There is deliberately no edge route (the frozen port
+# registry in CONVENTIONS §4 governs the edge; an operator console is not a public
+# surface), and the port chosen for Grafana is 3300 — *not* its image default 3000,
+# which the registry already assigns to the ingestion API. CONVENTIONS §4 gains the
+# observability rows in this same change (ADR-026 §4).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nagar-grafana-datasources
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://nagar-prometheus.nagar-observability.svc.cluster.local:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: 30s
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://nagar-loki.nagar-observability.svc.cluster.local:3100
+        editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nagar-grafana-dashboards-provider
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: nagarvault
+        orgId: 1
+        folder: NagarVault
+        type: file
+        disableDeletion: true
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nagar-grafana-dashboards
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+data:
+  platform-overview.json: |
+    {
+      "uid": "nagarvault-platform",
+      "title": "NagarVault — Platform overview",
+      "tags": ["nagarvault"],
+      "timezone": "browser",
+      "editable": false,
+      "schemaVersion": 39,
+      "time": {"from": "now-3h", "to": "now"},
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Scrape targets up", "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum(up)", "legendFormat": "up"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 2, "type": "stat", "title": "Pods not Running/Succeeded", "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum(kube_pod_status_phase{phase=~\"Pending|Failed|Unknown\"} > 0)", "legendFormat": "pods"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 3, "type": "stat", "title": "Alerts firing", "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "firing"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 4, "type": "stat", "title": "Certs expiring < 30d", "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "count((certmanager_certificate_expiration_timestamp_seconds - time()) < 30*24*3600) or vector(0)", "legendFormat": "certs"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 5, "type": "stat", "title": "Active series", "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "prometheus_tsdb_head_series", "legendFormat": "series"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Edge requests by code", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum by (code) (rate(traefik_service_requests_total[5m]))", "legendFormat": "{{code}}"}]
+        },
+        {
+          "id": 7, "type": "timeseries", "title": "Edge 5xx by service", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum by (service) (rate(traefik_service_requests_total{code=~\"5..\"}[5m]))", "legendFormat": "{{service}}"}]
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "Container restarts (increase over 15m)", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[15m]))", "legendFormat": "{{namespace}}/{{pod}}"}]
+        },
+        {
+          "id": 9, "type": "logs", "title": "Error-ish logs, all mission namespaces (Loki)", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"refId": "A", "expr": "{namespace=~\"nagar-app|nagar-platform|nagar-observability|nagar-system\"} |~ \"(?i)error|fail|panic\"", "queryType": "range"}]
+        }
+      ]
+    }
+  data-plane.json: |
+    {
+      "uid": "nagarvault-data-plane",
+      "title": "NagarVault — Data plane",
+      "tags": ["nagarvault"],
+      "timezone": "browser",
+      "editable": false,
+      "schemaVersion": 39,
+      "time": {"from": "now-6h", "to": "now"},
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Kafka brokers up", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "kafka_brokers", "legendFormat": "brokers"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 2, "type": "stat", "title": "Postgres instances up", "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum(up{job=\"cnpg-instances\"})", "legendFormat": "instances"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 3, "type": "stat", "title": "Last available backup age", "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "time() - max(cnpg_collector_last_available_backup_timestamp)", "legendFormat": "seconds"}],
+          "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}
+        },
+        {
+          "id": 4, "type": "stat", "title": "Failed backups (newer than last good)", "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "count(cnpg_collector_last_failed_backup_timestamp > 0 and cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_backup_timestamp) or vector(0)", "legendFormat": "failed"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}}
+        },
+        {
+          "id": 5, "type": "timeseries", "title": "Kafka consumer lag (messages)", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "max by (consumergroup, topic) (kafka_consumergroup_lag)", "legendFormat": "{{consumergroup}} / {{topic}}"}]
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Kafka produce rate (topic offsets/s)", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 4},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"refId": "A", "expr": "sum by (topic) (rate(kafka_topic_partition_current_offset[5m]))", "legendFormat": "{{topic}}"}]
+        },
+        {
+          "id": 7, "type": "logs", "title": "Ingestion + enrich worker logs (Loki)", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 13},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"refId": "A", "expr": "{namespace=\"nagar-app\", app=~\"nagar-ingestion|nagar-enrich-worker\"}", "queryType": "range"}]
+        },
+        {
+          "id": 8, "type": "logs", "title": "Postgres backup/restore logs (Loki)", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 13},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"refId": "A", "expr": "{namespace=\"nagar-platform\"} |~ \"(?i)backup|basebackup|wal\"", "queryType": "range"}]
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nagar-grafana-data
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nagar-grafana
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "09"
+    nagar.io/tier: "0"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-grafana
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: observability
+        nagar.io/phase: "09"
+        nagar.io/tier: "0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472          # grafana image's own user
+        runAsGroup: 472
+        fsGroup: 472
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: grafana
+          image: registry.nagar.internal:5000/grafana:11.4.0
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD__FILE
+              value: /etc/grafana-secrets/adminPassword
+            - name: GF_SERVER_HTTP_PORT
+              value: "3300"
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_NEWS_NEWS_FEED_ENABLED
+              value: "false"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_LOG_LEVEL
+              value: warn
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 3300
+              name: http
+          volumeMounts:
+            - name: provisioning-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: provisioning-dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+            - name: admin-secret
+              mountPath: /etc/grafana-secrets
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/grafana
+          readinessProbe:
+            httpGet: {path: /api/health, port: 3300}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/health, port: 3300}
+            initialDelaySeconds: 40
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: provisioning-datasources
+          configMap:
+            name: nagar-grafana-datasources
+        - name: provisioning-dashboards
+          configMap:
+            name: nagar-grafana-dashboards-provider
+        - name: dashboards
+          configMap:
+            name: nagar-grafana-dashboards
+        - name: admin-secret
+          secret:
+            secretName: nagar-grafana-admin
+        - name: data
+          persistentVolumeClaim:
+            claimName: nagar-grafana-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nagar-grafana
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-grafana
+  ports:
+    - name: http
+      port: 3300
+      targetPort: 3300

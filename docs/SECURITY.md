@@ -60,7 +60,11 @@ Embeddings are built from `schema_docs.json` (schema documentation), never from 
   rootFilesystem where the image permits.
 - Dedicated ServiceAccount per workload; `automountServiceAccountToken: false` unless the workload
   talks to the API server (none do today).
-- Image pulls only from `registry.nagar.internal:5000` (Kyverno verifyImages + registry allowlist).
+- Image pulls only from `registry.nagar.internal:5000` (Kyverno registry allowlist + digest pinning — both
+  **enforced** since Phase 9 in `nagar-app`/`nagar-observability`, audit-mode in `nagar-platform` where the
+  vendored CNPG operator still rides a tagged upstream image). `verifyImages`/cosign stays deferred: no image
+  is signed until the Phase 10 supply-chain pass, and an attestor policy over unsigned images would block
+  every pod (ADR-026 §3).
 - Resource limits mandatory (Kyverno), preventing noisy-neighbor denial of service.
 
 ## 6. Secrets management (Sealed Secrets)
@@ -113,8 +117,12 @@ Ordered rules mirroring [ARCHITECTURE.md](ARCHITECTURE.md) §4.4:
 - auth/admin/query → Postgres; admin → Kafka, schemaIndexer
 - slm → Ollama, Qdrant, queryService; schemaIndexer → Ollama, Qdrant
 - DNS (kube-system CoreDNS) allowed everywhere — always include it or everything breaks
-- observability scrapes: Prometheus → all namespaces' pods with label
-  `nagar.io/scrape: "true"` (port 9090/metrics convention)
+- observability ingresses: Prometheus scrapes the pod endpoints it discovers (Phase 9 jobs:
+  kube-state-metrics :8080, cert-manager :9402, Traefik edge :8082, CNPG instance-manager :9187,
+  kafka-exporter :9308, Alertmanager :9093); Alloy is the only pod allowed to `GET pods/log`; Loki/Loki-push
+  and Grafana→datasources stay namespace-local. The app-tier convention (pods labeled
+  `nagar.io/scrape: "true"` serving `/metrics` on 9090) is **declared but not yet fulfilled** — no mission
+  service exposes metrics today, which is why `Ingest5xxRate` is derived from the edge (ADR-026 §3)
 
 Egress: denied by default except listed targets + DNS + internal registry. No internet egress is
 required at runtime (air-gap).
@@ -128,6 +136,8 @@ required at runtime (air-gap).
 
 - `audit_logs` table: every SQL attempt — actor, role, SQL, verdict, block reason, rows, IP, time.
 - Argo CD keeps a full application history + sync diffs (platform-level audit of config changes).
-- Kyverno policy violations are admission-denied and reported (`kyverno policy-reporter` in Phase 9).
+- Kyverno policy violations are admission-denied and reported via Kyverno's own reports-controller
+  (`kubectl get policyreport -A`, plus the controller's `/metrics`); the optional `policy-reporter` UI was
+  not deployed in Phase 9 — a documented follow-up, not a gap in coverage (ADR-026 §3).
 - Backups are encrypted MinIO objects; restore drills (OPERATIONS §8) are the evidence that the
   security posture survives recovery.

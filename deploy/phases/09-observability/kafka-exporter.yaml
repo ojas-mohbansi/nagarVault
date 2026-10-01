@@ -1,0 +1,80 @@
+# Phase 9 — Kafka exporter: consumer-group lag for the KafkaConsumerLag alert. Deployed
+# here rather than via the Kafka CR's `spec.kafkaExporter` so the image stays pinned in
+# this phase's digest-pins (the operator would resolve its own default image) and the
+# Kafka CR needs no edit at all.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nagar-kafka-exporter
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-kafka-exporter
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "09"
+    nagar.io/tier: "0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-kafka-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-kafka-exporter
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: observability
+        nagar.io/phase: "09"
+        nagar.io/tier: "0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kafka-exporter
+          image: registry.nagar.internal:5000/kafka-exporter:v1.7.0
+          args:
+            - --kafka.server=nagar-kafka-bootstrap.nagar-platform.svc.cluster.local:29092
+            - --web.listen-address=:9308
+            - --log.level=warn
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 9308
+              name: metrics
+          readinessProbe:
+            httpGet: {path: /metrics, port: 9308}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /metrics, port: 9308}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nagar-kafka-exporter
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-kafka-exporter
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-kafka-exporter
+  ports:
+    - name: metrics
+      port: 9308
+      targetPort: 9308

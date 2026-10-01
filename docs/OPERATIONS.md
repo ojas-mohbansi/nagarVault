@@ -92,6 +92,8 @@ kubectl -n nagar-platform exec deploy/ollama -- ollama list
 
 ## 7. Backups & disaster recovery
 
+<a id="rb-7"></a>
+
 | Asset | Mechanism | Schedule |
 |---|---|---|
 | PostgreSQL | CNPG scheduled base + WAL backups → MinIO bucket `pg-backups` | base daily, WAL 5 min |
@@ -175,9 +177,13 @@ Everything else: change git, let Argo converge.
 
 ## 10. Alerts → runbooks (Phase 9)
 
-Every alert rule must carry a `runbook_url` annotation pointing to an anchor in this file. Initial
-set: `KafkaConsumerLag` (→ §12.2), `CNPGBackupFailed` (→ §7), `PodCrashLooping` (→ §12.1),
-`CertExpiringSoon` (→ §12.4), `Ingest5xxRate` (→ §12.3).
+Every alert rule must carry a `runbook_url` annotation pointing to an anchor in this file, in the
+form `docs/OPERATIONS.md#rb-<section>.<row>`. Those anchors are real, not decorative: each
+troubleshooting row and §7 open with an `<a id="rb-…"></a>` target so the link resolves offline
+in any markdown viewer (an air-gapped room has no wiki host). Initial set:
+`KafkaConsumerLag` (`#rb-12.2`), `CNPGBackupFailed` (`#rb-7`), `PodCrashLooping` (`#rb-12.1`),
+`CertExpiringSoon` (`#rb-12.4`), `Ingest5xxRate` (`#rb-12.3`). The five rules live in
+`deploy/phases/09-observability/prometheus.yaml`; the anchor-existence check is part of G9.5.
 
 ## 11. Post-deploy smoke test (E2E, scripted in Phase 10)
 
@@ -206,10 +212,10 @@ Phase 10 exit requires this script green on the Kubernetes stack.
 
 | # | Symptom | Likely cause | Fix |
 |---|---|---|---|
-| 12.1 | Pod `CrashLoopBackOff` | bad env/secret, dependency unreachable | `kubectl logs`; check §6.2 key map; verify NetworkPolicy allows the flow (SECURITY §8) |
-| 12.2 | enrichWorker lag / stale warehouse | Kafka consumer stuck, DLQ filling | check consumer group lag; inspect DLQ via admin; fix schema mismatch, replay topic |
-| 12.3 | Ingestion 5xx | MinIO down, Redis down, Kafka down | `GET /health` names the down component; restart that StatefulSet only if Argo is synced (else fix git first) |
-| 12.4 | TLS expired / cert errors | cert-manager issuance failure | check `Certificate` status + internal CA secret; renew via Argo sync after fixing issuer |
+| <a id="rb-12.1"></a>12.1 | Pod `CrashLoopBackOff` | bad env/secret, dependency unreachable | `kubectl logs`; check §6.2 key map; verify NetworkPolicy allows the flow (SECURITY §8) |
+| <a id="rb-12.2"></a>12.2 | enrichWorker lag / stale warehouse | Kafka consumer stuck, DLQ filling | check consumer group lag; inspect DLQ via admin; fix schema mismatch, replay topic |
+| <a id="rb-12.3"></a>12.3 | Ingestion 5xx | MinIO down, Redis down, Kafka down | `GET /health` names the down component; restart that StatefulSet only if Argo is synced (else fix git first) |
+| <a id="rb-12.4"></a>12.4 | TLS expired / cert errors | cert-manager issuance failure | check `Certificate` status + internal CA secret; renew via Argo sync after fixing issuer |
 | 12.5 | `503 Ollama is unreachable` (slmService) | model Job not complete, Ollama PVC full | §6 verify; check PVC usage; NetworkPolicy slm→ollama open |
 | 12.6 | `503 Schema index is empty` | schemaIndexer never ran / Qdrant empty | trigger `/reindex`; verify Qdrant collection `nagar_schema` count = 40 |
 | 12.7 | Generated SQL always 403 | role mismatch, PII column hit, non-SELECT | check JWT role claim; adjust schema_docs wording; inspect `[ask] generated_sql` log |

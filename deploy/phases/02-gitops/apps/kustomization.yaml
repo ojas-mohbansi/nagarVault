@@ -18,3 +18,4 @@ resources:
   - nagar-phase7f-admin.yaml
   - nagar-phase7g-ui.yaml
   - nagar-phase8-edge.yaml
+  - nagar-phase9-observability.yaml

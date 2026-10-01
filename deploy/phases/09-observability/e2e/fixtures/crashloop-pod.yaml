@@ -1,0 +1,31 @@
+# G9.5 — intentional alert drill: a pod that exits non-zero forever. Applied, watched until
+# PodCrashLooping fires in Alertmanager with its runbook_url annotation, then deleted so the
+# alert resolves. Pinned digest + restricted security context, so it passes every policy this
+# phase adds (the drill must fail *because it crashes*, not because admission rejected it).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p9-crashloop-drill
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+    nagar.io/p9-fixture: "crashloop"
+spec:
+  restartPolicy: Always
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: crasher
+      image: k3d-nagar.localhost:5000/mission/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
+      command: ["/bin/sh", "-c", "echo 'p9 alert drill: intentional exit'; exit 1"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}

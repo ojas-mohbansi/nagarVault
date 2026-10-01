@@ -1,0 +1,128 @@
+# G9.6 — Kyverno full-set admission probes. Apply this file; exactly three objects must be
+# DENIED by admission:
+#
+#   p9-violation-tag-only   → require-image-digest     (internal registry, but :day0 tag)
+#   p9-violation-registry   → restrict-image-registries (digest-pinned, but docker.io host)
+#   p9-violation-hostnet    → disallow-host-access     (compliant image, hostNetwork: true)
+#
+# and one must be ADMITTED:
+#
+#   p9-control-compliant    → internal registry + digest + restricted context (it runs and
+#                             sleeps, proving the policies do not deny compliant pods too)
+#
+# The control is deleted after the probe; the namespace is nagar-observability (enforce scope).
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p9-violation-tag-only
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+    nagar.io/p9-fixture: "policy-violation"
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: k3d-nagar.localhost:5000/mission/busybox:day0
+      command: ["/bin/sh", "-c", "sleep 5"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p9-violation-registry
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+    nagar.io/p9-fixture: "policy-violation"
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      # Same bytes as the internal busybox, addressed by its upstream name — the registry
+      # policy must deny on the host prefix alone (nothing is pulled; admission precedes it).
+      image: docker.io/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
+      command: ["/bin/sh", "-c", "sleep 5"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p9-violation-hostnet
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+    nagar.io/p9-fixture: "policy-violation"
+spec:
+  restartPolicy: Never
+  hostNetwork: true
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: k3d-nagar.localhost:5000/mission/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
+      command: ["/bin/sh", "-c", "sleep 5"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: p9-control-compliant
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+    nagar.io/p9-fixture: "policy-control"
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: control
+      image: k3d-nagar.localhost:5000/mission/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4
+      command: ["/bin/sh", "-c", "echo 'p9 control: admitted'; sleep 10"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 8Mi}
+        limits: {cpu: 50m, memory: 32Mi}

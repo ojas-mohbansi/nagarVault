@@ -1,0 +1,116 @@
+# Phase 9 — Alertmanager. Air-gap rule: there is no outbound notification path, so the
+# route delivers to a null receiver. Its job in this phase is to be the place where an
+# alert's identity + runbook_url annotation is *visible after firing* (G9.5's proof);
+# email/Slack/webhook receivers are Phase 10+ decisions, not air-gap defaults.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nagar-alertmanager-config
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-alertmanager
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ["alertname", "namespace"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 4h
+      receiver: devnull
+    receivers:
+      - name: devnull
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nagar-alertmanager
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-alertmanager
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "09"
+    nagar.io/tier: "0"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-alertmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-alertmanager
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: observability
+        nagar.io/phase: "09"
+        nagar.io/tier: "0"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alertmanager
+          image: registry.nagar.internal:5000/alertmanager:v0.28.0
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --web.listen-address=0.0.0.0:9093
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 9093
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+            - name: data
+              mountPath: /alertmanager
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 9093}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: 9093}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+      volumes:
+        - name: config
+          configMap:
+            name: nagar-alertmanager-config
+        - name: data
+          emptyDir: {}      # notification log only; no user data, no PVC needed
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nagar-alertmanager
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-alertmanager
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093

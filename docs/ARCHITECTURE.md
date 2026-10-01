@@ -132,6 +132,34 @@ Guardrails in the path (all implemented today): SELECT-only AST validation, per-
 (`name, phone, email, address, aadhaar`), full audit of every executed or blocked query to
 `audit_logs`, `temperature=0` generation with `"think": false`.
 
+### 3.5 Observability (implemented Phase 9, k3d substrate)
+
+The observability tier lives in `nagar-observability` and is pull-based: **nothing in the
+mission namespaces ships metrics**; Prometheus discovers every scrape target through the
+Kubernetes API (`kubernetes_sd` role `pod`). Data flow:
+
+```mermaid
+flowchart LR
+    P[nagar-prometheus :9090] -->|scrape pods| K[metric producers: kube-state-metrics :8080,
+    cert-manager :9402, Traefik edge :8082, CNPG instance-manager :9187, kafka-exporter :9308,
+    Alertmanager :9093]
+    P -->|evaluate rules| P
+    P -->|/api/v2/alerts| AM[nagar-alertmanager :9093] --> R[null receiver — air-gap]
+    A[nagar-alloy] -->|tail pod logs via API /pods/log| L[nagar-loki :3100]
+    G[nagar-grafana :3300] --> P
+    G --> L
+```
+
+Two deliberate asymmetries, both recorded in ADR-026:
+
+1. **Log collection is API-based.** PSS `restricted` forbids `hostPath` volumes in every mission
+   namespace, so a node-reading collector (Promtail) is not admissible at all; Alloy tails
+   container logs through the API server instead.
+2. **Service-level request metrics come from the edge, not from the apps.** No mission service
+   exposes `/metrics` today (the `nagar.io/scrape: "true"` pod-label convention in SECURITY §8
+   therefore matches nothing yet); Traefik's service counters are the measurement point for
+   `Ingest5xxRate` until the app tier is instrumented.
+
 ## 4. Component contracts
 
 ### 4.1 HTTP endpoint registry (verified against source, 2026-09-29)

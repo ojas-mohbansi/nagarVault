@@ -131,6 +131,13 @@ spec:
             # Evidence trail in ADR-024 field repairs and the mission log G8.3.)
             - "--ping=true"
             - "--ping.entrypoint=ping"
+            # Phase 9 (ADR-026 §2): Prometheus metrics ride the SAME dedicated plaintext
+            # entrypoint — Traefik v3 serves /metrics on the entrypoint named by
+            # metrics.prometheus.entryPoint, so no new port enters the frozen registry and
+            # the scrape path is already covered by the phase-9 NetworkPolicy widening
+            # (allow-prometheus-scrape-traefik). The edge's own request counters are the
+            # measurement point for Ingest5xxRate (ADR-026 §3).
+            - "--metrics.prometheus.entryPoint=ping"
             - "--api.dashboard=false"
             - "--log.level=INFO"
             - "--accesslog=true"

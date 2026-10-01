@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Phase 9 — Observability & hardening (charter: PHASES.md §2). Phase boundary = directory
+# boundary (I-9); the only objects this tree declares outside nagar-observability are the
+# Traefik scrape widening in nagar-system and the cluster-scoped RBAC/Kyverno policies,
+# both named in the charter ("NetworkPolicy completion", "full Kyverno set").
+resources:
+  - networkpolicy.yaml
+  - prometheus.yaml
+  - alertmanager.yaml
+  - kube-state-metrics.yaml
+  - kafka-exporter.yaml
+  - loki.yaml
+  - alloy.yaml
+  - grafana.yaml
+  - grafana-sealed-secret.yaml
+  - policies.yaml
+components:
+  - digest-pins

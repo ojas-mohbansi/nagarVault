@@ -1,0 +1,157 @@
+# Phase 9 — the Kyverno "full set" (ADR-012: Phase 1 ships the baseline, Phase 9 the
+# rest). Three policies join the baseline trio in 01-substrate/policies.yaml:
+#
+#   1. require-image-digest       — I-5's admission teeth (the baseline only banned :latest)
+#   2. restrict-image-registries  — I-11's admission teeth (registry allowlist)
+#   3. disallow-host-access       — PSS++: no hostPath/hostNetwork/hostPID/hostIPC anywhere
+#
+# Scoping is deliberate and live-verified, not aspirational:
+#   * nagar-app + nagar-observability are 100% digest-pinned on the internal registry today
+#     (checked pod-by-pod before writing this file) → Enforce.
+#   * nagar-platform still runs one upstream-tagged pod: the vendored CloudNativePG operator
+#     (`ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1`). Enforcing there would block that
+#     operator's next rollout for a reason this phase cannot fix (its image is pinned in
+#     Phase 5's digest-pins, the operator pod is managed by the third-party install) →
+#     Audit, with the intent to flip in Phase 10's supply-chain pass.
+#
+# verifyImages (cosign) is NOT here: SECURITY §7's signing pipeline does not exist yet, so
+# an attestor policy would either audit forever or block every pod. ADR-026 §3 records the
+# deferral; the registry allowlist + digest pinning are the enforceable half today.
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    nagar.io/phase: "09"
+    policies.kyverno.io/title: Require digest-pinned images
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  background: true
+  emitWarning: false
+  admission: true
+  rules:
+    - name: digest-pinned-app-and-observability
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [nagar-app, nagar-observability]
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        message: "Every container image must be pinned by digest (@sha256:…) — I-5."
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+            =(initContainers):
+              - image: "*@sha256:*"
+    - name: digest-pinned-platform-audit
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [nagar-platform]
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Audit
+        allowExistingViolations: true
+        message: "Platform images should be digest-pinned; the vendored CNPG operator still carries a tag (Phase 10 supply-chain pass)."
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    nagar.io/phase: "09"
+    policies.kyverno.io/title: Images only from the internal registry
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  background: true
+  emitWarning: false
+  admission: true
+  rules:
+    - name: internal-registry-app-and-observability
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [nagar-app, nagar-observability]
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        message: "Images must come from the internal registry — k3d-nagar.localhost:5000 (registry.nagar.internal:5000) only (I-11)."
+        anyPattern:
+          - spec:
+              containers:
+                - image: "k3d-nagar.localhost:5000/*"
+              =(initContainers):
+                - image: "k3d-nagar.localhost:5000/*"
+          - spec:
+              containers:
+                - image: "registry.nagar.internal:5000/*"
+              =(initContainers):
+                - image: "registry.nagar.internal:5000/*"
+    - name: internal-registry-platform-audit
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [nagar-platform]
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Audit
+        allowExistingViolations: true
+        message: "Platform images should come from the internal registry; the vendored CNPG operator still pulls ghcr.io (Phase 10 supply-chain pass)."
+        anyPattern:
+          - spec:
+              containers:
+                - image: "k3d-nagar.localhost:5000/*"
+          - spec:
+              containers:
+                - image: "registry.nagar.internal:5000/*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-host-access
+  annotations:
+    nagar.io/phase: "09"
+    policies.kyverno.io/title: No hostPath, hostNetwork, hostPID or hostIPC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  background: true
+  emitWarning: false
+  admission: true
+  rules:
+    - name: no-host-namespaces
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kube-public, kube-node-lease]
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        message: "hostPath volumes, hostNetwork, hostPID and hostIPC are forbidden (SECURITY §5 hardening; the PSS restricted profile already forbids the volume type, this names the whole family)."
+        pattern:
+          spec:
+            =(hostNetwork): "false"
+            =(hostPID): "false"
+            =(hostIPC): "false"
+            =(volumes):
+              - =(hostPath): "null"

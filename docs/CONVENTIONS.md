@@ -78,6 +78,21 @@ Rules:
 | 11434 | Ollama | namespace + nagar-app only |
 | 29092 | Kafka listeners | namespace + nagar-app only |
 
+Observability tier (Phase 9; all cluster-internal, none exposed at the edge — ADR-026 §4):
+
+| Port | Owner | Exposure |
+|---|---|---|
+| 3300 | Grafana | nagar-observability only (operator port-forward; not the image default 3000, which this registry already assigns to ingestion) |
+| 9090 | Prometheus | nagar-observability only |
+| 9093 | Alertmanager | nagar-observability only |
+| 3100 | Loki | nagar-observability only |
+| 8080 | kube-state-metrics | nagar-observability only |
+| 9308 | kafka-exporter | nagar-observability only |
+| 12345 | Alloy (log collector) | nagar-observability only |
+| 8082 | Traefik `ping` entrypoint — also serves `/metrics` (Phase 9) | nagar-system only |
+| 9402 | cert-manager metrics | cert-manager namespace only (pre-existing, first registered here) |
+| 9187 | CNPG instance-manager metrics | nagar-platform only (pre-existing, first registered here) |
+
 Adding or changing a port = ADR. Client code and manifests must reference the registry, not memory.
 
 ## 5. Label schema (mandatory on every manifest)

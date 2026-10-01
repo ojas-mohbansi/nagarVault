@@ -1,0 +1,287 @@
+# Phase 9 — observability NetworkPolicies (SECURITY §8 "NetworkPolicy completion").
+#
+# Before this phase the nagar-observability namespace had NO policies at all — every pod
+# was fully open on both directions. The completion is: default-deny for the namespace,
+# then one explicit allow per real flow. Every port below is a port some object in this
+# tree actually listens on or dials (no speculative rules).
+#
+# Cross-namespace note: NetworkPolicies are additive, so the Traefik scrape widening in
+# nagar-system is declared HERE rather than by editing the Phase-8 tree (same pattern
+# Phase 8 used for the app-side edge widenings).
+---
+# 1) Namespace default deny. SECURITY §8: default deny in nagar-app, nagar-platform —
+# nagar-observability was the missing third.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# 2) DNS for every observability pod (CoreDNS only — never a blanket 53/UDP).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3) API-server egress for the three components that watch the API: Prometheus
+# (kubernetes_sd), Alloy (log target discovery + tailing), kube-state-metrics (its whole
+# job). Port-scoped with no peer for the same k3s reason Phase 4/8 recorded: the API
+# server is a host process no peer can name and ClusterIP 443 is DNAT'd to 6443 before
+# egress policy evaluates, so both forms are allowed and nothing else is.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kube-api-egress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [nagar-prometheus, nagar-alloy, nagar-kube-state-metrics]
+  policyTypes: ["Egress"]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+---
+# 4) Prometheus scrape egress. Fan-out to any namespace is inherent to a scraper; it is
+# scoped by PORT to exactly the endpoints this phase configures (see prometheus.yaml
+# scrape_configs): cert-manager 9402, CNPG operator 8080, Traefik 8082, kube-state-metrics
+# 8080, kafka-exporter 9308, Alertmanager 9093, and its own 9090.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape-egress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-prometheus
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9402
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 9308
+        - protocol: TCP
+          port: 9093
+        - protocol: TCP
+          port: 9090
+---
+# 5) Alloy → Loki push (same namespace, so the peer is explicit).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alloy-loki-egress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-alloy
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-alloy
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-loki
+      ports:
+        - protocol: TCP
+          port: 3100
+---
+# 6) Grafana → Prometheus + Loki (its two provisioned datasources).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-datasource-egress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-grafana
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-grafana
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-loki
+      ports:
+        - protocol: TCP
+          port: 3100
+---
+# 7) Kafka exporter → the broker (SECURITY §8: observability pulls lag; the exporter is
+# the only observability pod that needs the data plane).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kafka-exporter-egress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-kafka-exporter
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-kafka-exporter
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-platform
+          podSelector:
+            matchLabels:
+              strimzi.io/broker-role: "true"
+      ports:
+        - protocol: TCP
+          port: 29092
+---
+# 8) Scrape ingress to the observability endpoints. Only the Prometheus pod may dial
+# these ports; nothing else in the cluster (and nothing outside it) can.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape-ingress
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [nagar-prometheus, nagar-kube-state-metrics, nagar-kafka-exporter, nagar-alertmanager, nagar-loki]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9308
+        - protocol: TCP
+          port: 9093
+        - protocol: TCP
+          port: 3100
+---
+# 9) The Traefik scrape widening (nagar-system). The Phase-8 edge policy admits only :443
+# ingress, so the /metrics endpoint this phase enables on the ping entrypoint (:8082)
+# needs its own additive rule — declared here, no Phase-8 edit.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape-traefik
+  namespace: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik-edge
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-prometheus
+      ports:
+        - protocol: TCP
+          port: 8082
+---
+# 10) The CNPG instance-metrics widening (nagar-platform). The platform policy
+# `allow-postgres-ingress` admits the app tier only; the backup-freshness alert reads
+# the instance manager on 9187, so this additive rule admits Prometheus to exactly that
+# port. No other observability pod can reach the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-cnpg-metrics
+  namespace: nagar-platform
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-prometheus
+      ports:
+        - protocol: TCP
+          port: 9187

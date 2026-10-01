@@ -1,0 +1,44 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Digest pins for every Phase 9 image (invariant I-5). Resolution 2026-10-02: each upstream
+# image was pulled on the host, staged into the internal registry via localhost:35000, and
+# its digest read back from the registry's own RepoDigests record before landing here.
+#
+# The upstream registry column is provenance only — nothing at runtime resolves it (I-11):
+# every pod below pulls k3d-nagar.localhost:5000 (the substrate's name for
+# registry.nagar.internal:5000; the rewrite is the same pattern phases 3–8 use).
+#
+#   prom/prometheus:v3.5.0                        → sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+#   quay.io/prometheus/alertmanager:v0.28.0       → sha256:d5155cfac40a6d9250ffc97c19db2c5e190c7bc57c6b67125c94903358f8c7d8
+#   registry.k8s.io/kube-state-metrics:v2.14.0    → sha256:37d841299325c23b56e5951176ce8ef317d537447c0f1b2d2437dddbb1f51165
+#   grafana/grafana:11.4.0                        → sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb
+#   grafana/loki:3.3.2                            → sha256:8af2de1abbdd7aa92b27c9bcc96f0f4140c9096b507c77921ffddf1c6ad6c48f
+#   grafana/alloy:v1.3.1                          → sha256:e5a674ee6b90d8d25d1adcdbcf885fa3bf6b592f3e2ab358b47431f3ca0e771f
+#   danielqsj/kafka-exporter:v1.7.0              → sha256:e90b7ba06d97717224d67774fc7f208c26d1c4dafd4c8011185b0d45b5b38ace
+#
+# NOT staged here: grafana/promtail:3.3.2. It was staged (digest recorded in the mission log)
+# and then rejected at design time: PSS `restricted` forbids hostPath volumes, so a
+# file-tailing collector cannot run in nagar-observability at all. Log collection uses Alloy's
+# API-based tailing instead — ADR-026 records the deviation.
+images:
+  - name: registry.nagar.internal:5000/prometheus
+    newName: k3d-nagar.localhost:5000/mission/prometheus
+    digest: sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+  - name: registry.nagar.internal:5000/alertmanager
+    newName: k3d-nagar.localhost:5000/mission/alertmanager
+    digest: sha256:d5155cfac40a6d9250ffc97c19db2c5e190c7bc57c6b67125c94903358f8c7d8
+  - name: registry.nagar.internal:5000/kube-state-metrics
+    newName: k3d-nagar.localhost:5000/mission/kube-state-metrics
+    digest: sha256:37d841299325c23b56e5951176ce8ef317d537447c0f1b2d2437dddbb1f51165
+  - name: registry.nagar.internal:5000/grafana
+    newName: k3d-nagar.localhost:5000/mission/grafana
+    digest: sha256:d8ea37798ccc41061a62ab080f2676dda6bf7815558499f901bdb0f533a456fb
+  - name: registry.nagar.internal:5000/loki
+    newName: k3d-nagar.localhost:5000/mission/loki
+    digest: sha256:8af2de1abbdd7aa92b27c9bcc96f0f4140c9096b507c77921ffddf1c6ad6c48f
+  - name: registry.nagar.internal:5000/alloy
+    newName: k3d-nagar.localhost:5000/mission/alloy
+    digest: sha256:e5a674ee6b90d8d25d1adcdbcf885fa3bf6b592f3e2ab358b47431f3ca0e771f
+  - name: registry.nagar.internal:5000/kafka-exporter
+    newName: k3d-nagar.localhost:5000/mission/kafka-exporter
+    digest: sha256:e90b7ba06d97717224d67774fc7f208c26d1c4dafd4c8011185b0d45b5b38ace

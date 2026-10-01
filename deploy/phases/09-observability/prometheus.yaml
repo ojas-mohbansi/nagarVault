@@ -1,0 +1,345 @@
+# Phase 9 — Prometheus (ADR-011's metrics half; ADR-026 records the manifest-level
+# deviation from the upstream kube-prometheus-stack render and why).
+#
+# Shape: one replica, one PVC, hand-written scrape config over kubernetes_sd. Every job
+# below targets a port that some deployed object actually serves (verified live before
+# the rule was written) — there is deliberately no generic "pod with nagar.io/scrape=true"
+# job, because no mission workload exposes /metrics yet; that gap is recorded in
+# ADR-026 §3 and SECURITY §8's note. RBAC is the minimum the pod-role discovery needs.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nagar-prometheus
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "09"
+    nagar.io/tier: "0"
+automountServiceAccountToken: true   # the API is the scrape target catalogue
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nagar-prometheus
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nagar-prometheus
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nagar-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: nagar-prometheus
+    namespace: nagar-observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nagar-prometheus-config
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+      external_labels:
+        cluster: nagarvault
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+      # Every job below discovers pods and rewrites __address__ to <pod-ip>:<port>; the
+      # ports are fixed listener ports of the target images (not declared container
+      # ports), so no port relabeling depends on containerPort declarations.
+      - job_name: kube-state-metrics
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: nagar-observability
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: nagar-kube-state-metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:8080"
+
+      - job_name: alertmanager
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: nagar-observability
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: nagar-alertmanager
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:9093"
+
+      - job_name: kafka-exporter
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: nagar-observability
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: nagar-kafka-exporter
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:9308"
+
+      # The edge's own request metrics (ADR-026 §2: one Phase-8 arg enables them on the
+      # existing ping entrypoint; no new port enters the frozen registry).
+      - job_name: traefik
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: nagar-system
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: traefik-edge
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:8082"
+
+      # cert-manager: controller + cainjector + webhook all carry instance=cert-manager
+      # and all serve /metrics on 9402 (plain HTTP in v1.16.4).
+      - job_name: cert-manager
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: cert-manager
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            regex: cert-manager
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:9402"
+
+      # CloudNativePG instance-manager metrics (9187) — the only source of backup
+      # freshness: the operator's own /metrics is controller-runtime only (probed).
+      - job_name: cnpg-instances
+        kubernetes_sd_configs: [{role: pod}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: nagar-platform
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_cnpg_io_cluster]
+            regex: postgres
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "$1:9187"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nagar-prometheus-rules
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+data:
+  nagarvault.rules.yaml: |
+    # The five alerts OPERATIONS §10 names, each with the runbook_url anchor I-7 requires.
+    # Anchors resolve inside OPERATIONS.md (the <a id="rb-…"> targets declared there);
+    # the offline form is intentional — an air-gapped room has no wiki host.
+    groups:
+      - name: nagarvault
+        rules:
+          - alert: PodCrashLooping
+            expr: max by (namespace, pod, container) (kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}) > 0
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is in CrashLoopBackOff"
+              runbook_url: "docs/OPERATIONS.md#rb-12.1"
+
+          - alert: KafkaConsumerLag
+            expr: max by (consumergroup, topic) (kafka_consumergroup_lag) > 100
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Consumer group {{ $labels.consumergroup }} is {{ $value | humanize }} messages behind on {{ $labels.topic }}"
+              runbook_url: "docs/OPERATIONS.md#rb-12.2"
+
+          - alert: CNPGBackupFailed
+            # Fires only when a failure exists AND is newer than the last success; a
+            # never-failed cluster reports 0 and stays silent (verified live).
+            expr: cnpg_collector_last_failed_backup_timestamp > 0 and cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_backup_timestamp
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "PostgreSQL cluster {{ $labels.cluster }} has a failed backup newer than its last successful one"
+              runbook_url: "docs/OPERATIONS.md#rb-7"
+
+          - alert: CertExpiringSoon
+            expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Certificate {{ $labels.name }} in {{ $labels.namespace }} expires within 7 days"
+              runbook_url: "docs/OPERATIONS.md#rb-12.4"
+
+          - alert: Ingest5xxRate
+            # Edge-derived (ADR-026 §3): the ingestion service exposes no /metrics yet,
+            # so Traefik's service-level counters are the measurement point.
+            expr: sum by (service) (rate(traefik_service_requests_total{service=~".*ingestion.*", code=~"5.."}[5m])) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Ingestion is returning 5xx at {{ $value | humanize }} req/s ({{ $labels.service }})"
+              runbook_url: "docs/OPERATIONS.md#rb-12.3"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nagar-prometheus-data
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nagar-prometheus
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/managed-by: argocd
+    nagar.io/phase: "09"
+    nagar.io/tier: "0"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # single RWO PVC
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nagar-prometheus
+        app.kubernetes.io/part-of: nagarvault
+        app.kubernetes.io/component: observability
+        nagar.io/phase: "09"
+        nagar.io/tier: "0"
+    spec:
+      serviceAccountName: nagar-prometheus
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: registry.nagar.internal:5000/prometheus:v3.5.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=15d
+            - --web.listen-address=0.0.0.0:9090
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 9090
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 9090}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: 9090}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: "1", memory: 768Mi}
+      volumes:
+        - name: config
+          configMap:
+            name: nagar-prometheus-config
+        - name: rules
+          configMap:
+            name: nagar-prometheus-rules
+        - name: data
+          persistentVolumeClaim:
+            claimName: nagar-prometheus-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nagar-prometheus
+  namespace: nagar-observability
+  labels:
+    app.kubernetes.io/name: nagar-prometheus
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "09"
+spec:
+  selector:
+    app.kubernetes.io/name: nagar-prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
