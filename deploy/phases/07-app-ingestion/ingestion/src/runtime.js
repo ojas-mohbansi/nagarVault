@@ -7,17 +7,29 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import Redis from 'ioredis';
 import { Kafka } from 'kafkajs';
 import { buildApp } from './app.js';
+import { toPublicPresignedUrl } from './presign-url.js';
 
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET || 'raw-media';
+const credentials = {
+  accessKeyId: process.env.MINIO_ACCESS_KEY,
+  secretAccessKey: process.env.MINIO_SECRET_KEY,
+};
 const s3 = new S3Client({
   endpoint: process.env.MINIO_URL || 'http://minio.nagar-platform.svc.cluster.local:9000',
   region: 'us-east-1',
   forcePathStyle: true,
-  credentials: {
-    accessKeyId: process.env.MINIO_ACCESS_KEY,
-    secretAccessKey: process.env.MINIO_SECRET_KEY,
-  },
+  credentials,
 });
+
+// Browser-facing presigner (ADR-025): when PRESIGN_PUBLIC_URL is set, presigning is done
+// against the public edge origin so the SigV4 host matches what MinIO sees through the
+// edge, and the returned URL gains the frozen `/minio` route prefix. All read paths
+// (statObject, health) and the unset default keep using the in-cluster MINIO_URL client.
+const PRESIGN_PUBLIC_URL = process.env.PRESIGN_PUBLIC_URL || '';
+const PRESIGN_ROUTE_PREFIX = process.env.PRESIGN_ROUTE_PREFIX || '/minio';
+const s3Public = PRESIGN_PUBLIC_URL
+  ? new S3Client({ endpoint: PRESIGN_PUBLIC_URL, region: 'us-east-1', forcePathStyle: true, credentials })
+  : null;
 
 const redis = new Redis(process.env.REDIS_URL || 'redis://redis.nagar-platform.svc.cluster.local:6379', {
   maxRetriesPerRequest: 2,
@@ -32,7 +44,8 @@ globalThis.__ingestion = {
   published: [],
   async presignUrls({ bucket, objectKey, contentType }) {
     const cmd = new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: contentType });
-    return getSignedUrl(s3, cmd, { expiresIn: 300 }); // §3.2: 5-minute PUT URLs
+    const url = await getSignedUrl(s3Public || s3, cmd, { expiresIn: 300 }); // §3.2: 5-minute PUT URLs
+    return toPublicPresignedUrl(url, PRESIGN_PUBLIC_URL, PRESIGN_ROUTE_PREFIX);
   },
   async statObject({ bucket, objectKey }) {
     const { HeadObjectCommand } = await import('@aws-sdk/client-s3');

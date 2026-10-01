@@ -745,3 +745,41 @@ deviation.
   §7-sanctioned cross-phase amendment in the 7a manifest itself (`COOKIE_SECURE: "true"`),
   where the object lives — patch as data is impossible across phase trees; the amendment is
   a one-line value flip recorded in the 7a file and here.
+
+## ADR-025 — Browser presigned PUTs are minted on the public edge origin under `/minio`
+
+- **Status:** Accepted (2026-10-01)
+- **Context:** The Phase-8 charter's exit criterion is “**browser presigned PUT works from the
+  frontend origin**” (PHASES.md §2 Phase 8), and ARCHITECTURE §3.2 has the browser PUTting bytes
+  directly to MinIO with CORS from the Traefik middleware. The Phase-8 gate run recorded the
+  blocker: 7e's presigner signs against `MINIO_URL`
+  (`minio.nagar-platform.svc.cluster.local:9000`) — cluster-internal DNS no browser can
+  resolve — and the Deployment offered no external-host setting, so Gate 4 could only prove an
+  *equivalent* in-pod minted URL. The ledger named `PRESIGN_PUBLIC_URL` as the closing
+  follow-up.
+- **Decision:**
+  1. 7e gains `PRESIGN_PUBLIC_URL` (browser-facing edge origin, e.g.
+     `https://k3d.nagar.internal`; **unset = legacy in-cluster URLs**, so the default surface is
+     unchanged) plus an optional `PRESIGN_ROUTE_PREFIX` (default `/minio`, the frozen
+     ADR-024 §5/§6 route).
+  2. When set, **presigning uses a second S3 client whose endpoint is `PRESIGN_PUBLIC_URL`**.
+     This is load-bearing: SigV4 binds the signature to the signed `host`, so the *signer*, not
+     a URL-rewriting client, must target the edge hostname. MinIO sees the preserved `Host`
+     through Traefik (`passHostHeader` default true).
+  3. The returned URL's path gains the route prefix (`/minio/<bucket>/<key>`). That insertion
+     is **signature-neutral**: the edge `edge-strip-minio` middleware hands MinIO exactly the
+     MinIO-native path the signature was computed over, so MinIO verifies what was signed.
+  4. All read paths (`statObject`, `minioOk`) and the unset default keep using the in-cluster
+     `MINIO_URL` client — only URL *minting* changes.
+- **Consequences:** the browser can PUT the API-returned URL verbatim (through the edge, CORS
+  evaluated by `edge-cors`), no client-side URL surgery; the Phase-8 charter deviation is
+  closed and re-proven from the host (mission log, G8C). Deployment-specific origin, not a
+  secret. `PRESIGN_PUBLIC_URL` is the only new required knob; no port/topic/bucket names change
+  (I-6 untouched). Inherent trade-off, recorded: an in-cluster client can no longer PUT the
+  API-minted URL (public host + public signature) — in-cluster media fixtures must re-mint with
+  the SDK against `MINIO_URL` (the 7e E2E harness does exactly that; the harness previously
+  consumed the API URL verbatim, which only worked while the URL was in-cluster).
+- **Alternatives rejected:** serving the URL host from `MINIO_URL` and rewriting host+path in
+  the frontend (falsifies the signature and hides the contract in a UI); pointing
+  `MINIO_URL` itself at the edge (breaks statObject/health and widens NetworkPolicy); a second
+  API field with an internal URL (extra capability token with no browser consumer).

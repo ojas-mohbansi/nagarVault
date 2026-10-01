@@ -100,6 +100,11 @@ Invariant: **the API never proxies media bytes.** Kafka receives durable `bucket
 references only. Topic routing is server-side; clients cannot choose topics. Duplicates are
 detected via `sourceSystem + sourceRecordId` and answered `200 duplicate` idempotently.
 
+Presigned URLs are minted for the browser on the public edge origin under the frozen `/minio`
+route (`PRESIGN_PUBLIC_URL`; ADR-025). The signature is bound to the edge hostname and the edge
+strips the route prefix before MinIO verifies it, so the browser PUTs the returned URL verbatim;
+the API's own read paths (`statObject`, health) keep using the in-cluster `MINIO_URL`.
+
 ### 3.3 Enrichment (Kafka → PostgreSQL)
 
 `enrichWorker` consumes the five raw topics plus the DLQ, normalizes payloads per department, and

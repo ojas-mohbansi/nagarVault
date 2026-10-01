@@ -123,13 +123,17 @@ rollback:
 - **Done 2026-09-30 (k3d substrate, ADR-024):** all routes live — 15/15 Applications
   Synced/Healthy; OPERATIONS §11 smoke steps 1–2 green over HTTPS (`SMOKE-1-OK`; login 200 with a
   `Secure` cookie; invocation note added to §11 — host-side `-k` + port-forward per §12.34).
-  Six E2E gates green (G8.1–G8.7 in the mission log): TLS chain to `CN=nagar-edge-ca` with the
-  TLS-1.1 floor held, CORS preflight allow/deny matrix, rate-limit burst with both 429 shapes
-  attributed (edge Retry-After vs auth in-app), presigned PUT through the edge byte-intact into
-  MinIO, 401/403 authz matrix with admin contrast, in-cluster verbatim `/api` + native-path flows
-  unaffected. Charter deviation, recorded: the literal *browser*-origin presigned PUT is blocked by
-  7e's presigner — `MINIO_URL` has no external-host env, so minted URLs carry cluster-internal DNS
-  (proven via the equivalent edge path; a `PRESIGN_PUBLIC_URL` env is the 7e follow-up). Traefik
+  Six E2E gates green (G8.1–G8.7 in the mission log): TLS chain to `CN=nagar-edge-ca` (the
+  ≥TLS-1.2 floor is declared by the deployed TLSOption in both route namespaces; the host
+  toolchain cannot offer ≤1.1, so the negative probe is instrument-limited — corrected in
+  G8R.1), CORS preflight allow/deny matrix, rate-limit burst with both 429 shapes attributed
+  (edge Retry-After vs auth in-app), presigned PUT through the edge byte-intact into MinIO,
+  401/403 authz matrix with admin contrast, in-cluster verbatim `/api` + native-path flows
+  unaffected. Charter deviation **closed 2026-10-01**: the literal *browser*-origin presigned PUT
+  was originally blocked by 7e's presigner (`MINIO_URL` only, so minted URLs carried
+  cluster-internal DNS). 7e image `phase7e-4` now mints the URL on the public edge origin under
+  the frozen `/minio` route (`PRESIGN_PUBLIC_URL`; ADR-025), and Gate 4 was re-run literally from
+  the host — API presign → PUT through the edge → bytes verified in MinIO (mission log, G8C). Traefik
   v3 field rules live-proven and encoded in ADR-024: per-namespace middlewares/TLSOptions,
   parenthesized host disjunctions, vendored 10-CRD bundle + RBAC incl. endpointslices/nodes,
   dedicated plaintext ping entrypoint, strip map for native-path upstreams (§6 correction).

@@ -85,7 +85,7 @@ spec:
       containers:
         - name: ingestion
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
-          image: registry.nagar.internal:5000/nagar-ingestion:phase7e-3
+          image: registry.nagar.internal:5000/nagar-ingestion:phase7e-4
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -109,6 +109,13 @@ spec:
                 secretKeyRef: { name: nagar-minio, key: secretKey }
             - name: MINIO_URL
               value: http://minio.nagar-platform.svc.cluster.local:9000
+            # Browser-facing presigned PUTs (ADR-025; Phase-8 charter "browser presigned
+            # PUT works from the frontend origin"): presigning signs against the public
+            # edge origin and the URL gains the frozen /minio route prefix, so the browser
+            # can PUT the minted URL directly. Read paths (statObject, health) keep
+            # MINIO_URL — the API's in-cluster client for MinIO never changes.
+            - name: PRESIGN_PUBLIC_URL
+              value: https://k3d.nagar.internal
             - name: REDIS_URL
               value: redis://redis.nagar-platform.svc.cluster.local:6379
             - name: KAFKA_BOOTSTRAP
