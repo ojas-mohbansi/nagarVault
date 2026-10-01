@@ -13,6 +13,11 @@
 
 ## 2. Cluster bootstrap (Phase 1)
 
+> **Substrate lifecycle (k3d workstation substrate):** for the hands-on recipes — backup
+> before destructive change, Docker space reclaim, named-volume cluster rebuild,
+> restore-from-git, sealed-secret reseal, weekly hygiene — see
+> [SUBSTRATE.md](SUBSTRATE.md). This file remains the authority for production posture.
+
 ### 2.1 Install k3s (online host)
 ```bash
 curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644

@@ -167,6 +167,7 @@ for gate evidence); Phases 9–10 are not yet implemented.**
 | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | Layout, naming, ports, labels, config precedence |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, JWT chain, RBAC, secrets, policies |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Install, deploy, seed, backup, restore, troubleshoot |
+| [docs/SUBSTRATE.md](docs/SUBSTRATE.md) | k3d substrate lifecycle how-tos: backup, space reclaim, rebuild, restore, reseal, hygiene |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | ADR log |
 | [docs/PHASES.md](docs/PHASES.md) | 11-phase implementation plan with isolation rules |
 | [docs/manifests/exemplars/](docs/manifests/exemplars/README.md) | Canonical reference YAML per workload |
