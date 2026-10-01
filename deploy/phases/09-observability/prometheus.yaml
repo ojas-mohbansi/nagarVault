@@ -267,6 +267,10 @@ spec:
       app.kubernetes.io/name: nagar-prometheus
   template:
     metadata:
+      annotations:
+        # Bump when the config/rules ConfigMaps change: the pod template is otherwise
+        # byte-identical, so neither the Deployment controller nor Argo rolls the pod.
+        nagar.io/config-rev: "1"
       labels:
         app.kubernetes.io/name: nagar-prometheus
         app.kubernetes.io/part-of: nagarvault

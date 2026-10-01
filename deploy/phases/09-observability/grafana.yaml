@@ -227,6 +227,8 @@ spec:
       app.kubernetes.io/name: nagar-grafana
   template:
     metadata:
+      annotations:
+        nagar.io/config-rev: "1"   # bump when provisioning/dashboards ConfigMaps change
       labels:
         app.kubernetes.io/name: nagar-grafana
         app.kubernetes.io/part-of: nagarvault

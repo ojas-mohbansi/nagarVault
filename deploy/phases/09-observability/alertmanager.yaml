@@ -46,6 +46,8 @@ spec:
       app.kubernetes.io/name: nagar-alertmanager
   template:
     metadata:
+      annotations:
+        nagar.io/config-rev: "1"   # bump when nagar-alertmanager-config changes
       labels:
         app.kubernetes.io/name: nagar-alertmanager
         app.kubernetes.io/part-of: nagarvault

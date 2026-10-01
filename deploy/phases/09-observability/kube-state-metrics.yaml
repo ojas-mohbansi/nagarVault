@@ -81,6 +81,9 @@ spec:
       app.kubernetes.io/name: nagar-kube-state-metrics
   template:
     metadata:
+      annotations:
+        # Bump when the collector set or probes change (pod template hash is otherwise stable).
+        nagar.io/config-rev: "1"
       labels:
         app.kubernetes.io/name: nagar-kube-state-metrics
         app.kubernetes.io/part-of: nagarvault
@@ -121,7 +124,9 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /healthz, port: 8081}
+            # v2.14 serves /livez and /readyz; /healthz 404s and the kubelet restarts the
+            # container for it (proven in the first sync — exit 2 after each probe).
+            httpGet: {path: /livez, port: 8081}
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:

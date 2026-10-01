@@ -131,6 +131,10 @@ spec:
       app.kubernetes.io/name: nagar-alloy
   template:
     metadata:
+      annotations:
+        # Bump when the mounted config changes: v1 carried the rejected tail_from_end
+        # attribute and the pod kept running it until deleted (first-sync lesson).
+        nagar.io/config-rev: "2"
       labels:
         app.kubernetes.io/name: nagar-alloy
         app.kubernetes.io/part-of: nagarvault

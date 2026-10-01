@@ -86,6 +86,11 @@ spec:
       app.kubernetes.io/name: nagar-loki
   template:
     metadata:
+      annotations:
+        # Bump when the mounted ConfigMap content changes: the pod template is otherwise
+        # byte-identical, so neither the Deployment controller nor Argo rolls the pod
+        # (first-sync lesson: Alloy kept running the old config until its pod was deleted).
+        nagar.io/config-rev: "1"
       labels:
         app.kubernetes.io/name: nagar-loki
         app.kubernetes.io/part-of: nagarvault
@@ -131,7 +136,9 @@ spec:
             httpGet: {path: /ready, port: 3100}
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /live, port: 3100}
+            # /live is not served by this build (404 → SIGTERM restart, proven in the
+            # first sync); /ready is the health endpoint Loki 3.3 actually answers.
+            httpGet: {path: /ready, port: 3100}
             periodSeconds: 20
           resources:
             requests: {cpu: 100m, memory: 256Mi}
