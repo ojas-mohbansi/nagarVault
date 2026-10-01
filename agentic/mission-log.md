@@ -2531,3 +2531,301 @@ double hyphen) and reframed §7 as "traps OPERATIONS §12 does not cover".
 Verification: corrected rule re-run read-only → keep set 34 (33 pins + mirror
 digest), **delete list = 0** on the live registry; programmatic anchor check →
 `BAD TOTAL: 0`; no live state mutated, no digest pin added in-cluster.
+
+---
+
+## G8 — six-gate E2E re-run on the rebuilt substrate (2026-10-01, k3d substrate)
+
+Step 4 of the Phase-8 plan requires all six E2E gates against the live edge with real command
+output recorded below. The gates were first run on 2026-09-30 (G8.1–G8.7 above); the substrate was
+then **destroyed and rebuilt from git** in the storage-optimization pass (Phases A–G), so this
+section re-executes all six against the rebuilt cluster — same gates, fresh evidence — and
+corrects one instrument artifact in the original G8.1 record.
+
+Entry state: **15/15 Applications Synced/Healthy**; Traefik edge `1/1` on
+`mission/traefik@sha256:e157892e…`; the host has no 80/443 mapping, so every gate ran through an
+**inline `kubectl port-forward svc/traefik-edge 8443:443`** (spawn → prove with a `/auth/` 200 →
+run → kill; no forward outlived its gate). Kubeconfig `C:/Users/styli/AppData/Local/Temp/kubeconfig`
+— the brief's 127.0.0.1:57306 is the pre-rebuild port; the live server is **127.0.0.1:62398**.
+Substrate event handled before the gates: Docker Desktop was down after a host restart; the engine
+was started and orphaned `kubectl.exe` listeners cleared first, after which the cluster
+self-healed to 15/15 with zero manual workload changes. `--kubeconfig` was used bare; the two
+in-pod staging pipes used `KUBECONFIG=<C:/…> MSYS_NO_PATHCONV=1 kubectl …` (the never-combine rule).
+
+### G8R.1 — TLS: leaf chains to the internal CA (re-proven)
+
+CA re-extracted from `cert-manager/nagar-edge-ca-keypair` (562 B):
+
+    $ openssl x509 -in /tmp/nagar-edge-ca.pem -noout -subject -issuer -dates
+    subject=CN=nagar-edge-ca
+    issuer=CN=nagar-edge-ca
+    notBefore=Sep 30 19:24:53 2026 GMT
+    notAfter=Sep 30 19:24:53 2027 GMT
+
+    $ openssl s_client -connect 127.0.0.1:8443 -servername k3d.nagar.internal \
+        -CAfile /tmp/nagar-edge-ca.pem -verify_return_error
+    depth=1 CN=nagar-edge-ca
+    depth=0 CN=k3d.nagar.internal
+    subject=CN=k3d.nagar.internal
+    issuer=CN=nagar-edge-ca
+    Verify return code: 0 (ok)
+
+    $ openssl s_client … </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName
+    subject=CN=k3d.nagar.internal
+    issuer=CN=nagar-edge-ca
+    notBefore=Sep 30 19:24:57 2026 GMT
+    notAfter=Dec 29 19:24:57 2026 GMT
+    X509v3 Subject Alternative Name:
+        DNS:k3d.nagar.internal, DNS:k3d-nagar.localhost
+
+**Protocol-floor correction (honest record fix).** The original G8.1 recorded “TLS-1.1-only
+handshake → 000 (handshake refused)” as if the *server* refused. Re-run today shows that was an
+**instrument artifact**: every client available here refuses to even attempt TLS ≤1.1
+client-side —
+
+    $ curl -sk --ssl-no-revoke --tls-max 1.1 …        # curl 8.21.0/Schannel
+    curl --tls-max 1.1 exit=35
+    $ curl -sk --ssl-no-revoke --tls-max 1.2 …        → http=200
+    $ openssl s_client -tls1_1 … (host OpenSSL 3.5.7)
+    189B0000:error:0A0000BF:SSL routines:tls_setup_handshake:no protocols available
+    $ MSYS_NO_PATHCONV=1 KUBECONFIG=… kubectl -n nagar-platform exec nagar-dual-role-0 -- sh -c \
+        'openssl version; echo | openssl s_client -tls1_1 -connect traefik-edge…:443 -servername k3d.nagar.internal'
+    OpenSSL 3.5.5 27 Jan 2026 … → no protocols available
+
+Node’s bundled OpenSSL refuses identically (`ERR_SSL_NO_PROTOCOLS_AVAILABLE`). What **is**
+observable: TLS 1.2-only and 1.3 handshakes succeed on the valid SNI, and both route namespaces
+carry the deployed TLSOption:
+
+    $ kubectl get tlsoption -A
+    nagar-app        edge-tls-options   VersionTLS12   true
+    nagar-platform   edge-tls-options   VersionTLS12   true
+
+So the floor stands as *declared configuration* (`minVersion: VersionTLS12`) plus positive
+negotiation evidence; the negative ≤1.1 probe is **not constructible in this environment**, and the
+original “000” line must not be read as a server-side refusal in future reviews. (Side note, not a
+defect: no-SNI and bogus-SNI handshakes get Traefik's default self-signed fallback cert — that is
+the no-router-matches fallback, so it is not evidence either way about the matched routers'
+`sniStrict`.)
+
+### G8R.2 — CORS: exactly the deployed middleware, allow + deny
+
+Deployed middleware read before probing:
+
+    $ kubectl -n nagar-platform get middleware edge-cors -o yaml
+    spec:
+      headers:
+        accessControlAllowCredentials: true
+        accessControlAllowHeaders:
+        - Content-Type
+        - Authorization
+        - x-amz-date
+        - x-amz-content-sha256
+        - Range
+        accessControlAllowMethods:
+        - GET
+        - PUT
+        - POST
+        - HEAD
+        - OPTIONS
+        accessControlAllowOriginListRegex:
+        - https://(k3d\.nagar\.internal|k3d-nagar\.localhost)
+        accessControlMaxAge: 600
+
+Preflight, allowed origin:
+
+    $ curl -sk -i -X OPTIONS -H 'Origin: https://k3d-nagar.localhost' \
+        -H 'Access-Control-Request-Method: PUT' -H 'Access-Control-Request-Headers: content-type' \
+        https://k3d.nagar.internal:8443/minio/raw-media/g8-cors-probe.bin
+    HTTP/1.1 200 OK
+    Access-Control-Allow-Credentials: true
+    Access-Control-Allow-Headers: Content-Type,Authorization,x-amz-date,x-amz-content-sha256,Range
+    Access-Control-Allow-Methods: GET,PUT,POST,HEAD,OPTIONS
+    Access-Control-Allow-Origin: https://k3d-nagar.localhost
+    Access-Control-Max-Age: 600
+    Content-Length: 0
+    Strict-Transport-Security: max-age=31536000; includeSubDomains
+    X-Content-Type-Options: nosniff
+    X-Frame-Options: DENY
+    X-Xss-Protection: 1; mode=block
+
+Preflight, disallowed origin — no ACAO (the browser-enforced negative; Traefik answers the
+preflight without an allow-origin so the client blocks it):
+
+    $ … -H 'Origin: https://evil.example.com' …
+    HTTP/1.1 200 OK
+    Access-Control-Allow-Credentials: true
+    Access-Control-Allow-Headers: Content-Type,Authorization,x-amz-date,x-amz-content-sha256,Range
+    Access-Control-Allow-Methods: GET,PUT,POST,HEAD,OPTIONS
+    Access-Control-Max-Age: 600
+    Content-Length: 0
+    # NO Access-Control-Allow-Origin, NO Vary
+
+Non-preflight GET with allowed origin — CORS + security headers compose on one router:
+
+    HTTP/1.1 403 Forbidden            # MinIO: probe object does not exist
+    Access-Control-Allow-Credentials: true
+    Access-Control-Allow-Origin: https://k3d-nagar.localhost
+    Access-Control-Expose-Headers: Date, Etag, Server, … X-Amz*, *
+    Vary: Origin                      # addVaryHeader
+    Strict-Transport-Security: max-age=31536000; includeSubDomains
+
+### G8R.3 — Rate limit: 429 attributable to Traefik, not uvicorn
+
+32 sequential `POST /auth/login` (wrong credentials) through the edge, after 2 legitimate logins
+(the G8R.5 prep) had warmed the same buckets:
+
+    req 1 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 2 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 3 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 4 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 5 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 6 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 7 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 8 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 9 -> 401 retry-after=<none> body={"detail":"invalid credentials"}
+    req 10 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 11 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 12 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 13 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 14 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 15 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 16 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 17 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 18 -> 429 retry-after=1 body=Too Many Requests
+    req 19 -> 429 retry-after=<none> body={"detail":"login rate limit exceeded"}
+    req 20 -> 429 retry-after=6 body=Too Many Requests
+    req 21 -> 429 retry-after=6 body=Too Many Requests
+    req 22 -> 429 retry-after=6 body=Too Many Requests
+    req 23 -> 429 retry-after=5 body=Too Many Requests
+    req 24 -> 429 retry-after=5 body=Too Many Requests
+    req 25 -> 429 retry-after=5 body=Too Many Requests
+    req 26 -> 429 retry-after=4 body=Too Many Requests
+    req 27 -> 429 retry-after=4 body=Too Many Requests
+    req 28 -> 429 retry-after=4 body=Too Many Requests
+    req 29 -> 429 retry-after=3 body=Too Many Requests
+    req 30 -> 429 retry-after=3 body=Too Many Requests
+    req 31 -> 429 retry-after=3 body=Too Many Requests
+    req 32 -> 429 retry-after=2 body=Too Many Requests
+
+    ---- full 33rd response (headers) ----
+    HTTP/1.1 429 Too Many Requests
+    Retry-After: 2
+    Strict-Transport-Security: max-age=31536000; includeSubDomains
+    X-Content-Type-Options: nosniff
+    X-Frame-Options: DENY
+    X-Retry-In: 1.463835704s
+    X-Xss-Protection: 1; mode=block
+    Date: Thu, 01 Oct 2026 17:36:21 GMT
+    Content-Length: 17
+
+    Too Many Requests
+
+Attribution is byte-level: the app's limiter answers `429 {"detail":"login rate limit exceeded"}`
+(FastAPI JSON, no Retry-After); Traefik's `edge-ratelimit` (average 10 / burst 20 / 1m on the whole
+`/auth` router — `ingressroutes.yaml`) answers plain-text `Too Many Requests` with `Retry-After`
+and `X-Retry-In`. Shape: req 1–7 pass (401), 8 hits the app limiter, 9 passes as a per-pod deque
+slot frees, 10–17 app limiter, 18 the edge bucket, 19 one more app slot, 20–32 all edge, counting
+recovery down 6→2. Same conclusion as G8.3: the in-app limiter is per-pod (2 replicas), the edge
+bucket is the only global control.
+
+### G8R.4 — Presigned PUT through the edge: bytes verified in MinIO
+
+7e contract (`app.js` header): `POST /api/v1/uploads/presign   JWT; mint presigned PUTs + store
+intents (TTL 600s)`; ADR-024 §6: `/minio` is the browser presigned-PUT route and `edge-cors`
+lives only there.
+
+    $ POST /api/v1/uploads/presign (admin Bearer, via edge /api)
+    {"uploads":[{"attachmentId":"65875e02-2325-4266-8ead-7145e38d23a3","bucket":"raw-media",
+     "objectKey":"events/65875e02-2325-4266-8ead-7145e38d23a3/g8-edge-put3.bin",
+     "url":"http://minio.nagar-platform.svc.cluster.local:9000/raw-media/events/65875e02-2325-4266-8ead-7145e38d23a3/g8-edge-put3.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=<masked>&X-Amz-Date=20261001T173907Z&X-Amz-Expires=300&X-Amz-Signature=<masked>&X-Amz-SignedHeaders=host&x-amz-checksum-crc32=AAAAAA%3D%3D&x-amz-sdk-checksum-algorithm=CRC32&x-id=PutObject"}],
+     "ttlSeconds":600}
+
+**Discrepancy re-confirmed (same as G8.4):** the minted URL host is cluster-internal DNS
+(`minio.nagar-platform.svc.cluster.local:9000`) — 7e's presigner reads only `MINIO_URL`
+(`runtime.js`), there is **no external-host env**, so the literal browser flow cannot be exercised
+end-to-end. Proven instead by the **equivalent path**: an edge-origin URL minted inside the
+ingestion pod with its own SDK + secret env (credentials never left the pod; masked on display):
+
+    https://k3d.nagar.internal:8443/raw-media/events/65875e02-2325-4266-8ead-7145e38d23a3/g8-edge-put3.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNS
+    (masked output as captured, first 160 chars)
+    # browser-adapter path rewrite: insert the /minio routing prefix; the signature was computed
+    # over the MinIO-native path, and the edge strip delivers exactly that path to MinIO
+
+    $ PUT through the edge /minio route (62 random bytes)
+    HTTP/1.1 200 OK
+    Content-Length: 0
+    Etag: "346376aac8e07bb1d2cd0dd923b48492"
+    Server: MinIO
+    Vary: Origin
+
+    # verify from the ingestion pod: HeadObject + GetObject sha256
+    {"size":62,"etag":"\"346376aac8e07bb1d2cd0dd923b48492\"","bytes_read":62,
+     "sha256":"3b73916107689583b561e07df525f8ab997fa30477947ef75a4f9f49bc3f3799"}
+    SHA256-MATCH: object byte-intact in MinIO
+    MD5/ETAG-MATCH: 346376aac8e07bb1d2cd0dd923b48492
+
+Instrument notes (both cost a cycle, recorded): (1) `NODE_PATH` does **not** apply to ESM
+`import` — the first mint used a `.mjs` script and died `ERR_MODULE_NOT_FOUND`; `require()` in a
+`.cjs` script is the working pattern in this read-only-root pod. (2) The pod's SDK defaults to
+CRC32 integrity checks and the API-minted URL carries `x-amz-checksum-crc32=AAAAAA==` (the
+empty-body checksum); the edge-path mint set `requestChecksumCalculation: "WHEN_REQUIRED"` for a
+clean PUT — the API-minted URL's usability is unchanged from 7e's own E2E record and is not
+re-litigated here.
+
+### G8R.5 — Authz negatives at the edge (401 / 403); officer seeded via the 7a ritual
+
+Officer created through the admin-gated `POST /auth/create`, never `seed_admin`; secrets never
+displayed:
+
+    $ kubectl -n nagar-app exec deploy/auth-service -- python seed_admin.py --username admin8g8 --user-id admin8g8-001
+    ADMIN PASSWORD (record in the operator vault; shown once):   ← value captured to a shell variable (redacted)
+    $ POST /auth/login (admin8g8)                      -> {"status":"ok","role":"admin"} HTTP:200
+    $ POST /auth/create (admin Bearer)                 -> {"status":"ok","user_id":"officer8g8-188bddcc",
+                                                            "username":"officer8g8","role":"nmc_officer"} HTTP:200
+    $ POST /auth/login (officer8g8)                    -> {"status":"ok","role":"nmc_officer"} HTTP:200
+
+    $ GET /auth/whoami (officer)                       -> {"sub":"officer8g8-188bddcc","role":"nmc_officer", …}
+    $ GET /admin/health/cluster, NO JWT                -> HTTP 401 {"detail":"missing session"}
+    $ GET /admin/health/cluster, OFFICER JWT           -> HTTP 403 {"detail":"admin role required"}
+    $ GET /admin/dlq?limit=1,          OFFICER JWT     -> HTTP 403 {"detail":"admin role required"}
+    $ GET /admin/audit-logs?limit=1,   OFFICER JWT     -> HTTP 403 {"detail":"admin role required"}
+    $ GET /admin/health/cluster, ADMIN JWT (contrast)  -> HTTP 200 {"db":true,"kafka":true,"schemaIndexer":true,"all":true}
+
+### G8R.6 — In-cluster flows unaffected by the edge (no StripPrefix regression)
+
+    # BFF-native path, executed inside a frontend pod (never touches the edge):
+    $ … kubectl -n nagar-app exec -i deploy/frontend -- sh -c '… node /tmp/g8-incluster.cjs'
+    in-cluster whoami status: 200
+    {"sub":"admin8g8-001","role":"admin","jti":"<redacted>","exp":…}
+
+    # edge /api is VERBATIM (ingestion's native contract, prefix not stripped)
+    $ GET /api/v1/events/evt-g8-nonexistent (admin Bearer via edge)
+    HTTP/1.1 404 Not Found
+    Content-Length: 28
+    {"detail":"unknown eventId"}
+    # Traefik access-log attribution:
+    "GET /api/v1/events/evt-g8-nonexistent HTTP/1.1" 404 28 … "nagar-app-edge-ingestion-…@kubernetescrd" "http://10.42.0.230:3000"
+
+    # edge / catch-all serves the frontend
+    $ GET / -> http=307 bytes=4948 redirect=https://k3d.nagar.internal:8443/dashboard
+
+### Cleanup and invariants
+
+- Officer password and admin seed password never displayed; tokens / cookie jars lived only in
+  `/tmp` (mode 600) and were deleted after the run; presigned-URL credential + signature masked in
+  every shown output. **I-3.**
+- The only cluster-side effects outside the gates: the sanctioned §9.1 `seed_admin.py` execution
+  (new admin `admin8g8`, recorded here) and ephemeral files in existing pods' `/tmp` (the
+  documented 7b/7x E2E pattern). No `kubectl edit/scale/apply` of any workload, no manifest change
+  was needed — **I-1/I-9**. Forward cleanup verified: no `kubectl` processes and no listeners on
+  8443/8444 after the run.
+- Re-running the whole section is safe (**I-2**): a second seed is a no-op, presign intents expire
+  in 600 s, and each probe only writes/overwrites its own `/tmp` script.
+
+### Result — 6/6 GREEN on the rebuilt substrate
+
+TLS chain ✓ · CORS allow/deny ✓ · edge-429 attribution ✓ · presigned PUT byte-intact (edge-path
+adaptation, browser-host discrepancy recorded) ✓ · 401/403 authz ✓ · in-cluster paths intact ✓.
+No platform defect was found; two honest records stand: the G8.1 protocol-floor line is
+instrument-confounded and corrected above, and 7e's `PRESIGN_PUBLIC_URL` gap remains the one open
+item (already recorded in G8.7).
