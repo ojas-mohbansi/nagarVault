@@ -133,9 +133,16 @@ lives in volumes.
 
 ### 2.2 Registry tag-prune + garbage-collect
 
-The keep set is mechanical: **every `digest:` value under
-`deploy/phases/*/digest-pins/kustomization.yaml`**, whatever entry shape carries it
-(structure-independent regex — phase-1 files use bare `name:`+`digest:`).
+The keep set is mechanical and has **two** sources:
+
+1. **every `digest:` value under `deploy/phases/*/digest-pins/kustomization.yaml`**,
+   whatever entry shape carries it (structure-independent regex — phase-1 files use
+   bare `name:`+`digest:`);
+2. **the mirror transport tag** resolved to its digest — the gitops tree references
+   `mission/git-repo-mirror` by `newTag:` in
+   `deploy/phases/02-gitops/git-mirror/kustomization.yaml`, **not** by digest, so
+   digest pins alone do NOT protect the tag the cluster's git sync depends on.
+   **Deleting the current mirror tag silently breaks every Application's sync.**
 
 1. Freeze writes and mount a one-shot GC registry on the payload volume:
 
@@ -161,9 +168,17 @@ The keep set is mechanical: **every `digest:` value under
        echo "$r:$t $d" >> registry-map.txt
      done
    done
+   # source 2: the mirror transport tag (newTag-referenced, NOT digest-pinned)
+   MIRROR_TAG=$(awk '/newTag:/{print $2}' deploy/phases/02-gitops/git-mirror/kustomization.yaml | head -1)
+   echo "mirror tag: $MIRROR_TAG  (add its digest to the keep set)"
+   curl -sI --noproxy '*' -H "Accept: $ACCT" \
+     "http://127.0.0.1:35100/v2/mission/git-repo-mirror/manifests/$MIRROR_TAG" \
+     | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}' >> keep-digests.txt
+   sort -u keep-digests.txt -o keep-digests.txt
    ```
 
-3. Derive the delete list, **review it**, commit both files, then delete by digest
+3. Derive the delete list, **review it** (it must NOT contain the mirror transport
+   tag from step 2's source 2), commit both files, then delete by digest
    (202 = accepted, 404 = already gone, anything else = stop):
 
    ```bash
@@ -215,17 +230,17 @@ against two temp instances) before anything is deleted:
 
 ```bash
 docker stop k3d-nagar.localhost
+REGVOL=$(docker inspect k3d-nagar.localhost \
+  --format '{{range .Mounts}}{{if eq .Destination "/var/lib/registry"}}{{.Name}}{{end}}{{end}}')
+echo "registry payload volume: $REGVOL"   # confirm before copying
 MSYS_NO_PATHCONV=1 docker run --rm \
-  -v 8812c59388f104f3856fd8f827ad9e9f9082b5ba3721d42d5aa8373f912c9b5f:/from:ro \
-  -v nagar-registry-data:/to registry:2 \
+  -v "$REGVOL":/from:ro -v nagar-registry-data:/to registry:2 \
   sh -c 'cp -a /from/. /to/ && du -sb /from /to && find /from /to -type f | wc -l'
 # A/B proof: temp registries on :35100 (old) and :35101 (copy) — catalogs equal,
 # tag sets equal, every pinned digest HEAD-equal on both. Reuse the §2.2 enumeration.
 ```
 
-(The `-v <hex-id>:/from` source is the registry's current volume — find it with
-`docker inspect k3d-nagar.localhost --format '{{json .Mounts}}'`. The
-`MSYS_NO_PATHCONV=1` guard is required for the in-container `sh -c` string too.)
+(The `MSYS_NO_PATHCONV=1` guard is required for the in-container `sh -c` string too.)
 
 ### 3.2 Delete, then verify what k3d removed
 
@@ -413,8 +428,10 @@ Two verified safety behaviors — do not regress them when editing:
 
 ## 7. Windows/MSYS trap table
 
-One line each; these are all session-proven, several also recorded in
-[OPERATIONS §12](OPERATIONS.md#12-troubleshooting-matrix) where they first bit.
+One line each; all session-proven on this substrate. The platform-level
+troubleshooting matrix lives separately in
+[OPERATIONS §12](OPERATIONS.md#12-troubleshooting-matrix-symptom--cause--fix) —
+these are the Windows/MSYS/registry traps it does not cover.
 
 | Trap | Rule |
 |---|---|

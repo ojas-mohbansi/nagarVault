@@ -2513,3 +2513,21 @@ before any destructive step), and the sealed-secret identities were preserved or
 re-issued through sanctioned procedures. The Phase-A backup was never needed. Git
 commits this mission: `b0e64464`, `c1d88027`, `c26670ca`, `f4533e30`, `6635c932`,
 `d02b0094`, `237ccc2b`, plus this log update; **nothing pushed**.
+
+### SUBSTRATE.md audit response (2026-10-01)
+
+Post-publication audit of `docs/SUBSTRATE.md` (`bc94df9b`) ran the §2.2 recipe
+verbatim (read-only) against the live registry and found the keep-set rule **one
+source short**: derive-list = 1, containing `mission/git-repo-mirror:phase8-16` —
+the mirror transport referenced by `newTag:` in git-mirror/kustomization.yaml, which
+digest pins do NOT cover; a reader following the doc would have deleted the tag the
+cluster's git sync depends on. Fixed in docs only: keep-set rule now has two sources
+(digest pins + the `newTag`-resolved mirror transport digest, with a bold warning),
+the delete-list review step forbids the mirror tag, and §3.1 now leads with the
+generic `docker inspect` volume lookup (dead pre-rebuild hex ID demoted). Also
+corrected the OPERATIONS §12 anchor to the real GitHub slug
+(`#12-troubleshooting-matrix-symptom--cause--fix` — the heading's `→` becomes a
+double hyphen) and reframed §7 as "traps OPERATIONS §12 does not cover".
+Verification: corrected rule re-run read-only → keep set 34 (33 pins + mirror
+digest), **delete list = 0** on the live registry; programmatic anchor check →
+`BAD TOTAL: 0`; no live state mutated, no digest pin added in-cluster.
