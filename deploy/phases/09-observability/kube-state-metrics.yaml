@@ -124,9 +124,10 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            # v2.14 serves /livez and /readyz; /healthz 404s and the kubelet restarts the
-            # container for it (proven in the first sync — exit 2 after each probe).
-            httpGet: {path: /livez, port: 8081}
+            # v2.14 splits the health surface: /livez and /healthz answer on the MAIN port
+            # (8080), while the telemetry port (8081) serves only /readyz + self metrics.
+            # Every wrong combination was probed live (404 → kubelet restart, exit 2).
+            httpGet: {path: /livez, port: 8080}
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
