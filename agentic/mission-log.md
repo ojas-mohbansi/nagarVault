@@ -2829,3 +2829,183 @@ adaptation, browser-host discrepancy recorded) ✓ · 401/403 authz ✓ · in-cl
 No platform defect was found; two honest records stand: the G8.1 protocol-floor line is
 instrument-confounded and corrected above, and 7e's `PRESIGN_PUBLIC_URL` gap remains the one open
 item (already recorded in G8.7).
+
+---
+
+## Phase 8 — G8C: browser presigned-PUT closure (2026-10-01, k3d substrate)
+
+G8R left exactly one open charter deviation: 7e's presigner minted cluster-internal URLs, so Gate 4's
+literal browser-origin PUT could only be proven via an equivalent in-pod mint. Reconciliation against
+the contracts before touching code: **PHASES.md §2 Phase 8 Exit = “browser presigned PUT works from
+the frontend origin”**, ARCHITECTURE §3.2 has the browser PUTting bytes directly with CORS from the
+edge middleware, and the Phase-8 ledger itself named `PRESIGN_PUBLIC_URL` as the 7e follow-up. The
+docs therefore require edge-reachable URLs — the decision was to implement the follow-up (not to
+re-document in-cluster URLs as correct). Recorded as **ADR-025**.
+
+### G8C.1 — implementation (commit `e6aaa2b`, image `phase7e-4`)
+
+- `src/presign-url.js` (new, pure): swaps scheme/host to the public origin and inserts the frozen
+  `/minio` route prefix. `runtime.js`: a **second S3 client pointed at `PRESIGN_PUBLIC_URL`** is used
+  for signing when set (SigV4 binds the signed host, so the *signer* must target the edge origin);
+  `statObject`/health keep the in-cluster `MINIO_URL` client; unset env keeps legacy behavior.
+- Manifest: `PRESIGN_PUBLIC_URL: https://k3d.nagar.internal` on the 7e Deployment
+  (`PRESIGN_ROUTE_PREFIX` defaults to `/minio`).
+- Hermetic suite (host, node 22.23.2, 4 new unit tests):
+
+```
+$ cd deploy/phases/07-app-ingestion/ingestion
+$ node --test tests/ingestion.test.js tests/presign-url.test.js
+1..10
+# tests 10
+# pass 10
+# fail 0
+```
+
+  Instrument find caught by the new unit test before any build: Node's `URL.host` setter does not
+  clear a previously parsed port, so the first adapter draft minted
+  `https://k3d.nagar.internal:9000/...` — fixed by setting `hostname` + `port` explicitly.
+- Image build/push and digest pin (registry header read, machine-compared):
+
+```
+$ docker build -f deploy/phases/07-app-ingestion/ingestion/Dockerfile \
+    -t localhost:35000/mission/nagar-ingestion:phase7e-4 deploy/phases/07-app-ingestion
+$ docker push localhost:35000/mission/nagar-ingestion:phase7e-4
+phase7e-4: digest: sha256:d8d681f5b823faa59d0fb5a5ebe92cb1e22041fe33793901890b21f8b0494229 size: 856
+$ curl --noproxy '*' -sI http://localhost:35000/v2/mission/nagar-ingestion/manifests/phase7e-4 | grep -i docker-content-digest
+Docker-Content-Digest: sha256:d8d681f5b823faa59d0fb5a5ebe92cb1e22041fe33793901890b21f8b0494229
+```
+
+- Rendered tree + live admission gate:
+
+```
+$ kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/07-app-ingestion | grep -E 'image:|PRESIGN'
+        - name: PRESIGN_PUBLIC_URL
+          value: https://k3d.nagar.internal
+        image: k3d-nagar.localhost:5000/mission/nagar-ingestion@sha256:d8d681f5…
+$ cat /tmp/p7e-rendered.yaml | MSYS_NO_PATHCONV=1 KUBECONFIG=<kubeconfig> kubectl apply --dry-run=server -f -
+serviceaccount/nagar-ingestion configured (server dry run)
+service/ingestion configured (server dry run)
+deployment.apps/ingestion configured (server dry run)
+poddisruptionbudget.policy/ingestion configured (server dry run)
+networkpolicy.networking.k8s.io/ingestion configured (server dry run)
+```
+
+- 7e's in-cluster E2E driver now re-mints its media PUT with the pod's own SDK when the API returns a
+  public URL (that host is intentionally unreachable in-cluster); the browser-path proof is this
+  section's Gate 4. Docs updated in the same commit: ADR-025, PHASES Phase-8 entry (deviation
+  closed), ARCHITECTURE §3.2 (minting rule), OPERATIONS §12.36 (symptom→fix row).
+
+### G8C.2 — deployment through the mirror cycle (ADR-018 order)
+
+```
+$ rm -rf deploy/phases/02-gitops/git-mirror/payload/nagarvault.git && git clone --bare . …
+$ git -C …/payload/nagarvault.git log --oneline -1
+e6aaa2bf feat(7e): mint browser presigned PUTs on the public edge origin (ADR-025)
+$ docker build -t localhost:35000/mission/git-repo-mirror:phase8-17 deploy/phases/02-gitops/git-mirror
+$ docker push localhost:35000/mission/git-repo-mirror:phase8-17
+phase8-17: digest: sha256:ff2388d0af79bfdcee32d3c2c77a9391885df87ca50ec1781093787a13d04ad3 size: 856
+$ kustomize build deploy/phases/02-gitops/git-mirror > /tmp/git-mirror-built.yaml && echo BUILD-OK
+BUILD-OK (2 docs)          # build gated before the apply (traps honored)
+$ cat /tmp/git-mirror-built.yaml | MSYS_NO_PATHCONV=1 KUBECONFIG=<kubeconfig> kubectl apply \
+    --server-side --force-conflicts -f -
+service/git-repo-mirror serverside-applied
+deployment.apps/git-repo-mirror serverside-applied
+$ kubectl -n nagar-system rollout status deploy/git-repo-mirror --timeout=180s
+deployment "git-repo-mirror" successfully rolled out
+$ kubectl -n nagar-system exec deploy/git-repo-mirror -- sh -c 'git ls-remote git://127.0.0.1:9418/nagarvault.git HEAD'
+e6aaa2bf41ee129ad3ab676f5454c320c016629a	HEAD
+```
+
+Argo picked the new HEAD on its next reconciliation (~60 s) and rolled 7e:
+
+```
+t+20s rev=d02b0094 Synced Healthy
+t+40s rev=d02b0094 Synced Healthy
+t+60s rev=e6aaa2bf Synced Progressing
+t+80s rev=e6aaa2bf Synced Progressing
+t+100s rev=e6aaa2bf Synced Healthy
+$ kubectl -n nagar-app get deploy ingestion -o jsonpath='{.spec.template.spec.containers[0].image}'
+k3d-nagar.localhost:5000/mission/nagar-ingestion@sha256:d8d681f5b823faa59d0fb5a5ebe92cb1e22041fe33793901890b21f8b0494229
+$ kubectl -n nagar-app get pods -l app.kubernetes.io/name=nagar-ingestion \
+    -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,IMAGEID:.status.containerStatuses[0].imageID
+… both pods true / same digest …
+$ kubectl -n nagar-app exec deploy/ingestion -- sh -c 'echo $PRESIGN_PUBLIC_URL; … /health'
+PRESIGN_PUBLIC_URL=https://k3d.nagar.internal
+{"api":true,"minio":true,"kafka":true}
+```
+
+### G8C.3 — Gate 4 re-run LITERALLY from the host (raw evidence)
+
+Reach: inline `kubectl -n nagar-system port-forward svc/traefik-edge 443:443` (spawn → prove → run →
+kill; the host has no privileged-port restriction, so the **minted URL is used with zero URL
+surgery** — only DNS substitution via `--resolve`, the documented §11/§12.34 substrate method).
+
+```
+---- 0) seed a fresh admin via the sanctioned §5 ritual (password captured, never displayed) ----
+ADMIN PASSWORD (record in the operator vault; shown once):
+admin8c login via edge -> {"status":"ok","role":"admin"} HTTP:200
+---- 1) POST /api/v1/uploads/presign via edge (/api) ----
+{"uploads":[{"attachmentId":"37b8be21-d4cb-46dc-9f23-3b73afc4a02c","bucket":"raw-media",
+ "objectKey":"events/37b8be21-d4cb-46dc-9f23-3b73afc4a02c/g8c-browser-put.bin",
+ "url":"https://k3d.nagar.internal/minio/raw-media/events/37b8be21-…/g8c-browser-put.bin
+   ?X-Amz-Algorithm=AWS4-HMAC-SHA256&…X-Amz-Credential=<masked>&…X-Amz-Signature=<masked>&…"}],
+ "ttlSeconds":600}
+URL-SHAPE-OK: public edge origin + frozen /minio prefix
+  (https://k3d.nagar.internal/minio/raw-media/events/37b8be21-…/g8c-browser-put.bin)
+---- 2) browser preflight (OPTIONS) for the exact minted path ----
+HTTP/1.1 200 OK
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Headers: Content-Type,Authorization,x-amz-date,x-amz-content-sha256,Range
+Access-Control-Allow-Methods: GET,PUT,POST,HEAD,OPTIONS
+Access-Control-Allow-Origin: https://k3d-nagar.localhost
+Access-Control-Max-Age: 600
+---- 3) PUT the minted URL VERBATIM (browser Origin) ----
+payload 62 bytes sha256=7fcc27e23e02d38742b0e4807d2f70dd5301fbf435f5d1e62c5a2c55870ee497
+HTTP/1.1 200 OK
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Origin: https://k3d-nagar.localhost
+…
+Etag: "dbccb5f17b56b59ff4e986b13c1251be"
+Server: MinIO
+Vary: Origin
+---- 4) byte verification in MinIO (in-pod HeadObject + GetObject sha256) ----
+{"size":62,"etag":"\"dbccb5f17b56b59ff4e986b13c1251be\"","bytes_read":62,
+ "sha256":"7fcc27e23e02d38742b0e4807d2f70dd5301fbf435f5d1e62c5a2c55870ee497"}
+SHA256-MATCH: bytes intact in MinIO
+MD5/ETAG-MATCH: dbccb5f17b56b59ff4e986b13c1251be
+---- 5) commit leg: POST /api/v1/events via edge (statObject must accept the uploaded object) ----
+commit -> {"eventId":"evt-14c50754-a255-4a3f-b42f-1df8886fc431",
+           "topic":"nmc.complaints.raw.restricted.v1"} HTTP:202
+```
+
+Downstream leg (the full §3.2 chain, closing G7e-style): the 7c worker enriched the event —
+
+```
+SELECT event_id, media_object_key FROM nmc_complaints WHERE source_system='g8c';
+evt-14c50754-a255-4a3f-b42f-1df8886fc431|events/37b8be21-…/g8c-browser-put.bin
+DELETE 1
+FIXTURE-REMOVED events/37b8be21-…/g8c-browser-put.bin
+no leaked 443 listener · kubectl.exe processes: 0
+```
+
+### G8C.4 — platform state and invariants
+
+`15/15` Applications Synced/Healthy; `nagar-phase7e-ingestion` at revision `e6aaa2bf` (Synced/
+Healthy); both ingestion pods Running on the `phase7e-4` digest. **I-1** — every change reached the
+cluster through git → mirror → Argo (transport apply = §9.4); the only live actions were the
+sanctioned §9.1 seed and cleanup of our own fixture (row + object), both recorded. **I-2** — the seed
+is idempotent; presign intents TTL; the fixture cleanup is a no-op on re-run. **I-3** — passwords
+never displayed (captured to shell vars only); presigned credential/signature masked in every shown
+output; tokens/jars lived in `/tmp` and were deleted. **I-5** — image digest read from the registry
+header and pinned; pods run that exact digest. **I-6** — no port/topic/bucket changed. **I-8** —
+ADR-025 written. **I-9** — scope: `deploy/phases/07-app-ingestion/**`, the git-mirror transport tag
+(per-cycle exception, ADR-018), docs. **I-12** — touched trees build; dry-run admitted.
+
+### Result — charter deviation closed
+
+Gate 4 is now literally green: **API presign → URL on the public edge origin under /minio → browser
+preflight → PUT the returned URL verbatim from the host → byte-identical object in MinIO → 202
+commit → worker row in Postgres**. The Phase-8 charter exit criterion "browser presigned PUT works
+from the frontend origin" is met without adaptation notes. Next unfinished phase: **Phase 9 —
+Observability & hardening** (`deploy/phases/09-observability/`; alert→runbook gate per OPERATIONS
+§10).
