@@ -102,9 +102,8 @@ data:
     }
 
     loki.source.kubernetes "pods" {
-      targets       = discovery.relabel.pods.output
-      forward_to    = [loki.write.local.receiver]
-      tail_from_end = true
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.write.local.receiver]
     }
 
     loki.write "local" {

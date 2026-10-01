@@ -119,13 +119,19 @@ spec:
               mountPath: /loki
             - name: tmp
               mountPath: /tmp
+          # Startup gate first: Loki's first boot (TSDB index + compactor start) can exceed
+          # the liveness window, and the first sync proved it — the container was SIGTERM'd
+          # gracefully at ~60 s and restarted "Completed exit=0". The startup probe gives it
+          # 150 s of grace before readiness/liveness start counting.
+          startupProbe:
+            httpGet: {path: /ready, port: 3100}
+            periodSeconds: 5
+            failureThreshold: 30
           readinessProbe:
             httpGet: {path: /ready, port: 3100}
-            initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /live, port: 3100}
-            initialDelaySeconds: 30
             periodSeconds: 20
           resources:
             requests: {cpu: 100m, memory: 256Mi}

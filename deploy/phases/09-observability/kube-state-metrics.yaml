@@ -101,6 +101,11 @@ spec:
           args:
             - --port=8080
             - --telemetry-port=8081
+            # Explicit collector set. Without this KSM starts a reflector for every resource
+            # kind it knows and exits 2 when any one is RBAC-forbidden (first sync did exactly
+            # that with ingresses/secrets/CSRs). The set below is exactly the ClusterRole's
+            # grant — least privilege, no reflector without permission.
+            - --resources=namespaces,nodes,pods,services,endpoints,persistentvolumeclaims,persistentvolumes,resourcequotas,limitranges,deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,horizontalpodautoscalers,poddisruptionbudgets,storageclasses
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
