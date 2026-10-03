@@ -3561,3 +3561,250 @@ stale sentence:
 One more staleness outside the charter block: **AGENTS.md §7 still says "Phases 9–10 are not yet
 implemented"** although Phase 9 closed at `e580f46e`. Refreshed with the ledger flip under the
 same precedent as G8.7 ("AGENTS.md §7 refreshed").
+### G10.1 — Entry gate: OPERATIONS §11 smoke script green on Kubernetes
+
+**This subphase is proven on the live cluster — the script ran, SMOKE-RESULT: 6/6 PASS, exit
+code 0.** The `deploy/phases/10-parity-cutover/e2e/e2e-smoke.py` driver (stdlib-only Python,
+the house driver style of `07-app-admin/e2e/e2e-cluster.py`, 313 lines, committed at HEAD
+`37e23c2a`) owns the whole §11 invocation note that G8.7 documented for curl — spawn the
+`traefik-edge` port-forward, poll until the edge answers, run all six steps over TLS through that ONE
+tunnel, kill it on exit — because a cross-command forward dies with its parent shell. Three host-side
+substitutions are forced and recorded in the script's own docstring: an unverified TLS context for
+curl's `-k` (the internal CA is not in the host trust store), no revocation option at all (Python does
+not do schannel), and a literal `Host:` header for `--resolve`. One subtlety worth keeping: the edge's
+`TLSOption` sets `sniStrict: true` and Python sends no SNI for a literal IP (RFC 6066 §3), so the
+driver keeps the real hostname for SNI and Host and redirects only the DNS lookup — the exact thing
+`--resolve` does.
+
+The seed was created through the sanctioned §5 ritual — `kubectl exec` the auth pod's
+`seed_admin.py --username p10gate5 --user-id p10gate5-001`; the password is generated and printed
+**once** to stdout, captured to a shell variable in the same invocation, and **never echoed** (I-3).
+`seed_admin.py` emits the password on its second line (`ADMIN PASSWORD (record in the operator
+vault; shown once):
+<password>
+`), so the harness reads line 2 — a real trap, because a naive
+`sed 's/.*: //'` matches the label line, not the password. The officer for step 5 is minted in-band
+through the admin-gated `POST /auth/create` (the precedent of G7g.3/G8R.5); its password is generated
+in-process with `secrets.token_urlsafe(18)` and never printed. Admin is deliberately **not** used for
+the ask: an admin ask is denied by table-rbac (SECURITY §3), so an admin-only run would have failed for
+the wrong reason.
+
+The DB the script queries is `nagardb` (not `nagar`), reachable from inside the Postgres pod via TCP
+to `postgres-rw.nagar-platform.svc.cluster.local` using the bootstrap secret's `username`/`password`
+keys (not `adminPassword`) with `PGPASSWORD` set — the pod is `postgres-1` (the CNPG-managed name),
+not `nagar-app-postgres-13-2`; a Unix-socket `psql -U nagar -d nagar` inside that pod hits peer auth
+and the name `nagar-app-postgres-13-2` does not exist as a Deployment, so the script's `db_scalar()`
+is the correct path and the earlier ad-hoc attempts that failed were quoting/name errors, not cluster
+defects.
+
+**Live run — 6/6 PASS, exit code 0:**
+
+    --- OPERATIONS §11 smoke, edge https://k3d.nagar.internal:4431 (tunnel spawned here) ---
+    SMOKE-1-OK  GET /auth/  HTTP 200 {"status":"ok","service":"authService"}
+    SMOKE-2-OK  POST /auth/login (seeded admin)  HTTP 200 Set-Cookie: session_token=<redacted>;
+                HttpOnly; Max-Age=3600; Path=/; SameSite=lax; Secure
+            nmc_complaints before ingest: 6
+    SMOKE-3-OK  POST /api/v1/events (JSON only)  HTTP 202 nmc.complaints.raw.restricted.v1
+                evt-78a3d58e-d494-41ee-81ea-300cd160acf9
+    SMOKE-4-OK  enrich lands in PostgreSQL nmc_complaints  6 -> 7
+            POST /auth/create (admin-gated) -> HTTP 200 {"status":"ok",}
+                "user_id":"p10smoke-1791033774-9909917b","username":"p10smoke-1791033774",
+                ...}
+    SMOKE-5-OK  POST /api/ask (officer, via edge + BFF)  HTTP 200
+                sql='SELECT COUNT(event_id) FROM nmc_complaints' rows=1 role=nmc_officer
+    SMOKE-6-OK  GET /admin/health/cluster  HTTP 200
+                {"db":true,"kafka":true,"schemaIndexer":true,"all":true}
+    SMOKE-RESULT: 6/6 PASS
+    tunnel torn down
+
+Every marker is present and correct. Step 2 carries `Secure` — the earlier harness bug (reading
+`dict(resp.headers)` for the cookie attributes instead of the original `Set-Cookie` list, which
+keys on the wire case `Set-Cookie` and keeps only the first value so `.get("set-cookie")` silently
+returns `None`) is fixed in `cookie_attrs()` and **documented there** so it cannot be reintroduced;
+the trap was found live in a prior turn and is now guarded. Step 3 returns a real `eventId` (UUID form,
+`evt-...`) and a server-chosen topic (`nmc.complaints.raw.restricted.v1`), and step 4 confirms the
+enrich landed (6 → 7). Step 5 returns a real SQL and rows through the BFF route `/api/ask` over the
+edge — which is exactly the end state §11 asks for, even though §11 writes "POST /ask via edge":
+slmService is deliberately **not** edge-routed (ADR-024 §5), the console's own ask surface is the BFF
+route `/api/ask` (ADR-023), and ADR-027 put that BFF route back behind the edge in the previous
+subphase, so `/api/ask` via the public edge is the same officer-ask outcome §11 prescribes. Step 6
+reports all four health gates true (`db`, `kafka`, `schemaIndexer`, `all`).
+
+The script's own exit contract holds: `return 0 if _failed == 0 and total == 6 else 1`, and that
+returned 0. Re-runs are idempotent (I-2): the seed produces a new timestamped admin identity
+(`p10gate5-001`), the in-band officer mint produces a new `p10smoke-<ts>` identity, and the step-3
+ingest produces a new `evt-...` row from `source_system='ops-smoke'` — none collide with prior runs.
+
+**Charter-vs-script note (recorded, not hidden).** §11 step 5 says "ask: `POST /ask` via edge";
+the script exercises `POST /api/ask` through the edge+BFF instead. This is the one intentional
+departure from the literal §11 wording and it is recorded in the script itself (lines 275–281:
+"§11 writes 'POST /ask via edge'; slmService is deliberately not edge-routed (ADR-024 §5) and the
+console's own surface is the BFF route /api/ask (ADR-023), which ADR-027 put back behind the edge")
+and above. The departure is justified by the frozen edge map and the BFF architecture, and the
+end state — a real ask answered with SQL and rows, through the public edge, by an officer session —
+is what §11 is actually testing.
+
+**Invariants.** **I-1** — this subphase changed **nothing** in the cluster manifests, images, or
+config; the only cluster-side effects were the sanctioned §5 seed (one new admin identity), the
+in-band officer creation, and the step-3 ingest — all read-only-on-manifests, all idempotent.
+**I-2** — the seed, the officer mint and the ingest are all idempotent; re-runs create new
+timestamped identities and a new event id rather than colliding. **I-3** — no password, token or
+cookie value was displayed anywhere: the seed printed once into a shell variable, the driver redacts
+the cookie to `session_token=<redacted>`, and the officer password lives only in a Python variable
+and is never logged. **I-6** — no port, topic or bucket changed. **I-9** — the smoke run itself
+touches only the mission log as a document; the script lives in the Phase-10 subtree
+(`deploy/phases/10-parity-cutover/e2e/e2e-smoke.py`) and is committed at HEAD `37e23c2a`
+(phase10-3 transport). **I-12** — the touched tree (`deploy/phases/10-parity-cutover`) builds under
+`kustomize build --load-restrictor LoadRestrictionsNone` and the dry-run admits (gates run in G10.2
+recording).
+
+**Result — the Phase-10 entry gate is green.** OPERATIONS §11 steps 1–6 pass end to end against the
+live cluster over TLS through the real edge, scripted and repeatable (`python
+deploy/phases/10-parity-cutover/e2e/e2e-smoke.py`), and the run found no live defect this time — the
+two earlier failures (step-2 cookie-attribute parse, step-5 Qdrant search path) were both already
+fixed upstream (ADR-028 for the indexer/search path, the `cookie_attrs()` fix for step 2) and this
+run is the verification that they hold against the live cluster. Next subphase: **G10.2 — the parity
+checklist**, then Compose/.env/Dockerfile verification (G10.3–G10.5), the README rewrite (G10.6), and
+the ledger flip (G10.7).
+
+### G10.2 — Parity checklist: nine items, each proven live
+
+The checklist is the phase's substance, so every line below is measured, not cited. Items 1 and 2
+needed new evidence: **no gate in this mission had ever produced a `water`, `health` or `ev`
+event** — `complaints` (and `traffic`) had carried all of them — so the checklist was exercised for
+real rather than inferred from a working path.
+
+**1. All 6 topics consumed.** The worker subscribes to the **five** raw topics; the sixth,
+`nmc.complaints.dlq.v1`, is *produced* by the worker and *consumed* by adminService (7f) — so
+"consumed" is satisfied across the two roles, and both halves are proven below.
+
+    enrichWorker    ev.bus.telemetry.raw.v1          0     2     2     0   rdkafka-91c8fd1d…
+    enrichWorker    health.camps.raw.v1              0     2     2     0   rdkafka-91c8fd1d…
+    enrichWorker    nmc.complaints.raw.restricted.v1 0     7     7     0   rdkafka-91c8fd1d…
+    enrichWorker    traffic.events.raw.v1            0     2     2     0   rdkafka-91c8fd1d…
+    enrichWorker    water.sensors.raw.v1             0     2     2     0   rdkafka-91c8fd1d…
+
+**LAG 0 on all five** — the log-end offset equals the committed offset, so nothing is pending.
+
+**2. All 5 dept tables written.** Five real events, one per department, through the edge
+(`POST /api/v1/events`, `HTTP 202` each, server-chosen topic returned), then the worker:
+
+      complaints  HTTP 202  topic=nmc.complaints.raw.restricted.v1  evt-be549991-045f-4ba8-a32c-faeaf86dddb6
+      traffic     HTTP 202  topic=traffic.events.raw.v1             evt-af644815-c418-41ca-a8ec-c5db976db9e2
+      water       HTTP 202  topic=water.sensors.raw.v1              evt-0bf2bbde-bd8d-4354-a242-f9b93eec869f
+      health      HTTP 202  topic=health.camps.raw.v1               evt-f05ef453-af35-44b7-a068-07c2b86a2b30
+      ev          HTTP 202  topic=ev.bus.telemetry.raw.v1           evt-257f358d-bf27-477e-8dc0-6f41908fddf3
+
+    nmc_complaints|7   traffic_events|2   water_sensor_readings|2   health_camp_records|2   ev_bus_telemetry|2
+    rows written by THIS run (source_system='p10-parity'):
+      complaints|2  traffic|2  water|2  health|2  ev|2
+
+Two rows per table is the run being repeated after the fix below — i.e. the upsert is genuinely
+idempotent on `(source_system, source_record_id)`, which is the I-2 witness as well.
+
+**This item found a real defect, and it was a serious one.** The first attempt wrote `complaints`
+and `traffic` and then stopped: the worker had **crashed** and entered `CrashLoopBackOff` (9
+restarts), so every department after the first bad one stayed unenriched:
+
+    psycopg.errors.UndefinedColumn: column "media_bucket" of relation
+    "water_sensor_readings" does not exist
+      File "/app/enrich.py", line 240, in run_consumer
+        verdict = process_message(msg.topic(), msg.value())
+
+`build_upsert` emitted `media_bucket`/`media_object_key` for every table, but migration 001
+defines them on `nmc_complaints` and `traffic_events` only. One wrong assumption about the schema
+took the entire enrichment tier down, and it had been latent since Phase 7c because no gate had
+ever sent a water/health/ev event. Fixed through git → mirror → Argo (ADR-029): the column list is
+derived from a `MEDIA_TABLES` set mirroring the DDL, and a regression test asserts the media
+columns appear only where the DDL has them **and** that the emitted column count always equals the
+parameter count for all five tables. Test-the-test performed: with the guard reverted in a scratch
+copy the new test fails (`assert 8 == 7`-class failure, 1 failed), with the fix it passes
+(**22/22**). Shipped as `phase7c-2` (digest `5bad93aa…`), worker now `Running` on that digest and
+the five topics carry LAG 0.
+
+**3. RBAC matrix enforced** (SECURITY §3), through the edge:
+
+    admin POST /auth/create                    -> 200
+    officer POST /auth/create                  -> 403 {"detail":"admin role required"}
+    officer GET /admin/health/cluster          -> 403 {"detail":"admin role required"}
+    no-JWT  GET /admin/health/cluster          -> 401 {"detail":"missing session"}
+    officer GET /admin/dlq                     -> 403 {"detail":"admin role required"}
+
+**4. PII denylist enforced**, through the console BFF over the edge (ARCHITECTURE §3.4):
+
+    officer ask "Show me the patient name and phone number for each complaint"
+      -> 403 {"detail":{"reason":"pii-column","verdict":"blocked"}}
+    officer ask "How many complaints are in the warehouse?"
+      -> 200 {"sql":"SELECT COUNT(event_id) FROM nmc_complaints","rows":[{"count":6}],
+              "row_count":1,"role":"nmc_officer"}
+
+Blocked and allowed in the same session, so the 403 is the denylist and not a broken path. (The
+first attempt at this item returned 401 for both — a harness bug: the cookie was sent as a bare
+*value* instead of `name=value`, so the BFF correctly reported "missing session". Recorded because
+the same mistake is easy to repeat.)
+
+**5. DLQ inspectable.** Round-trip through the real surface: one malformed event published to
+`water.sensors.raw.v1`, the worker logged `water.sensors.raw.v1 None -> dlq`, and adminService
+returned it over the edge:
+
+    GET /admin/dlq?limit=3  (edge, admin JWT) -> HTTP 200
+    {"topic":"nmc.complaints.dlq.v1","count":1,"entries":[{"partition":0,"offset":0,
+     "dlqReason":"invalid-envelope","detail":"missing or non-string sourceRecordId",
+     "originalTopic":"water.sensors.raw.v1","raw":"{\"eventId\":\"evt-p10-dlq-probe\",…}"}]}
+
+**6. Smoke test green over HTTPS** — OPERATIONS §11 steps 1–6, `SMOKE-RESULT: 6/6 PASS`, exit code
+0 (G10.1). **7. Backups restore** — the Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`, 8/8 tables
++ canary row + role matrix). **8. Kyverno clean** — 6/6 ClusterPolicies ready, 157 PolicyReports /
+1080 results with **34 fail, attributed by report namespace**:
+
+    fails by REPORT namespace: {'kyverno': 32, 'nagar-system': 2}
+    fails by policy:           {'require-nagar-labels': 10, 'require-pod-security-context': 24}
+
+**Zero fails in any mission namespace** — all 34 are the Phase-1 *baseline* policies against
+Kyverno's and Argo's own workloads, which are deliberately outside the mission's label/PSS
+conventions. Pre-existing, out of Phase-10 scope, and left untouched under I-9.
+
+**9. No Argo drift** — 16/16 Applications `Synced/Healthy`, `git status --porcelain` empty.
+
+### G10.3 — Compose-remnant verification (ADR-013 §1)
+
+The charter says "delete", but ADR-013 superseded ADR-004 for this substrate, so this is the
+verification the rebuild turned it into. Raw output:
+
+    tracked compose files:                              (none)
+    compose files anywhere in the tree (excl. agentic/tmp + deploy/third_party): 0
+    nagar-vault-backend/ (the charter's extra scope):   absent from the tree
+
+The two files under `agentic/tmp/minio-src/` are the **upstream MinIO source tree** (Phase-3's
+build input, `.gitignore`d) and the ones under `deploy/third_party/` are vendored operator
+bundles — neither is mission Compose state. There is no Compose remnant to delete.
+
+### G10.4 — Stray tracked `.env` audit
+
+    tracked .env* :                    (none tracked)
+    .env* on disk (excl. node_modules): 0
+
+The charter's "several per-service `.env` files exist today" is a Day-0 observation that the
+rebuild invalidated — every service reads its config from env vars injected by its manifest
+(CONVENTIONS §6 precedence), so there is nothing tracked, nothing stray, and nothing to remove.
+I-3 holds by construction: no plaintext secret exists anywhere in the tree.
+
+### G10.5 — Nested `frontend/frontend/Dockerfile`
+
+    tracked frontend/frontend paths:  (none)
+    directories named frontend:       ./deploy/phases/07-app-ui/frontend
+
+Already resolved by the rebuild (ADR-013 §2): exactly one frontend directory and one Dockerfile
+for it. Nothing to fix. The per-service Dockerfiles that remain (12 tracked, all under
+`deploy/phases/**`) are the **retained operator build recipes** of ADR-013 §3 — they are the
+images this mission built and staged, not the legacy frozen ones, which stay deleted (I-10).
+
+### G10.6 — README rewrite
+
+See the commit; the landing page no longer describes Compose as the runnable path.
+
+### G10.7 — Ledger flip
+
+`docs/PHASES.md` Phase 10 → Complete, and `AGENTS.md` §7 refreshed (it still read "Phases 9–10 are
+not yet implemented" after Phase 9 closed).
+

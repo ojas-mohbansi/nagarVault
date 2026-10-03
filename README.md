@@ -48,6 +48,6 @@ Ops     → adminService :4001 → health, audit logs, DLQ, vector re-sync
 ## Deployment status
 
 Phase 0 (documentation suite) is complete. Cluster bring-up proceeds phase by phase per
-[docs/PHASES.md](docs/PHASES.md). Until Phase 10 completes, the frozen `docker-compose*.yml` files
-remain the only runnable path for local experimentation — they are legacy, unsupported, and slated
-for deletion at cutover (ADR-004).
+[docs/PHASES.md](docs/PHASES.md). All ten phases are complete and shipped through Argo CD on the k3d substrate; the parity
+cutover (Phase 10) verified the absence of any Compose remnant in this repository (ADR-013).
+There is no Docker Compose in the deployment path — every workload is reconciled from git.

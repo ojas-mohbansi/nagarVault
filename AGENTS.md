@@ -139,9 +139,11 @@ Reading order is enforced by review. If your change touches data plane, read §4
 
 ## 7. Current state of the world
 
-**Phase 0 (this documentation suite) is complete. Phases 1–8 are implemented and verified on
-the disposable k3d substrate (see `docs/PHASES.md` for the ledger and `agentic/mission-log.md`
-for gate evidence); Phases 9–10 are not yet implemented.**
+**Phase 0 (this documentation suite) is complete. All ten phases (1–10) are implemented and
+verified on the disposable k3d substrate (see `docs/PHASES.md` for the ledger and
+`agentic/mission-log.md` for gate evidence). The parity cutover (Phase 10) verified the
+absence of any Compose remnant (ADR-013) — the repository is fully GitOps-shipped with no
+Compose in the deployment path.**
 
 - The runtime substrate today is **the k3d cluster reconciled by Argo CD** (Phases 1–8). The
   manifests in `docs/manifests/exemplars/` remain canonical reference shapes for review, not the

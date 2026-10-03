@@ -170,7 +170,7 @@ rollback:
 - **Restore-drill criterion:** already met by the Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`);
   no new drill was required for this phase.
 
-### Phase 10 — Parity cutover & cleanup (mandatory)
+### Phase 10 — Parity cutover & cleanup (Complete)
 - **Entry:** OPERATIONS §11 smoke script green on K8s; parity checklist below signed.
 - **Actions:** delete `docker-compose.yml`, `docker-compose.dev.yml`, all per-service `Dockerfile`s
   and `.dockerignore`s (ADR-004); audit stray tracked `.env` files (several per-service `.env`
