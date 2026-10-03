@@ -3833,8 +3833,10 @@ This is **not** "zero fails in any mission namespace": 2 of the 34 land inside `
 mission namespace (labels `app.kubernetes.io/part-of=nagarvault`, `nagar.io/phase=1`), on
 `Pod/sealed-secrets-controller-…` violating `require-nagar-labels`. The other 32 are the Phase-1
 *baseline* policies against Kyverno's own workloads, which are deliberately outside the mission's
-label/PSS conventions. All 34 are pre-existing, out of Phase-10 scope, and left untouched under
-I-9. The old "zero in any mission namespace" claim was found false by the 2026-10-03 audit.
+label/PSS conventions. The old "zero in any mission namespace" claim was found false by the
+2026-10-03 audit; the 2 mission-namespace results were then **closed in G10.8** (commit `90cb2cb9`,
+Phase-1 patch + mirror cycle, no policy change), leaving the 32 `kyverno` results as a recorded
+control-plane residual.
 
 **9. No Argo drift** — 16/16 Applications `Synced/Healthy`, `git status --porcelain` empty.
 
@@ -3879,6 +3881,73 @@ See the commit; the landing page no longer describes Compose as the runnable pat
 
 `docs/PHASES.md` Phase 10 → Complete, and `AGENTS.md` §7 refreshed (it still read "Phases 9–10 are
 not yet implemented" after Phase 9 closed).
+
+### G10.8 — Post-handover closure: the `nagar-system` `require-nagar-labels` violation
+
+The repaired mission-scope check (verify-command 8) proved exit criterion 4's second half was
+false in a **mission** namespace: 2 failing results on `Pod/sealed-secrets-controller` in
+`nagar-system`, one per rule of `require-nagar-labels`. The bundle's Namespace was labeled at
+Phase 1 but its pod template was not, so the controller was admitted before the ClusterPolicies
+went live and kept running — the same latent-Phase-1-flaw class the cert-manager patch already
+records (`01-substrate/cert-manager/cert-manager-patches.yaml`, item 3).
+
+**The fix (Phase-1 subtree, git-only).** `sealed-secrets-patches.yaml` item 3 adds
+`app.kubernetes.io/part-of: nagarvault` and `nagar.io/phase: "1"` to the pod template, the two
+labels the policy evaluates, matching the sibling cert-manager/kyverno control-plane pods. **No
+policy was edited, weakened or exempted:** `policies.yaml` is byte-identical to its pre-fix
+revision (`git diff` empty) and the live `require-nagar-labels` `spec` compares equal to the
+kustomize build; application-namespace enforcement is unchanged.
+
+**The delivery (documented git → mirror → Argo flow; no direct `kubectl` workload edit, I-1).**
+Commit `90cb2cb9` (the patch) → rebuild the bare payload from the worktree, because the mirror
+serves the mission branch and `origin` is stale (150 commits behind) → build + push
+`git-repo-mirror:phase10-4` to the internal registry (`localhost:35000`, the host-published port
+that *is* `k3d-nagar.localhost:5000` inside the cluster) → commit `894661c6` bumping `newTag` →
+apply the mirror subtree out-of-band (OPERATIONS §9.4 exception #4 / §12.16), never hand-editing the
+live Deployment → `kubectl rollout status deploy/git-repo-mirror`. Argo read the new revision on its
+next poll (`status.sync.revision` → `894661c6`), reported `OutOfSync`, auto-synced, and rolled the
+controller.
+
+**Verification (raw):**
+
+```
+$ kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/01-substrate | …
+sealed-secrets-controller  namespace=nagar-system
+  template labels: {'app.kubernetes.io/part-of': 'nagarvault', 'nagar.io/phase': '1',
+                    'name': 'sealed-secrets-controller'}   selector: {name: sealed-secrets-controller}
+$ kubectl rollout status deploy/sealed-secrets-controller -n nagar-system
+  deployment "sealed-secrets-controller" successfully rolled out
+$ kubectl get pods -n nagar-system -l name=sealed-secrets-controller -o json | …labels
+  sealed-secrets-controller-647b5bd59-vs9nb
+    {'app.kubernetes.io/part-of': 'nagarvault', 'nagar.io/phase': '1'}
+$ SCOPE='nagar-app nagar-platform nagar-observability nagar-system' <verify-command 8>
+  failing policy results in nagar-app nagar-observability nagar-platform nagar-system = 0
+  CMD8 mission EXIT=0
+$ <verify-command 8 with SCOPE='kyverno'>
+  failing policy results in kyverno = 32
+  CMD8 kyverno EXIT=1                      # the check still fails when violations exist
+$ kubectl get policyreport -A | fails by report namespace
+  {'kyverno': 32}                          # the nagar-system 2 are gone
+$ kubectl get applications -n nagar-system  → 16/16 Synced Healthy; live require-nagar-labels spec == git
+$ sealed-secrets-controller           1/1 Ready, still unsealing (logs: reason 'Unsealed')
+```
+
+**The `kyverno` bundle namespace — deliberate decision.** The remaining 32 fails are the policy
+engine's own four controllers (admission/background/cleanup/reports) in `kyverno`, failing
+`require-nagar-labels` (8 results) and `require-pod-security-context` (24: missing resources and
+restricted security context). They were admitted before the policies went live, like the
+sealed-secrets pod. Excluding a controller's own namespace is **not** the policy's documented
+intent: `policies.yaml`'s header states "no workload is exempted from any policy below", and the
+only carve-outs are `kube-system{,public,node-lease}` plus the narrow Strimzi selector. A `kyverno`
+exclusion would weaken enforcement for that namespace, so none was added; the 32 are left
+**recorded as a control-plane residual**, not silently exempted. Repairing them is the same
+three-part patch (labels + resources + restricted securityContext) on four deployments of the
+policy engine itself, which is a separate Phase-1 change, not part of this closure.
+
+**Effect on exit criterion 4.** The mission-namespace violation is **closed**: verify-command 8
+prints `= 0` and exits 0, and cluster-wide fails are `{'kyverno': 32}`. The literal "zero Kyverno
+violations" is therefore still unmet cluster-wide, but the shortfall is now entirely the policy
+engine's own bundle namespace — **no mission namespace has a Kyverno violation.**
 
 ---
 
@@ -3942,9 +4011,10 @@ for r in json.load(sys.stdin)["items"]:
     if r["metadata"]["namespace"] in ns:
         n += sum(1 for x in r.get("results",[]) if x.get("result")=="fail")
 print("failing policy results in", " ".join(sorted(ns)), "=", n); sys.exit(1 if n else 0)'
-#    -> 2026-10-03 result: "... = 2", exit 1. Both failures are Pod/sealed-secrets-controller
-#       in nagar-system violating require-nagar-labels (CONVENTIONS §5) — see gap 2.
-#       So the claim this line was originally written to support does NOT hold.
+#    -> 2026-10-03 audit result: "... = 2", exit 1 — both on Pod/sealed-secrets-controller in
+#       nagar-system (CONVENTIONS §5). FIXED in G10.8 (commit 90cb2cb9); current result:
+#       "... = 0", exit 0. The 32 remaining cluster-wide fails are the kyverno bundle
+#       namespace's own controllers, recorded as a control-plane residual (gap 2).
 # 9  the entry gate end-to-end over HTTPS (seed per OPERATIONS §5 first):
 kubectl -n nagar-app exec deploy/auth-service -- \
   python seed_admin.py --username ops-check --user-id ops-check-001
@@ -3968,16 +4038,19 @@ Recorded rather than buried. Each is a real limitation of the shipped state, not
    (1 fail in 4 identical runs — the retrieved context is what varies), which makes the model's
    *accuracy* a product-quality issue in `07-app-slm`, outside this phase's subtree (I-9). An
    operator will meet it; the blocked attempt is at least always visible in `audit_logs`.
-2. **"Zero Kyverno violations" is false, and its earlier attribution was wrong too.** 34 `fail`
-   results exist: 32 in `kyverno` (a bundle namespace, genuinely outside the mission's label
-   conventions) and **2 in `nagar-system`, which IS one of the mission namespaces** — both on
-   `Pod/sealed-secrets-controller`, failing `require-nagar-labels` for a missing
-   `app.kubernetes.io/part-of` and `nagar.io/phase` (CONVENTIONS §5). The earlier reading called
-   all 34 "Kyverno's and Argo's own workloads … zero fails in any mission namespace"; that was
-   wrong, and it survived because the check written to support it could not fail. The repaired
-   verify-command 8 counts failures and reports this one (`... = 2`, exit 1). Left unfixed here:
-   patching the Phase-1 sealed-secrets manifests is Phase-1 subtree work needing its own Argo
-   cycle, not a Phase-10 cleanup.
+2. **"Zero Kyverno violations" is not met cluster-wide, though no mission namespace is affected.**
+   The 2026-10-03 audit's repaired check (verify-command 8) found **2 fails in `nagar-system`, a
+   mission namespace**, on `Pod/sealed-secrets-controller`, failing `require-nagar-labels` for a
+   missing `app.kubernetes.io/part-of`/`nagar.io/phase` (CONVENTIONS §5); the earlier reading had
+   called all 34 "Kyverno's and Argo's own workloads … zero fails in any mission namespace", wrong
+   and surviving only because the check written to support it could not fail. Those 2 were **fixed
+   in G10.8** (commit `90cb2cb9`; verify-command 8 now prints `= 0`, exit 0). What remains is
+   **32 fails, all in the `kyverno` bundle namespace** — the policy engine's own four controllers,
+   admitted before the policies went live, failing `require-nagar-labels` (8) and
+   `require-pod-security-context` (24). Excluding a controller's own namespace is *not* the
+   policy's documented intent ("no workload is exempted"), so no exemption was added and they are
+   left **recorded as a control-plane residual**; repairing them is the same three-part patch
+   (labels + resources + restricted securityContext) on four deployments, separate Phase-1 work.
 3. **"No drift in Argo for 7 consecutive days" is not observable.** The substrate is 2d21h old, so
    the criterion cannot have been met by observation. What is proven: 16/16 `Synced`/`Healthy` now,
    and a self-heal test that reverted a manual mutation within ~30 s (G2.2).
@@ -4055,7 +4128,7 @@ Each criterion is quoted as written in §6 and marked with the evidence that dec
 | 1 | "Every phase 1–10 marked Done in the PHASES.md status ledger **with evidence links**" | **Met** | All rows 0–10 read `Done`/`Complete`, and every row now carries its own evidence reference in the ledger: each Status cell cites the mission-log gate range that decided it (`G1.1–G1.3` … `G10.0–G10.7`), with the 7a–7g row citing all seven micro ranges and pointing at §2 Phase 7's per-micro detail. The references are **textual, in the idiom §2 already uses** ("(G7a.1–G7a.7 in the mission log)") — this file has no hyperlink convention for internal evidence, and §0 item 5 fixes the table's shape, so no column was added. One honest exception is stated in the row rather than fabricated: Phase 0 has **no gate of its own** (G0.1–G0.3 cover cluster bring-up), so its row cites the Day-0 baseline commit `21472138` and mission-log §0.3. |
 | 2 | "OPERATIONS §11 smoke script green over HTTPS on the cluster" | **Met** | Three consecutive witnessed runs 2026-10-03T16:06:33Z/47Z/53Z, each all six markers, `SMOKE-RESULT: 6/6 PASS`, exit code 0. Raw output in G10.1. |
 | 3 | "Parity checklist fully signed, including RBAC enforced, PII denylist enforced, DLQ inspectable, backup restore drill succeeded, Argo drift-free" | **Met except one item** | G10.2: all 6 topics consumed (LAG 0 on all five raw topics), all 5 dept tables written, RBAC matrix enforced via the edge (admin/officer/no-JWT rows), PII denylist enforced (`pii-column` 403 + allowed control), DLQ inspectable (live malformed event → `nmc.complaints.dlq.v1` → `GET /admin/dlq` 200). **RBAC** additionally re-proven at closure by a *correct block* (gap 1). Backup restore drill succeeded in Phase 5 (G5.5). The one unmet item is **"no drift in Argo for 7 consecutive days"** — see gap 3. |
-| 4 | "`kustomize build` clean across the whole `deploy/` tree; **zero Kyverno violations**" | **Partly met** | First half **verified live at report time**: 41/41 kustomization trees build clean, 0 failures. Second half **not met**: 34 Kyverno `fail` results exist — 32 in `kyverno` plus **2 in `nagar-system`, which is a mission namespace** (`Pod/sealed-secrets-controller` failing `require-nagar-labels`). So the criterion fails on a real violation in a mission namespace, not merely on a bundle-namespace technicality (gap 2). |
+| 4 | "`kustomize build` clean across the whole `deploy/` tree; **zero Kyverno violations**" | **Partly met — materially improved at closure** | First half **verified live**: 41/41 kustomization trees build clean, 0 failures. Second half: the audit found 34 fails, **2 of them in `nagar-system`, a mission namespace** (`Pod/sealed-secrets-controller` failing `require-nagar-labels`); those 2 were **fixed in G10.8** (commit `90cb2cb9`, Phase-1 patch delivered via the mirror → Argo, no policy change), so verify-command 8 now prints `= 0` and exits 0. Cluster-wide, **32 fails remain — all in the `kyverno` bundle namespace** (the policy engine's own controllers, deliberately not exempted), so "zero" is still unmet, but **no mission namespace has a violation** (gap 2). |
 | 5 | "Compose files and per-service Dockerfiles deleted; legacy `.env` audit recorded; `frontend/frontend/` duplicate resolved" | **Met, with a documented deviation** | 0 tracked Compose files and 0 on disk; 0 tracked `.env` files; 0 `frontend/frontend/` paths with exactly one frontend directory (`deploy/phases/07-app-ui/frontend`) — all re-verified at HEAD for this report. Deviation: the **13** tracked Dockerfiles are *not* deleted — they are the **new** per-service build recipes the rebuild created (ADR-013 §3), retained deliberately; the legacy frozen ones were already gone (I-10). The charter's "delete" became "verify absence" under ADR-013. |
 | 6 | "Doc suite updated to describe reality (no aspiration stated as fact)" | **Met** | `README.md` no longer describes Compose as runnable; `AGENTS.md` §7 says Phases 1–10 and calls the rebuild the shipped state; the §1 ledger and §2 charters agree (`c3589a39`). The last stale phrase is now gone too: Phase 10's skip-consequence cell reads **mandatory** (the cutover is what certifies the shipped state), matching §0 item 4's "mandatory" convention for phases 1, 7a and 10 and dropping the retired "transition" framing. |
 | 7 | "All ADRs written; mission log complete; handover report delivered" | **Met** | 29 ADRs, numbering 001–029 contiguous (0 gaps), ADR-013 and ADR-027–029 written by this mission's rebuild and closure work. The log's per-phase sections carry commands + outputs for phases 0–10. This report is delivered as the journal's final entry, which is the location MISSION.md §5 prescribes for it. |
@@ -4063,8 +4136,9 @@ Each criterion is quoted as written in §6 and marked with the evidence that dec
 **Summary: 5 of 7 fully met (1, 2, 5, 6, 7); #3 is met except its 7-day drift item and #4 remains
 partly met — no criterion is silently claimed.** Criteria 1 and 6 were the two documentation-sized
 shortfalls and both are now closed: the ledger rows carry their evidence references, and the retired
-"transition" framing is gone from the last place it survived. #4 stays partly met, and the repaired
-failure-count check showed it is worse than first reported: 2 of the 34 failures are in
-`nagar-system`, a mission namespace, not outside them (gap 2). Two criteria have
+"transition" framing is gone from the last place it survived. #4 improved at closure: the repaired
+failure-count check found 2 failures in `nagar-system`, a mission namespace, and those were fixed in
+G10.8 (commit `90cb2cb9`), leaving only 32 failures in the `kyverno` bundle namespace — a
+control-plane residual, deliberately not exempted (gap 2). Two criteria have
 *observational* limits that no code change can close: the 7-day drift window (cluster is 2d21h old)
 and the unproven restart-from-scratch runbook.
