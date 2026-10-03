@@ -181,6 +181,49 @@ spec:
     options:
       name: edge-tls-options
 ---
+# console BFF -> frontend (ADR-027): /api/{login,whoami,ask} belongs to :3001, not to ingestion.
+# ADR-024 §5 froze "/api -> ingestion", so Traefik's longest-rule tiebreak shadowed every console
+# path — the browser's own fetch("/api/login") answered 404 from Express while /login rendered
+# fine, i.e. the officer console could not authenticate through the public edge (G10.1).
+# Explicit priority beats BOTH the ingestion router (default priority = rule length) and the
+# frontend "/" catch-all; ingestion keeps every path it owns — /api/v1/** (ARCHITECTURE §4.1)
+# and the bare /api catch-all below.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: edge-frontend-api
+  namespace: nagar-app
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "08"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # login first, rate-limited at the edge so the auth tier's 5/min in-app limiter
+    # (SECURITY §2) keeps keying on the real client IP instead of on the BFF pod.
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && PathPrefix(`/api/login`)"
+      kind: Rule
+      priority: 1000
+      middlewares:
+        - name: edge-headers
+        - name: edge-ratelimit
+      services:
+        - name: frontend
+          port: 3001
+    - match: "(Host(`k3d.nagar.internal`) || Host(`k3d-nagar.localhost`)) && (PathPrefix(`/api/ask`) || PathPrefix(`/api/whoami`))"
+      kind: Rule
+      priority: 1000
+      middlewares:
+        - name: edge-headers
+      services:
+        - name: frontend
+          port: 3001
+  tls:
+    secretName: edge-tls
+    options:
+      name: edge-tls-options
+---
 # /api -> ingestion (browser JSON events; presign/commit)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

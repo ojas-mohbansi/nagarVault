@@ -3539,3 +3539,25 @@ smoke script green on Kubernetes plus the parity checklist, and whose first acti
 the Compose remnants are absent (ADR-013), auditing stray tracked `.env` files, resolving the
 nested `frontend/frontend/Dockerfile`, rewriting the README, and flipping this ledger to
 "Complete."
+---
+
+## Phase 10 — Parity cutover & cleanup (2026-10-03, k3d substrate)
+
+### G10.0 — Charter reconciliation: what Phase 10 says vs what the tree holds
+
+Read before touching anything: PHASES.md §2 Phase-10 block, OPERATIONS §11 (+ its invocation
+note), ADR-004, ADR-013, ADR-024, CONVENTIONS §4, AGENTS.md. Five disagreements between the
+charter's words and the repository, recorded first (mission rule 6) so nothing is coded around a
+stale sentence:
+
+| # | Document says | Tree actually holds | Decision |
+|---|---|---|---|
+| 1 | "delete `docker-compose.yml`, `docker-compose.dev.yml`, all per-service `Dockerfile`s and `.dockerignore`s (ADR-004)" | 0 tracked compose files, 0 `.dockerignore`s; 12 tracked `Dockerfile`s, every one under `deploy/phases/**` | ADR-013 §1 and §3 already superseded ADR-004 for this substrate: Phase 10 **verifies** absence and **keeps** the new per-service build recipes. This subphase is therefore verification, not deletion — raw output in G10.4. |
+| 2 | "audit stray tracked `.env` files (several per-service `.env` files exist today)" | `git ls-files \| grep '(^\|/)\.env'` → none; `find` → no `.env` anywhere in the tree | Day-0 statement predating the rebuild. The audit still runs and is recorded **already clean** (G10.4). |
+| 3 | "resolve the nested `frontend/frontend/Dockerfile` duplicate" | no such path tracked or on disk; exactly one `deploy/phases/07-app-ui/frontend/Dockerfile` | Already resolved by the rebuild (ADR-013 §2). Recorded as **not present**; nothing to do. |
+| 4 | README: "Until Phase 10 completes, the frozen `docker-compose*.yml` files remain the only runnable path" | no compose file exists in the tree; Phases 0–9 are Done | False today → README rewrite, the charter's own action (G10.6). |
+| 5 | OPERATIONS §11 step 5: "ask: `POST /ask` via edge (expect sql + data)" | ADR-024 §5 froze the edge map (`/`→frontend:3001, `/api`→ingestion:3000) and explicitly does **not** route slmService; the console's own BFF paths are shadowed by the `/api` router | Real defect, live-proven in G10.1 — the officer console cannot log in through the public edge. Fixed through the sanctioned path (ADR-027, G10.2). |
+
+One more staleness outside the charter block: **AGENTS.md §7 still says "Phases 9–10 are not yet
+implemented"** although Phase 9 closed at `e580f46e`. Refreshed with the ledger flip under the
+same precedent as G8.7 ("AGENTS.md §7 refreshed").

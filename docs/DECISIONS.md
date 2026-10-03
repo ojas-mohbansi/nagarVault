@@ -836,3 +836,56 @@ deviation.
   namespace-wide posture is worth more than the API load it saves); instrumenting every service
   for `/metrics` inside this phase (cross-phase code churn across six services; deferred with the
   edge-derived substitute named above).
+
+---
+
+## ADR-027 — At the edge the console BFF owns `/api/{login,whoami,ask}`; ingestion owns `/api/v1`
+
+- **Status:** Accepted (2026-10-03) · **Phases:** 8 (edge tree) · 10 (cutover gate)
+- **Context:** ADR-024 §5 froze the edge route map as `/`→frontend:3001, `/api`→ingestion:3000,
+  `/auth`→auth:4000, `/admin`→admin:4001, `/minio`→minio:9000, with slmService explicitly *not*
+  routed. Phase 10's entry gate — the first end-to-end run of OPERATIONS §11 — falsified two
+  assumptions of that map on the live cluster:
+  1. **step 5's literal `POST /ask` has no edge route.** `/ask` falls through to the frontend's
+     `/` catch-all (Next.js 404), and by §5's own decision slmService is not routed at all. The
+     console's real ask surface is the frontend BFF's `POST /api/ask` (ADR-023), whose BFF
+     forwards to slmService in-cluster.
+  2. **the console's BFF routes are shadowed.** the `edge-frontend` router (which matches every
+     path) and the `edge-ingestion` router (which matches every `/api` path) both match
+     `/api/login`, and Traefik's longest-rule
+     tiebreak (the behaviour `ingressroutes.yaml`'s own header comment records from G8.3) picks
+     ingestion. Raw evidence, host → `kubectl -n nagar-system port-forward svc/traefik-edge`:
+
+     ```
+     GET  https://k3d.nagar.internal:<port>/login        -> 200 (console renders the login page)
+     POST https://k3d.nagar.internal:<port>/api/login    -> 404 "Cannot POST /api/login" (ingestion)
+     POST https://k3d.nagar.internal:<port>/api/ask      -> 404 (ingestion)
+     POST https://k3d.nagar.internal:<port>/ask          -> 404 (frontend Next.js catch-all)
+     POST http://127.0.0.1:<pp>/api/login (svc/frontend) -> 401 {"detail":"invalid credentials"}
+     ```
+
+     The officer console is therefore served at the public edge but cannot authenticate there —
+     while CONVENTIONS §4 assigns :3001 "ingress `/` (public edge)" and ADR-023 made the browser
+     talk to that origin exclusively. Steps 1–4 and 6 of §11 were unaffected (`/auth/` 200,
+     `/api/v1/events` 401, `/admin/health/cluster` 401 are their documented auth walls).
+- **Decision:** the edge routes by *owned path prefix*, not by a bare `/api` catch-all:
+  - **`/api/v1/**` → ingestion:3000 — unchanged.** That is the frozen endpoint registry of
+    ARCHITECTURE §4.1 (presign, events), so ingestion keeps every path it owns, and the catch-all
+    under `/api` still lands on ingestion for anything not named below.
+  - **`/api/login`, `/api/whoami`, `/api/ask` → frontend:3001** via a new `edge-frontend-api`
+    IngressRoute in `nagar-app`, each route carrying an explicit `priority: 1000` — Traefik's
+    default priority is rule length, which is what let the shorter `/api` rule win in the first
+    place. `/api/login` additionally carries `edge-ratelimit`: once the path is reachable, the
+    per-client edge limiter is what keeps the auth tier's 5/min in-app limiter (SECURITY §2)
+    keying on the real client IP instead of on the BFF pod.
+  - **ADR-024 §5 is otherwise unchanged:** `/`, `/auth`, `/admin`, `/minio` as before;
+    slmService/queryService/schemaIndexer stay cluster-internal (the BFF remains the only
+    browser path to `ask`); no StripPrefix is added, so the §6 note about host-only cookies
+    across stripped routes still holds — the console now uses a single origin for page and API.
+- **Consequences:** §11 step 5 is literally satisfiable as "ask via edge"
+  (`POST /api/ask` → `{sql, rows}`), and the console logs in through the public edge. The frozen
+  map's "frozen" scope is restated as *path ownership per service* — which this change preserves —
+  rather than a literal `/api` prefix claim, which it corrects. Reverting `edge-frontend-api`
+  restores the previous behaviour exactly: the console renders but cannot authenticate at the
+  edge. Reaching slmService directly at the edge stays explicitly out of scope; the BFF is the
+  documented surface (ADR-023).
