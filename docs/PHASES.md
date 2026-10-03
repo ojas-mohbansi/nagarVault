@@ -167,7 +167,15 @@ rollback:
   missing) were fixed in the 2026-10-03 closure (mission log G10.8, commit `90cb2cb9`); the
   `kyverno` bundle namespace was then cut 34 -> 12 (G10.9, commit `42cd7faa`), every live workload
   there now conforming. The 12 remaining are 4 immutable-selector labels + 8 frozen superseded-
-  ReplicaSet reports, a recorded control-plane residual, and the
+  ReplicaSet reports, a recorded control-plane residual. Both structural blockers were
+  independently re-verified against live state in G10.10 (2026-10-04): the `part-of` value is a
+  Deployment and Service **selector** key, and a server dry-run rejects the change as `field is
+  immutable` (with a passing positive control), so no git -> Argo apply can deliver it; the 8
+  ReplicaSet reports are owned by superseded `desired=0` ReplicaSets whose templates genuinely
+  lack the required fields, and no git -> Argo path reaches a controller-generated ReplicaSet
+  (the only git-deliverable route, `revisionHistoryLimit: 0`, would destroy the documented
+  rollback history of PHASES.md §3, so it was not taken). The residual is therefore not
+  clearable without destroying rollback targets, weakening a policy, or breaking phase isolation. The
   reports-controller
   `/metrics` answers HTTP 200 with 1209 Kyverno series. There is deliberately no Prometheus alert
   on policy violations: Kyverno is not one of ADR-026 §1's scrape jobs, and ADR-026 §3 defers the

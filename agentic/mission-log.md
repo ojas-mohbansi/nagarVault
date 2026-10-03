@@ -4002,7 +4002,71 @@ $ policies.yaml vs HEAD~2  →  (empty; no policy edited, weakened or exempted)
 **Net effect on exit criterion 4.** Cluster-wide fails fall 34 → 12, and the remaining 12 are
 confined to the policy engine's own namespace: 4 non-conformable selector labels and 8 frozen
 reports on superseded ReplicaSets. Every **live** Deployment, ReplicaSet and Pod in `kyverno` now
-conforms, and **no mission namespace has a violation**.
+conforms, and **no mission namespace has a violation.**
+
+### G10.10 — Independent re-verification of the kyverno residual (both blockers) — 2026-10-04
+
+The 12 remaining results were re-derived from live state rather than trusted from the previous
+pass's prose. Both structural claims hold under direct test, and clearing the residual is out of
+bounds by every available route.
+
+**(a) The 4 Pod `check-part-of-label` fails are not deliverable by git → Argo.**
+`app.kubernetes.io/part-of: kyverno` is a `spec.selector.matchLabels` key on all four controller
+Deployments and a `spec.selector` key on six Services (`kyverno-svc`, `kyverno-svc-metrics`,
+`kyverno-background-controller-metrics`, `kyverno-cleanup-controller`,
+`kyverno-cleanup-controller-metrics`, `kyverno-reports-controller-metrics`). A live server dry-run
+patch of the Deployment selector is rejected:
+
+```
+$ kubectl -n kyverno patch deploy kyverno-admission-controller --type=merge \
+    -p '{"spec":{"selector":{"matchLabels":{…,"app.kubernetes.io/part-of":"nagarvault"}}}}' --dry-run=server
+The Deployment "kyverno-admission-controller" is invalid:
+* spec.template.metadata.labels: Invalid value: {…}: `selector` does not match template `labels`
+* spec.selector: Invalid value: {…}: field is immutable                         exit=1
+```
+
+A positive control (a mutable-field patch on the same object) returns `patched`, exit 0, so the
+dry-run exercises real server validation, not a blanket refusal. The value the rule wants
+(`nagarvault`) is the *only* value the selector could take, so satisfying the rule in place is
+impossible: it would require deleting and recreating the policy engine's own four Deployments (a
+transient admission outage under `failurePolicy: Fail`) plus rewriting six Service selectors.
+Out of bounds.
+
+**(b) The 8 ReplicaSet fails are accurate for superseded 0-replica ReplicaSets and cannot be cleared
+without destroying rollback targets.** The four failing scopes are the old ReplicaSets
+(`…-7487bc75cf`, `…-7999749dc`, `…-5656b8ccf4`, `…-7d77c775df`), each `desired=0`, created
+2026-09-30T19:13:17Z; the four live ReplicaSets (created 2026-10-03T18:00:47Z, `desired=1`) read
+`fail=0 pass=5`. The old templates genuinely lack the pod-level `securityContext` and CPU limits the
+rule requires (raw dump: `pod securityContext: {}`, container limits only `memory`), so the reports
+are not stale *values* — they are correct for objects that still exist. Each PolicyReport carries an
+`ownerReference` to its ReplicaSet, so it lives and dies with that ReplicaSet.
+
+Clearing them is out of bounds by every route: (i) the ReplicaSets are controller-generated, not git
+objects, so no git → Argo delivery exists for any patch to them (I-1); (ii) patching their templates
+directly is a forbidden imperative mutation *and* would silently alter what `rollout undo` restores;
+(iii) `revisionHistoryLimit: 0` on the Deployments would GC them through git → Argo, but it destroys
+the documented rollback history (PHASES.md §3) — the exact disqualifier; the bundle ships
+`revisionHistoryLimit: 10` (pinned by ADR-002) and the repo has no counter-convention. The
+ReplicaSet pod template *is* server-mutable (a JSON-patch dry-run returns `patched`, exit 0), which
+rules out immutability as the reason and leaves the real one: deleting or rewriting them destroys
+rollback targets. They are kept.
+
+**Verification at HEAD (raw):**
+
+```
+$ SCOPE='nagar-app nagar-platform nagar-observability nagar-system' <verify-command 8>
+  failing policy results in nagar-app nagar-observability nagar-platform nagar-system = 0  (exit 0)
+$ kubectl get policyreport -A | fails by namespace   ->  {'kyverno': 12}   (TOTAL 12)
+$ kubectl get applications -n nagar-system           ->  16 Synced Healthy
+$ policies.yaml blob = HEAD blob 6c760719            ->  git diff vs HEAD: 0 lines (untouched)
+$ engine still enforcing: a conformant-except-labels pod is DENIED by check-part-of-label
+  (admission webhook validate.kyverno.svc-fail)
+```
+
+**Net effect on exit criterion 4 (unchanged in substance, now independently witnessed).** No mission
+namespace has a Kyverno violation; every live workload in `kyverno` conforms; the 12 residual results
+are two structurally-blocked classes in the policy engine's own namespace, each with the exact test
+above. No policy was weakened, disabled or exempted, and no rollback target was deleted.
 
 ---
 
@@ -4107,7 +4171,13 @@ Recorded rather than buried. Each is a real limitation of the shipped state, not
    `check-part-of-label` (the `part-of` value is an **immutable Deployment and Service selector**,
    not fixable in place) and 8 frozen reports on **superseded 0-replica ReplicaSets**. Excluding a
    controller's own namespace is *not* the policy's documented intent ("no workload is exempted"),
-   so no exemption was added — the residual is recorded, not exempted.
+   so no exemption was added — the residual is recorded, not exempted. Both structural claims were
+   **independently re-verified against live state in G10.10** (2026-10-04): the Deployment selector
+   rejects the change as `field is immutable` under a server dry-run with a passing positive
+   control, and the 8 ReplicaSet reports are owned by superseded `desired=0` ReplicaSets whose
+   templates genuinely lack the required fields. Clearing them is out of bounds: no git → Argo path
+   exists to a controller-generated ReplicaSet, and the only git-deliverable route
+   (`revisionHistoryLimit: 0`) destroys rollback history.
 3. **"No drift in Argo for 7 consecutive days" is not observable.** The substrate is 2d21h old, so
    the criterion cannot have been met by observation. What is proven: 16/16 `Synced`/`Healthy` now,
    and a self-heal test that reverted a manual mutation within ~30 s (G2.2).
@@ -4185,7 +4255,7 @@ Each criterion is quoted as written in §6 and marked with the evidence that dec
 | 1 | "Every phase 1–10 marked Done in the PHASES.md status ledger **with evidence links**" | **Met** | All rows 0–10 read `Done`/`Complete`, and every row now carries its own evidence reference in the ledger: each Status cell cites the mission-log gate range that decided it (`G1.1–G1.3` … `G10.0–G10.7`), with the 7a–7g row citing all seven micro ranges and pointing at §2 Phase 7's per-micro detail. The references are **textual, in the idiom §2 already uses** ("(G7a.1–G7a.7 in the mission log)") — this file has no hyperlink convention for internal evidence, and §0 item 5 fixes the table's shape, so no column was added. One honest exception is stated in the row rather than fabricated: Phase 0 has **no gate of its own** (G0.1–G0.3 cover cluster bring-up), so its row cites the Day-0 baseline commit `21472138` and mission-log §0.3. |
 | 2 | "OPERATIONS §11 smoke script green over HTTPS on the cluster" | **Met** | Three consecutive witnessed runs 2026-10-03T16:06:33Z/47Z/53Z, each all six markers, `SMOKE-RESULT: 6/6 PASS`, exit code 0. Raw output in G10.1. |
 | 3 | "Parity checklist fully signed, including RBAC enforced, PII denylist enforced, DLQ inspectable, backup restore drill succeeded, Argo drift-free" | **Met except one item** | G10.2: all 6 topics consumed (LAG 0 on all five raw topics), all 5 dept tables written, RBAC matrix enforced via the edge (admin/officer/no-JWT rows), PII denylist enforced (`pii-column` 403 + allowed control), DLQ inspectable (live malformed event → `nmc.complaints.dlq.v1` → `GET /admin/dlq` 200). **RBAC** additionally re-proven at closure by a *correct block* (gap 1). Backup restore drill succeeded in Phase 5 (G5.5). The one unmet item is **"no drift in Argo for 7 consecutive days"** — see gap 3. |
-| 4 | "`kustomize build` clean across the whole `deploy/` tree; **zero Kyverno violations**" | **Met for mission namespaces; residual confined to the engine's own namespace** | First half **verified live**: 41/41 kustomization trees build clean, 0 failures. Second half: the audit found 34 fails, **2 in `nagar-system`, a mission namespace** (`Pod/sealed-secrets-controller`), **fixed in G10.8** (commit `90cb2cb9`) so verify-command 8 prints `= 0` and exits 0; the `kyverno` bundle namespace was then cut **34 → 12** in G10.9 (commit `42cd7faa`) and every **live** workload there now conforms. The 12 remaining are 4 non-conformable immutable-selector labels + 8 frozen reports on superseded ReplicaSets, all in `kyverno` — **no mission namespace has a violation**, no policy was weakened or exempted (gap 2). |
+| 4 | "`kustomize build` clean across the whole `deploy/` tree; **zero Kyverno violations**" | **Met for mission namespaces; residual confined to the engine's own namespace** | First half **verified live**: 41/41 kustomization trees build clean, 0 failures. Second half: the audit found 34 fails, **2 in `nagar-system`, a mission namespace** (`Pod/sealed-secrets-controller`), **fixed in G10.8** (commit `90cb2cb9`) so verify-command 8 prints `= 0` and exits 0; the `kyverno` bundle namespace was then cut **34 → 12** in G10.9 (commit `42cd7faa`) and every **live** workload there now conforms. The 12 remaining are 4 non-conformable immutable-selector labels + 8 frozen reports on superseded ReplicaSets, all in `kyverno` — **no mission namespace has a violation**, no policy was weakened or exempted (gap 2). Both blockers were independently re-verified against live state in G10.10, and clearing the 8 ReplicaSet reports is out of bounds (no git → Argo path to a controller-generated ReplicaSet; `revisionHistoryLimit: 0` destroys rollback history). |
 | 5 | "Compose files and per-service Dockerfiles deleted; legacy `.env` audit recorded; `frontend/frontend/` duplicate resolved" | **Met, with a documented deviation** | 0 tracked Compose files and 0 on disk; 0 tracked `.env` files; 0 `frontend/frontend/` paths with exactly one frontend directory (`deploy/phases/07-app-ui/frontend`) — all re-verified at HEAD for this report. Deviation: the **13** tracked Dockerfiles are *not* deleted — they are the **new** per-service build recipes the rebuild created (ADR-013 §3), retained deliberately; the legacy frozen ones were already gone (I-10). The charter's "delete" became "verify absence" under ADR-013. |
 | 6 | "Doc suite updated to describe reality (no aspiration stated as fact)" | **Met** | `README.md` no longer describes Compose as runnable; `AGENTS.md` §7 says Phases 1–10 and calls the rebuild the shipped state; the §1 ledger and §2 charters agree (`c3589a39`). The last stale phrase is now gone too: Phase 10's skip-consequence cell reads **mandatory** (the cutover is what certifies the shipped state), matching §0 item 4's "mandatory" convention for phases 1, 7a and 10 and dropping the retired "transition" framing. |
 | 7 | "All ADRs written; mission log complete; handover report delivered" | **Met** | 29 ADRs, numbering 001–029 contiguous (0 gaps), ADR-013 and ADR-027–029 written by this mission's rebuild and closure work. The log's per-phase sections carry commands + outputs for phases 0–10. This report is delivered as the journal's final entry, which is the location MISSION.md §5 prescribes for it. |
@@ -4198,6 +4268,9 @@ failure-count check found 2 failures in `nagar-system`, a mission namespace, and
 G10.8 (commit `90cb2cb9`); the `kyverno` bundle namespace was then cut 34 → 12 in G10.9 (commit
 `42cd7faa`), where every live workload now conforms. The 12 remaining are 4 non-conformable
 immutable-selector labels and 8 frozen reports on superseded ReplicaSets, confined to the engine's
-own namespace, deliberately not exempted (gap 2). Two criteria have
+own namespace, deliberately not exempted (gap 2). G10.10 (2026-10-04) re-verified both blockers
+against live state — the selector rejects change as `field is immutable` under server dry-run, and
+the 8 ReplicaSet reports are owned by superseded `desired=0` ReplicaSets — and confirmed the
+residual is not clearable through git → Argo without destroying rollback history. Two criteria have
 *observational* limits that no code change can close: the 7-day drift window (cluster is 2d21h old)
 and the unproven restart-from-scratch runbook.
