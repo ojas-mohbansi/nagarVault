@@ -3284,11 +3284,12 @@ defect. Dashboards are populated (10/10 targets, 8197 active series, live Loki l
 surface answers through the edge, and the restore-drill criterion was already satisfied by the
 Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`).
 
-**Still open for Phase 9:** the Kyverno admission gate —
+**Still open for Phase 9 at this point:** the Kyverno admission gate —
 `e2e/fixtures/policy-violation-pods.yaml` (tagged image, upstream registry and `hostNetwork` must
 each be denied; the compliant control pod admitted). The full Kyverno set is deployed and Argo-clean;
-only its adversarial verification is outstanding, so PHASES.md's Phase-9 entry is marked IN PROGRESS
-rather than Done. **Next unfinished phase after that:** Phase 10 — parity cutover & cleanup.
+only its adversarial verification was outstanding, so PHASES.md recorded the entry as IN PROGRESS.
+**That gate was run next (G9.8, same day) and passed, so the ledger is now Done** — see the two
+sections below. The exact next unfinished phase is therefore Phase 10 — parity cutover & cleanup.
 ### G9.7 — closure checkpoint: transport advanced so Argo's revision equals HEAD
 
 G9.1–G9.6 above were recorded in the docs commit `163b6769`, which the mirror did not yet carry (the
@@ -3308,3 +3309,175 @@ $ kubectl -n nagar-system exec deploy/git-repo-mirror -- git ls-remote git://127
 
 The phase's manifests were unchanged by `163b6769` (docs only), which is why every Application read
 `Synced/Healthy` at `53a0f1fa` throughout — the advance is transport hygiene, not a state change.
+### G9.8 — the Kyverno admission gate (the fixture's own "G9.6" probe)
+
+The last verification PHASES.md named as outstanding. Pre-state, so the result is attributable:
+
+```
+$ kubectl get clusterpolicies --no-headers
+disallow-host-access           true   true   True   38h     Ready   ← phase 9
+disallow-latest-tag            true   true   True   2d14h   Ready   ← baseline
+require-image-digest           true   true   True   38h     Ready   ← phase 9
+require-nagar-labels           true   true   True   2d14h   Ready   ← baseline
+require-pod-security-context   true   true   True   2d14h   Ready   ← baseline
+restrict-image-registries      true   true   True   38h     Ready   ← phase 9
+$ kubectl -n kyverno get pods --no-headers   → 4/4 Running (admission, background, cleanup, reports)
+$ kubectl -n nagar-system get applications…  → 16 Synced Healthy
+```
+
+**The probe.** Applied the fixture exactly as the README prescribes (`APPLY-EXIT=1` is the
+expected outcome — three of four objects must be rejected):
+
+```
+$ kubectl apply -f deploy/phases/09-observability/e2e/fixtures/policy-violation-pods.yaml
+APPLY-EXIT=1
+pod/p9-control-compliant created
+Error from server: error when creating "…/policy-violation-pods.yaml": admission webhook
+"validate.kyverno.svc-fail" denied the request:
+
+resource Pod/nagar-observability/p9-violation-tag-only was blocked due to the following policies
+
+require-image-digest:
+  digest-pinned-app-and-observability: 'validation error: Every container image must
+    be pinned by digest (@sha256:…) — I-5. rule digest-pinned-app-and-observability
+    failed at path /spec/containers/0/image/'
+
+Error from server: error when creating "…/policy-violation-pods.yaml": admission webhook
+"validate.kyverno.svc-fail" denied the request:
+
+resource Pod/nagar-observability/p9-violation-registry was blocked due to the following policies
+
+restrict-image-registries:
+  internal-registry-app-and-observability: 'validation error: Images must come from
+    the internal registry — k3d-nagar.localhost:5000 (registry.nagar.internal:5000)
+    only (I-11). rule internal-registry-app-and-observability[0] failed at path /spec/containers/0/image/
+    rule internal-registry-app-and-observability[1] failed at path /spec/containers/0/image/'
+
+Error from server (Forbidden): error when creating "…/policy-violation-pods.yaml":
+pods "p9-violation-hostnet" is forbidden: violates PodSecurity "restricted:v1.31":
+host namespaces (hostNetwork=true)
+```
+
+Exactly three denied and one admitted, as the README and PHASES.md require — but the third
+message is **not** Kyverno's webhook, and the fixture's own header comment implied it was. The
+control ran to completion rather than merely being accepted:
+
+```
+$ kubectl -n nagar-observability get pod --no-headers | grep '^p9-'
+p9-control-compliant   0/1   Completed   0   55s
+$ kubectl -n nagar-observability logs p9-control-compliant
+p9 control: admitted
+$ for p in p9-violation-tag-only p9-violation-registry p9-violation-hostnet; do …
+p9-violation-tag-only    absent (denied)
+p9-violation-registry    absent (denied)
+p9-violation-hostnet     absent (denied)
+```
+
+**The precedence finding (why one policy needed a second probe).** Every mission namespace runs
+PSA `restricted`, and the in-tree PodSecurity admission plugin is evaluated *before* external
+validating webhooks, so inside those namespaces it answers `hostNetwork` first and
+`disallow-host-access` is never reached:
+
+```
+$ kubectl get ns -L pod-security.kubernetes.io/enforce
+nagar-app / nagar-observability / nagar-platform / nagar-system / kyverno / cert-manager
+                              enforce=restricted
+default / kube-system / kube-public / kube-node-lease   (no pod-security labels → privileged)
+```
+
+`disallow-host-access` is still Enforce and matches every namespace except `kube-system*`, so it
+was probed where PSA does not preempt it — `default`, using `--dry-run=server` so admission runs
+in full and nothing is persisted, with a negative control isolating `hostNetwork` as the sole
+variable:
+
+```
+$ kubectl apply --dry-run=server -f agentic/tmp/p9-hostnet-probe.yaml      # namespace: default
+EXIT=1
+Error from server: error when creating "…": admission webhook "validate.kyverno.svc-fail"
+denied the request:
+
+resource Pod/default/p9-probe-hostnet-kyverno was blocked due to the following policies
+
+disallow-host-access:
+  no-host-namespaces: 'validation error: hostPath volumes, hostNetwork, hostPID and
+    hostIPC are forbidden (SECURITY §5 hardening; the PSS restricted profile already
+    forbids the volume type, this names the whole family). rule no-host-namespaces
+    failed at path /spec/hostNetwork/'
+
+$ kubectl apply --dry-run=server -f agentic/tmp/p9-hostnet-control.yaml    # identical, no hostNetwork
+EXIT=0
+pod/p9-probe-control-kyverno created (server dry run)
+$ kubectl -n default get pod --no-headers | grep p9
+(no p9 pods in default)
+```
+
+All three Phase-9 policies have now each decided a real admission request, and the compliant
+control proves none of them over-blocks.
+
+**The violation reporting path (SECURITY §8).** §8 promises violations are "admission-denied and
+reported via Kyverno's own reports-controller (`kubectl get policyreport -A`, plus the
+controller's `/metrics`)" — both halves verified:
+
+```
+$ kubectl get policyreport -A -o json  → 154 reports, 1061 results
+status counts : {'pass': 1027, 'fail': 34}
+FAIL by policy: {'require-nagar-labels': 10, 'require-pod-security-context': 24}
+FAIL by ns    : {'kyverno': 32, 'nagar-system': 2}
+$ kubectl -n kyverno port-forward svc/kyverno-reports-controller-metrics 8000:8000
+$ curl -s http://127.0.0.1:8000/metrics
+HTTP 200 bytes=471788          (1209 lines beginning kyverno_)
+kyverno_policy_execution_duration_seconds_bucket{policy_name="disallow-host-access",
+  policy_validation_mode="enforce",rule_execution_cause="background_scan",
+  rule_result="pass",resource_kind="Deployment",…} 129
+```
+
+The 34 failures are the **Phase-1 baseline** policies flagging Kyverno's own workloads (they
+exclude only `kube-system*`, not `kyverno`/`nagar-system`); they are pre-existing, outside this
+phase's scope, and recorded here because they are what makes the reporting path demonstrably live
+rather than vacuously green. The three Phase-9 policies report zero failures against the running
+estate, which is the scoping claim `policies.yaml`'s header makes.
+
+There is deliberately **no Prometheus alert** on policy violations: Kyverno is not one of the
+seven scrape jobs ADR-026 §1 enumerates, and ADR-026 §3 defers the `policy-reporter` UI. PolicyReports
+plus the controller's `/metrics` are the documented surface, so no alert existed to fire.
+
+**Teardown and invariants.**
+
+```
+$ kubectl delete -f …/e2e/fixtures/policy-violation-pods.yaml
+Error from server (NotFound): … pods "p9-violation-tag-only" not found
+Error from server (NotFound): … pods "p9-violation-registry" not found
+Error from server (NotFound): … pods "p9-violation-hostnet" not found
+   (only the control existed and was deleted; the three NotFound lines are the denied probes,
+    which never were created — so a re-run of the delete is a no-op → idempotent, I-2)
+$ kubectl -n nagar-observability get pod | grep '^p9-'   → (no p9 pods)
+$ kubectl -n default           get pod | grep '^p9-'    → (no p9 pods)
+$ tasklist //FI "IMAGENAME eq kubectl.exe"              → No tasks are running
+$ netstat | grep LISTENING | grep -E ':(8000|13000|3300|9090|9093|3100|8443)\b'  → (empty)
+```
+
+- **I-1** — no live mutation beyond the admission probes themselves: the control pod is the only
+  object the gate persisted, and it was deleted; the two Kyverno probes used `--dry-run=server`
+  and persisted nothing. The changes this pass ships (fixture header + PHASES.md + this log) reach
+  the cluster only through git → mirror → Argo.
+- **I-2** — apply is re-runnable: denials are deterministic and the delete tolerates what never existed.
+- **I-3** — no secret, token or password was read or displayed.
+- **I-5 / I-11 / I-12** — the gate is the *enforcement proof* for I-5 (digest) and I-11 (registry
+  allowlist); `e2e/fixtures/` is not listed in the phase `kustomization.yaml`, so the header edit
+  changes no applied resource and both trees still build.
+- **I-9** — scope: `deploy/phases/09-observability/e2e/fixtures/**`, `docs/PHASES.md`, this log.
+
+### Result — Phase 9 gate green; ledger flipped to Done
+
+All four README gate fixtures have now been exercised: the `PodCrashLooping` drill fired **and
+reached Alertmanager** with its runbook (G9.5), and the Kyverno admission probes denied three of
+four with the compliant control admitted (G9.8). Combined with G9.1–G9.4 (console, app surface,
+telemetry, targets) and G5.5's restore drill, PHASES.md's Phase-9 exit criteria — dashboards
+populated; one alert intentionally fired and linked to its runbook; restore drill evidence
+recorded — are all met, so the entry is now **Done 2026-10-03**.
+
+**Exact next phase: Phase 10 — Parity cutover & cleanup**, whose entry gate is OPERATIONS §11's
+smoke script green on Kubernetes plus the parity checklist, and whose first actions are verifying
+the Compose remnants are absent (ADR-013), auditing stray tracked `.env` files, resolving the
+nested `frontend/frontend/Dockerfile`, rewriting the README, and flipping this ledger to
+"Complete."

@@ -3,7 +3,7 @@
 #
 #   p9-violation-tag-only   → require-image-digest     (internal registry, but :day0 tag)
 #   p9-violation-registry   → restrict-image-registries (digest-pinned, but docker.io host)
-#   p9-violation-hostnet    → disallow-host-access     (compliant image, hostNetwork: true)
+#   p9-violation-hostnet    → hostNetwork is rejected — but see the precedence note below
 #
 # and one must be ADMITTED:
 #
@@ -11,6 +11,23 @@
 #                             sleeps, proving the policies do not deny compliant pods too)
 #
 # The control is deleted after the probe; the namespace is nagar-observability (enforce scope).
+#
+# PRECEDENCE NOTE (corrected after the 2026-10-03 run; earlier versions of this comment implied
+# Kyverno decided all three). Every mission namespace carries
+# pod-security.kubernetes.io/enforce=restricted, and the in-tree PodSecurity admission plugin
+# runs BEFORE validating webhooks, so inside nagar-observability the third probe is rejected as
+#   pods "p9-violation-hostnet" is forbidden: violates PodSecurity "restricted:v1.31"
+# and `disallow-host-access` is never evaluated there. That policy is still live and Enforce; it
+# is proven where PSA does not preempt it — in an UNLABELED namespace, applied with
+# --dry-run=server so admission runs in full and nothing is persisted:
+#
+#   kubectl apply --dry-run=server -f <same spec, namespace: default, hostNetwork: true>
+#     → admission webhook "validate.kyverno.svc-fail" denied the request:
+#       disallow-host-access: no-host-namespaces … failed at path /spec/hostNetwork/
+#   kubectl apply --dry-run=server -f <identical spec minus hostNetwork>
+#     → pod/p9-probe-control-kyverno created (server dry run)
+#
+# (Mission log G9.8.)
 ---
 apiVersion: v1
 kind: Pod

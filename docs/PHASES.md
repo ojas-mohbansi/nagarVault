@@ -143,21 +143,32 @@ rollback:
   (SECURITY §5/§8) + alert rules with runbook anchors (OPERATIONS §10).
 - **Exit:** dashboards populated; one alert intentionally fired and linked to its runbook; restore
   drill evidence recorded.
-- **Status 2026-10-03 (k3d substrate): IN PROGRESS** — the observability half is verified end to end
-  through the deployed surface, not just by manifest review (G9.0–G9.6 in the mission log): an
-  authenticated Grafana console showing both provisioned datasources, the Phase-8 edge serving the
-  frontend (200) and the ingestion app (200 `{api,minio,kafka}` in-cluster; 401 at its `/api`
-  boundary), live metric+log telemetry from a single edge request (Traefik counter + the matching
-  access-log line in Loki), 10/10 scrape targets up, and one intentional `PodCrashLooping` fired
-  **and delivered to Alertmanager** carrying `runbook_url: docs/OPERATIONS.md#rb-12.1`. Delivery
-  was a first-sync defect — Prometheus had no `alerting:` block, so the rule fired locally and
-  never reached Alertmanager — fixed in `53a0f1fa` through the normal git→mirror→Argo cycle.
-  The restore-drill criterion is already met by the Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`);
+- **Done 2026-10-03 (k3d substrate):** the observability half verified end to end through the
+  deployed surface, not by manifest review (G9.0–G9.8 in the mission log): an authenticated Grafana
+  console showing both provisioned datasources; the Phase-8 edge serving the console (200) and the
+  ingestion app (200 `{api,minio,kafka}` in-cluster, 401 at its `/api` boundary); live metric+log
+  telemetry from a single edge request (Traefik counter + the matching access-log line in Loki);
+  10/10 scrape targets up; and one intentional `PodCrashLooping` fired **and delivered to
+  Alertmanager** carrying `runbook_url: docs/OPERATIONS.md#rb-12.1`. Delivery was a first-sync defect
+  (Prometheus had no `alerting:` block, so the rule fired and stopped there) fixed in `53a0f1fa`
+  through the normal git→mirror→Argo cycle.
+- **Done 2026-10-03 — Kyverno admission gate (G9.8):** all three probes from
+  `e2e/fixtures/policy-violation-pods.yaml` were **denied** (`require-image-digest` on the `:day0`
+  tag; `restrict-image-registries` on the `docker.io` host; host-namespace access) and the compliant
+  control ran to `Completed` printing `p9 control: admitted`, so the policies do not over-block.
+  Recorded precedence nuance: every mission namespace is `pod-security.kubernetes.io/enforce=
+  restricted`, and the in-tree PodSecurity plugin runs before validating webhooks, so the
+  `hostNetwork` probe is rejected by PodSecurity and Kyverno's `disallow-host-access` is not the
+  decision inside those namespaces — that policy (Enforce, all namespaces but kube-system*) was
+  proven separately with a `--dry-run=server` probe in an unlabeled namespace, plus a compliant
+  negative control, with nothing persisted. The reporting path of SECURITY §8 is live:
+  PolicyReports carry 1061 results (1027 pass / 34 fail, all from the Phase-1 baseline policies
+  against Kyverno's own workloads — out of this phase's scope) and the reports-controller
+  `/metrics` answers HTTP 200 with 1209 Kyverno series. There is deliberately no Prometheus alert
+  on policy violations: Kyverno is not one of ADR-026 §1's scrape jobs, and ADR-026 §3 defers the
+  `policy-reporter` UI, so PolicyReports + `/metrics` are the documented surface.
+- **Restore-drill criterion:** already met by the Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`);
   no new drill was required for this phase.
-- **Not yet run (why the ledger line is not flipped to Done):** the Kyverno admission gate, i.e.
-  `e2e/fixtures/policy-violation-pods.yaml` — the tagged-image, upstream-registry and `hostNetwork`
-  probes must each be **denied** and the compliant control pod **admitted**. The full Kyverno policy
-  set is deployed and Argo-clean; only its adversarial verification is outstanding.
 
 ### Phase 10 — Parity cutover & cleanup (mandatory)
 - **Entry:** OPERATIONS §11 smoke script green on K8s; parity checklist below signed.
