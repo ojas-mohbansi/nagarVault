@@ -200,6 +200,39 @@ def test_process_message_routes(monkeypatch):
     assert calls == {"upserts": 1, "dlq": 1}
 
 
+# --------------------------------------------------------------------------- poison-pill guard
+
+
+def test_data_level_db_error_is_quarantined_not_raised(monkeypatch):
+    """A per-message DB data error must not escape process_message (G11).
+
+    Before the guard, one message the DB rejected left the consumer offset uncommitted and
+    killed the worker, which re-polled the same message on every restart — a poison-pill
+    CrashLoopBackOff that halted the whole enrichment tier. Reproduced live with
+    occurred_at='not-a-timestamp' -> psycopg.errors.InvalidDatetimeFormat.
+    """
+    dlq = []
+    monkeypatch.setattr(ew, "upsert_batch",
+                        lambda ups: (_ for _ in ()).throw(ew.psycopg.errors.InvalidDatetimeFormat("bad ts")))
+    monkeypatch.setattr(ew, "record_to_dlq", lambda entries, topic: dlq.extend(entries))
+    verdict = ew.process_message("nmc.complaints.raw.restricted.v1",
+                                 json.dumps(envelope(ward="1")).encode())
+    assert verdict == "db-error"
+    assert len(dlq) == 1
+    assert dlq[0][0] == "db-error" and "InvalidDatetimeFormat" in dlq[0][1]
+
+
+def test_connection_error_still_propagates(monkeypatch):
+    """A DB outage is a readiness problem, not the message's fault: it must NOT be quarantined."""
+    dlq = []
+    monkeypatch.setattr(ew, "upsert_batch",
+                        lambda ups: (_ for _ in ()).throw(ew.psycopg.OperationalError("connection refused")))
+    monkeypatch.setattr(ew, "record_to_dlq", lambda entries, topic: dlq.extend(entries))
+    with pytest.raises(ew.psycopg.OperationalError):
+        ew.process_message("nmc.complaints.raw.restricted.v1", json.dumps(envelope(ward="1")).encode())
+    assert dlq == []
+
+
 def test_snake_case_mapping():
     assert ew.snake("vehicleCount") == "vehicle_count"
     assert ew.snake("stateOfCharge") == "state_of_charge"

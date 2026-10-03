@@ -11,6 +11,10 @@
 #   * malformed events (bad JSON, missing required fields, wrong types, unknown department)
 #     are published to nmc.complaints.dlq.v1 and never crash the loop; the DLQ CONSUMER is
 #     adminService (7f) — this worker is the DLQ PRODUCER
+#   * a DATA-level database error (a per-message psycopg error that is not a connection failure,
+#     e.g. an invalid occurred_at the DB rejects) is likewise quarantined to the DLQ, so one bad
+#     event cannot become a poison pill that halts the tier; connection-level failures still
+#     propagate (a DB outage is a readiness problem, not the message's fault)
 #   * media never passes through Kafka: only bucket/objectKey references (§3.2)
 #   * every processed message is committed only after its DB write or DLQ publish succeeds
 #     (no silent loss on the happy path)
@@ -41,6 +45,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import psycopg
 
@@ -80,6 +85,13 @@ MEDIA_TABLES = {"nmc_complaints", "traffic_events"}
 INT_FIELDS = {"vehicleCount"}
 FLOAT_FIELDS = {"averageSpeed", "value", "latitude", "longitude", "speedKph", "stateOfCharge"}
 CAMEL_TO_SNAKE = re.compile(r"(?<!^)(?=[A-Z])")
+
+# Connection-level failures (the database is unreachable / the connection is broken). These are
+# NOT the message's fault, so they must keep propagating: the consumer loop lets them surface
+# rather than quarantining a perfectly good event. Every other psycopg error is a DATA-level
+# defect in this one message (bad timestamp, value too long, DDL drift, …) and is quarantined to
+# the DLQ instead of killing the worker — see process_message.
+DB_CONNECTION_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
 
 
 @dataclass
@@ -219,14 +231,35 @@ def record_to_dlq(entries: list, original_topic: str) -> None:
     producer.flush(30)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def process_message(topic: str, raw: bytes) -> str:
-    """One message through the full path; returns 'upserted' | 'dlq'."""
+    """One message through the full path; returns 'upserted' | 'db-error' | 'dlq'.
+
+    A DATA-level database error (a per-message psycopg error that is not a connection failure)
+    is quarantined to the DLQ and the message is acknowledged, rather than propagating and
+    killing the consumer. Before this guard the loop committed only after `process_message`
+    returned, so a single message the DB rejected left the offset uncommitted and the worker
+    re-polled the same message on every restart — a poison-pill CrashLoopBackOff that halted
+    the entire enrichment tier (found live by G11).
+
+    Connection-level failures still raise: a database outage is a readiness problem, not a
+    property of the message, and must not drain the topic into the DLQ.
+    """
     outcomes = handle_message(topic, raw)
     if outcomes.upserts:
-        upsert_batch(outcomes.upserts)
+        try:
+            upsert_batch(outcomes.upserts)
+        except DB_CONNECTION_ERRORS:
+            raise
+        except psycopg.Error as e:
+            outcomes.upserts.clear()
+            _fail(outcomes, "db-error", f"{type(e).__name__}: {e}", raw)
     if outcomes.dlq:
         record_to_dlq(outcomes.dlq, topic)
-        return "dlq"
+        return "db-error" if any(reason == "db-error" for reason, _d, _r in outcomes.dlq) else "dlq"
     return "upserted"
 
 

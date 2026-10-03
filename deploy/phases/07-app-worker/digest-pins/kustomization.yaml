@@ -2,17 +2,22 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 # Digest pin for the Phase 7c enrichWorker image (invariant I-5).
 #
-# Resolution 2026-09-30: built on the host from this tree (python:3.12-slim; G0.3), pushed
-# via localhost:35000, digest read from the registry header (Docker-Content-Digest) and
-# machine-compared against this file before landing.
-#   mission/nagar-enrich-worker:phase7c-2
+# Resolution 2026-10-04: built on the host from this tree (python:3.12-slim; G0.3), pushed
+# via localhost:35000, digest read from the registry push header and machine-compared against
+# this file before landing.
+#   mission/nagar-enrich-worker:phase7c-3
+#     sha256:152b1f1474c4cb96c3df3990958ace1fd598a0f3124000e19ee85c6d093877f3
+#     (phase7c-3: a DATA-level per-message DB error is quarantined to the DLQ instead of
+#      killing the consumer — the G11 poison-pill finding, where one occurred_at the DB
+#      rejected left the offset uncommitted and CrashLooped the whole enrichment tier)
+#   (superseded) phase7c-2
 #     sha256:5bad93aa186c081f5e1ab13d0f8fdb1cab5e554bee17cca76441d45a491aa9b8
-#     (phase7c-2: media_bucket/media_object_key are emitted only for the tables whose DDL has
-#      them — the G10.2 finding that the first water/health/ev event raised UndefinedColumn and
-#      killed the consumer loop, leaving every later department unenriched)
+#     (media_bucket/media_object_key are emitted only for the tables whose DDL has them — the
+#      G10.2 finding that the first water/health/ev event raised UndefinedColumn and killed the
+#      consumer loop, leaving every later department unenriched)
 #   (superseded) phase7c-1
 #     sha256:81825d4745452c2d1fbd1da0a5a2d0449376304ec247a71bc20d078dd56bc7d2
 images:
   - name: registry.nagar.internal:5000/nagar-enrich-worker
     newName: k3d-nagar.localhost:5000/mission/nagar-enrich-worker
-    digest: sha256:5bad93aa186c081f5e1ab13d0f8fdb1cab5e554bee17cca76441d45a491aa9b8
+    digest: sha256:152b1f1474c4cb96c3df3990958ace1fd598a0f3124000e19ee85c6d093877f3
