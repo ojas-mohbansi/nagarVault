@@ -268,23 +268,42 @@ def main():
         if status != 200 or not officer_cookie:
             check(5, False, "officer console login (POST /api/login)", f"HTTP {status}")
         else:
-            # The first ask after an idle period makes Ollama load both models (bge-m3 + qwen3),
-            # which can outlast a tight client timeout; allow for the cold start and record
-            # the body verbatim when it does not answer.
-            status, text, _, _ = call(
-                "POST", "/api/ask", cookie=officer_cookie, timeout=120,
-                body={"question": "How many complaints are in the warehouse?"},
-            )
-            try:
-                ask = json.loads(text)
-            except Exception:
-                ask = {}
-            ok = (status == 200 and isinstance(ask.get("sql"), str)
-                  and "SELECT" in ask["sql"].upper() and "rows" in ask)
+            # The question NAMES the table on purpose, and the ask is retried, because a vague
+            # "how many complaints are in the warehouse?" lets the model choose the table per
+            # sample: on the 2026-10-03 closure run Qwen3 answered it with
+            # `SELECT COUNT(*) FROM health_camp_records WHERE media_bucket IS NOT NULL`, which an
+            # nmc_officer is correctly denied (SECURITY §3 / ROLE_TABLES), so step 5 failed 5/6 on
+            # a correct 403 while three other runs of the identical input passed. §11 step 5 tests
+            # the ask PATH (edge -> BFF -> slm -> queryService -> SQL + rows), not the model's
+            # table choice, so the probe must not hinge on one sample. Each retry is logged, and
+            # `ok` still demands a real 200 with SQL and rows — a cluster where the officer can
+            # never get a valid answer still fails.
+            question = "How many rows are in the nmc_complaints table?"
+            status, text, ask, ok, retries = None, "", {}, False, []
+            for attempt in range(3):
+                # The first ask after an idle period loads both models in Ollama (bge-m3 +
+                # qwen3), which can outlast a tight client timeout; allow for the cold start and
+                # record the body verbatim when it does not answer.
+                status, text, _, _ = call(
+                    "POST", "/api/ask", cookie=officer_cookie, timeout=120,
+                    body={"question": question},
+                )
+                try:
+                    ask = json.loads(text)
+                except Exception:
+                    ask = {}
+                ok = (status == 200 and isinstance(ask.get("sql"), str)
+                      and "SELECT" in ask["sql"].upper() and "rows" in ask)
+                if ok or status != 403:
+                    break  # success, or a failure a retry cannot fix (401/5xx/wiring)
+                retries.append(f"attempt {attempt + 1}: HTTP {status} {text.strip()[:80]!r}")
+                time.sleep(2)
             check(5, ok, "POST /api/ask (officer, via edge + BFF)",
                   f"HTTP {status} sql={str(ask.get('sql'))[:60]!r} "
                   f"rows={len(ask.get('rows') or [])} role={ask.get('role')}"
                   + ("" if ok else f" body={text.strip()[:160]!r}"))
+            for line in retries:
+                log(f"        ask retry (model mis-target, re-asked): {line}")
 
         # ---- step 6: admin cluster health ---------------------------------------
         status, text, _, _ = call("GET", "/admin/health/cluster", token=admin_token)

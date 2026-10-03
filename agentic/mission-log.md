@@ -3667,12 +3667,67 @@ run is the verification that they hold against the live cluster. Next subphase: 
 checklist**, then Compose/.env/Dockerfile verification (G10.3–G10.5), the README rewrite (G10.6), and
 the ledger flip (G10.7).
 
-**Closure note (2026-10-03), recorded honestly.** The `6/6 PASS` above is **inherited from that
-earlier live run, not re-witnessed at closure**: the closure pass restored this log after a splice
-truncated it, re-proved its integrity, and re-queried the live warehouse — `nmc_complaints=7`,
-`traffic_events=2`, `water_sensor_readings=2`, `health_camp_records=2`, `ev_bus_telemetry=2`, which
-corroborate step 4's `6 -> 7` and item 2's table counts — but did **not** re-run the §11 script. The
-gate stands proven by the execution recorded in this section, not by a second run.
+**Closure note (2026-10-03) — the gate is now WITNESSED, not inherited.** The `6/6 PASS` recorded
+above was, until this pass, inherited from the earlier live run. Re-running it at closure found a
+real defect first, and the gate is green again on three consecutive witnessed executions.
+
+***1. The failure.*** The first fresh run returned **5/6, exit code 1**:
+`SMOKE-5-FAIL POST /api/ask (officer, via edge + BFF)  HTTP 403 {"detail":{"reason":"table-rbac",
+"verdict":"blocked"}}`. The audit row (`audit_logs`, source `queryService`, actor
+`p10smoke-1791043371-be3667a3`, role `nmc_officer`) shows what the model actually generated for
+"How many complaints are in the warehouse?":
+
+    SELECT COUNT(*) FROM health_camp_records WHERE media_bucket IS NOT NULL
+
+`nmc_officer` is deliberately not permitted on `health_camp_records` (`ROLE_TABLES`, SECURITY §3), so
+**that 403 was the gate working correctly** — it caught a mis-targeted query, not a wiring fault. The
+identical input had produced `SELECT COUNT(event_id) FROM nmc_complaints` (allowed) on the earlier
+run, and two further runs of the *unchanged* vague question also passed, so the model's table choice
+is per-sample non-deterministic (1 fail in 4 observed) even at `temperature: 0` — it is the retrieved
+context, not the sampler, that varies.
+
+***2. The in-scope fix*** (`deploy/phases/10-parity-cutover/e2e/e2e-smoke.py`, Phase-10 subtree).
+§11 step 5 tests the ask **path** (edge → BFF → slmService → queryService → SQL + rows), not the
+model's accuracy, so the probe must not hinge on one sample. The question now names the table it
+means ("How many rows are in the nmc_complaints table?"), and a `403` is re-asked up to three times
+with **every blocked attempt logged**. The assertion itself is unchanged — a real `200` carrying SQL
+and rows is still required, so a cluster where the officer can never get a valid answer still fails.
+
+***3. The witnessed run.*** Method exactly as §5/§11 prescribe: seed a fresh admin through the
+sanctioned out-of-band ritual (`kubectl -n nagar-app exec deploy/auth-service -- python
+seed_admin.py --username … --user-id …`), read the one-time password from **line 2** of that output
+into a shell variable and never display it (I-3), then `NV_ADMIN_USER=… NV_ADMIN_PASSWORD=… python
+deploy/phases/10-parity-cutover/e2e/e2e-smoke.py` — the driver spawns its own edge tunnel and mints
+its officer in-band through the admin-gated `POST /auth/create`. Three consecutive runs
+(2026-10-03T16:06:33Z, 16:06:47Z, 16:06:53Z) each printed all six markers, `SMOKE-RESULT: 6/6 PASS`
+and **exit code 0**:
+
+    --- OPERATIONS §11 smoke, edge https://k3d.nagar.internal:4431 (tunnel spawned here) ---
+    SMOKE-1-OK  GET /auth/  HTTP 200 {"status":"ok","service":"authService"}
+    SMOKE-2-OK  POST /auth/login (seeded admin)  HTTP 200 Set-Cookie: session_token=<redacted>;
+                HttpOnly; Max-Age=3600; Path=/; SameSite=lax; Secure
+    SMOKE-3-OK  POST /api/v1/events (JSON only)  HTTP 202 nmc.complaints.raw.restricted.v1
+                evt-0237fd8c-00db-4088-897a-51d7624967f0
+    SMOKE-4-OK  enrich lands in PostgreSQL nmc_complaints  10 -> 11
+            POST /auth/create (admin-gated) -> HTTP 200 {"status":"ok","user_id":"p10smoke-…",…}
+    SMOKE-5-OK  POST /api/ask (officer, via edge + BFF)  HTTP 200
+                sql='SELECT COUNT(*) FROM nmc_complaints' rows=1 role=nmc_officer
+    SMOKE-6-OK  GET /admin/health/cluster  HTTP 200
+                {"db":true,"kafka":true,"schemaIndexer":true,"all":true}
+    SMOKE-RESULT: 6/6 PASS
+    EXIT CODE: 0
+
+Step 4 saw `11 -> 12` and `12 -> 13` on runs 2 and 3; step 5 answered on the **first** attempt in all
+three runs, so the new retry path was never exercised — it exists for the diagnosed failure mode,
+not to make a passing gate look green. Item 2's archived `nmc_complaints|7` baseline still holds as
+history; the live count at closure is **13** because this gate's own step-3 ingests add a fresh row
+per run (new `sourceRecordId` each time, so the upsert never collides — the I-2 witness).
+
+***4. Open finding, recorded not fixed (out of Phase-10 scope).*** The model behaviour underneath the
+failure is real and an operator will meet it: for a vague "complaints" question, Qwen3 1.7B sometimes
+emits a `health_camp_records` query and earns a correct 403. That is an slmService retrieval/prompt
+quality issue in the `07-app-slm` subtree, which I-9 keeps this phase out of, and it belongs in the
+handover report's known-gaps list — not hidden behind the gate's retry.
 
 ### G10.2 — Parity checklist: nine items, each proven live
 
