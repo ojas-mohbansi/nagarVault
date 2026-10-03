@@ -84,18 +84,58 @@ def collection_info() -> dict | None:
     return r.json()["result"] if r.status_code == 200 else None
 
 
+def _create_collection(dim: int) -> None:
+    body = {"vectors": {"size": dim, "distance": "Cosine"}}
+    httpx.put(f"{QDRANT_URL}/collections/{COLLECTION}", json=body, timeout=60).raise_for_status()
+    log(f"collection '{COLLECTION}' created (dim={dim}, Cosine)")
+
+
+def delete_collection() -> None:
+    """Drop the collection outright — the only way to evict a corrupt segment (see below)."""
+    r = httpx.delete(f"{QDRANT_URL}/collections/{COLLECTION}", timeout=60)
+    if r.status_code not in (200, 202, 404):
+        r.raise_for_status()
+    log(f"collection '{COLLECTION}' dropped")
+
+
+def search_ok(vector: list[float] | None = None) -> bool:
+    """Can the collection actually serve a search right now?
+
+    `/collections/<name>` can report `status: green` while a segment is corrupt, because the
+    corruption only surfaces when a segment is READ — Qdrant panics in gridstore with
+    `OutputTooSmall { expected: 4, actual: 0 }` (OPERATIONS §12.33, seen three times: G7d.4,
+    G7g.2, G10.1). A dimension-only idempotency check therefore re-upserts 40 points into the
+    same corrupt segment and reports success while `/ask` stays 503 — the G10.1 finding. This
+    probe is the health signal that matches what slmService actually does.
+    """
+    v = vector if vector is not None else [0.0] * EXPECTED_DIM
+    try:
+        r = httpx.post(
+            f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+            json={"vector": v, "limit": 1, "with_payload": False}, timeout=30,
+        )
+        return r.status_code == 200
+    except Exception as e:  # noqa: BLE001 - probe must report, not raise
+        log(f"search probe failed: {e}")
+        return False
+
+
 def ensure_collection(dim: int) -> None:
     info = collection_info()
     if info is not None:
         size = (info.get("config", {}).get("params", {}).get("vectors") or {}).get("size")
-        if size == dim:
-            log(f"collection '{COLLECTION}' exists with dim={dim} — keeping it (idempotent re-run)")
+        if size != dim:
+            log(f"collection exists with dim={size}, expected {dim} — recreating")
+            delete_collection()
+        elif not search_ok():
+            log(f"collection '{COLLECTION}' exists with dim={dim} but cannot serve a search "
+                "— dropping it for a clean rebuild (§12.33 recovery)")
+            delete_collection()
+        else:
+            log(f"collection '{COLLECTION}' exists with dim={dim} and searches — keeping it "
+                "(idempotent re-run)")
             return
-        log(f"collection exists with dim={size}, expected {dim} — recreating")
-        httpx.delete(f"{QDRANT_URL}/collections/{COLLECTION}", timeout=60).raise_for_status()
-    body = {"vectors": {"size": dim, "distance": "Cosine"}}
-    httpx.put(f"{QDRANT_URL}/collections/{COLLECTION}", json=body, timeout=60).raise_for_status()
-    log(f"collection '{COLLECTION}' created (dim={dim}, Cosine)")
+    _create_collection(dim)
 
 
 def upsert_points(docs: list[dict], vectors: list[list[float]]) -> int:
@@ -154,7 +194,17 @@ def sync() -> dict:
     # Idempotency witness: the point count after the sync.
     info = collection_info()
     points = info.get("points_count") if info else None
-    log(f"upserted {count} points; collection now reports points_count={points}")
+
+    # Read-after-write witness: a rebuild that leaves the collection unable to search is a
+    # failed recovery, not a success with a stale count. Probe with a REAL document vector so
+    # the read path the slmService uses is exercised before we report OK (G10.1).
+    if not search_ok(vectors[0]):
+        raise RuntimeError(
+            f"reindex wrote {points} points but the collection still cannot serve a search "
+            "— segment rebuild did not take (§12.33)"
+        )
+
+    log(f"upserted {count} points; collection now reports points_count={points} (search OK)")
     return {"documents": len(docs), "upserted": count, "points_count": points, "dim": dim}
 
 
@@ -183,7 +233,11 @@ def serve() -> None:
             out["ollama"] = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=5).status_code == 200
             info = collection_info()
             out["points_count"] = info.get("points_count") if info else 0
-            out["healthy"] = out["qdrant"] and out["ollama"] and (out["points_count"] or 0) > 0
+            # A green collection can still be unsearchable (§12.33), so health reports the read
+            # path too — otherwise /health stays "healthy" while /ask 503s.
+            out["searchable"] = bool(out["points_count"]) and search_ok()
+            out["healthy"] = (out["qdrant"] and out["ollama"]
+                              and (out["points_count"] or 0) > 0 and out["searchable"])
         except Exception as e:  # noqa: BLE001 - health endpoint must report, not raise
             out["error"] = str(e)
         return out

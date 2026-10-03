@@ -46,7 +46,7 @@ spec:
       containers:
         - name: index
           # Rewritten by ../digest-pins to the internal-registry digest pin (I-5/I-11).
-          image: registry.nagar.internal:5000/schema-indexer:phase6-1
+          image: registry.nagar.internal:5000/schema-indexer:phase6-4
           command: ["python", "/app/index.py", "--once"]
           env:
             - name: QDRANT_URL
@@ -127,7 +127,7 @@ spec:
       containers:
         - name: indexer
           # Rewritten by ../digest-pins to the internal-registry digest pin (I-5/I-11).
-          image: registry.nagar.internal:5000/schema-indexer:phase6-1
+          image: registry.nagar.internal:5000/schema-indexer:phase6-4
           ports:
             - containerPort: 4005
               name: http

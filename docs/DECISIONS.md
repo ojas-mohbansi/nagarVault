@@ -889,3 +889,40 @@ deviation.
   restores the previous behaviour exactly: the console renders but cannot authenticate at the
   edge. Reaching slmService directly at the edge stays explicitly out of scope; the BFF is the
   documented surface (ADR-023).
+
+---
+
+## ADR-028 — schemaIndexer reindex verifies searchability and rebuilds corrupt collections
+
+- **Status:** Accepted (2026-10-03) · **Phases:** 6 (indexer tree) · 10 (entry gate)
+- **Context:** OPERATIONS §12.33 records a recurring Qdrant failure: a segment goes corrupt
+  (`OutputTooSmall { expected: 4, actual: 0 }` at search time) while `/collections/<name>` still
+  reports `status: green` and `/health` reports every dependency ok, so slmService `/ask` 503s
+  with "retrieval or generation backend unreachable". Seen at G7d.4 and G7g.2; the Phase-10 entry
+  gate found the **third** occurrence, and this time the documented recovery did not work:
+  `POST /reindex` returned `{"status":"ok","documents":40,"upserted":40,"points_count":40}` while
+  `/points/search` stayed **500 on 12/12 probes**. Root cause: `ensure_collection` was idempotent
+  on the vector **dimension** alone, so it kept the existing collection — including the corrupt
+  segment — and re-upserted 40 points into it. The collection showed `segments: 2` (one healthy,
+  one corrupt); the healthy segment is what `/points/query` reached, which is why that endpoint
+  answered 200 while the `/points/search` path slmService uses did not. The prior recoveries
+  "worked" only because they happened to coincide with a qdrant restart.
+- **Decision:** the indexer owns collection health, not just point counts.
+  1. `search_ok()` probes the **read path** (`POST /collections/{c}/points/search`) — the same
+     call slmService makes — instead of trusting collection metadata.
+  2. `ensure_collection` drops and recreates the collection when the dimension differs **or**
+     the collection cannot serve a search, so a corrupt segment is actually evicted. This is
+     correct because `nagar_schema` is a **rebuildable cache** (40 chunks from
+     `schema_docs.json`), never durable data (ADR-021-adjacent; §12.33 already says so).
+  3. `sync()` read-after-writes: after upserting it searches with a real document vector and
+     raises if the collection still cannot serve, so a failed recovery can no longer be
+     reported as `200 ok`.
+  4. `/health` reports `searchable` and folds it into `healthy`, so the endpoint stops claiming
+     health while `/ask` is down.
+- **Consequences:** §12.33's recovery now converges in one call instead of needing a pod
+  restart; a corrupt-segment recurrence becomes self-healing on the next `/reindex` or indexer
+  start (the Job runs `--once`, the Deployment serves `/reindex`). Cost: one extra search request
+  per reindex and per `/health` poll. Reverting the probe restores the silent-success behaviour
+  that produced the G10.1 stall. Note the corruption itself is not explained by this ADR — a
+  third occurrence in the same substrate is worth a follow-up on Qdrant storage/pressure, and the
+  `searchable` signal is what would surface it.

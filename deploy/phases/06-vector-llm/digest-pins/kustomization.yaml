@@ -11,9 +11,13 @@ kind: Component
 #                              sha256:44ff437b…
 #   mission/ollama-models:phase6-1 (source-built payload, ADR-010 checksum gate)
 #                              sha256:335d043a…
-#   mission/schema-indexer:phase6-3 (phase6-3: wait=true upserts, deterministic count witness; phase6-2 fixed point-id signing:
-#                              qdrant rejects negative ids, fold is unsigned u64 now)
-#                              sha256:5ee5bdf8…
+#   mission/schema-indexer:phase6-4 (phase6-4: reindex verifies searchability and rebuilds a
+#                              corrupt collection — ADR-028; the G10.1 finding that §12.33's
+#                              recovery re-upserted into a corrupt segment and still returned 200)
+#                              sha256:35186868…
+#   (superseded) mission/schema-indexer:phase6-3 (wait=true upserts, deterministic count witness;
+#                              phase6-2 fixed point-id signing: qdrant rejects negative ids,
+#                              fold is unsigned u64 now)  sha256:5ee5bdf8…
 #
 # Base manifests reference registry.nagar.internal:5000 (I-11); this tree rewrites to the k3d
 # registry the cluster resolves. The tag is kept alongside the digest where the workload is a
@@ -31,4 +35,4 @@ images:
     digest: sha256:335d043acd8d3c6296d600498ee2a17774b113ab3b429c5641115df04efc7fdc
   - name: registry.nagar.internal:5000/schema-indexer
     newName: k3d-nagar.localhost:5000/mission/schema-indexer
-    digest: sha256:81985e6fa697998d68c2a1ec781b057e2b8b42a79c76ffa24ff723697bd510fb
+    digest: sha256:3518686853d6c933499da3a4662e012c508d7574b1a96f6bdb060de20fda85b2
