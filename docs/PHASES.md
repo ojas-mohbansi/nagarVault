@@ -162,8 +162,9 @@ rollback:
   decision inside those namespaces — that policy (Enforce, all namespaces but kube-system*) was
   proven separately with a `--dry-run=server` probe in an unlabeled namespace, plus a compliant
   negative control, with nothing persisted. The reporting path of SECURITY §8 is live:
-  PolicyReports carry 1061 results (1027 pass / 34 fail, all from the Phase-1 baseline policies
-  against Kyverno's own workloads — out of this phase's scope) and the reports-controller
+  PolicyReports carry 1061 results (1027 pass / 34 fail, all from the Phase-1 baseline policies:
+  32 in the `kyverno` bundle namespace and 2 in **`nagar-system`, a mission namespace**, on
+  `Pod/sealed-secrets-controller`) and the reports-controller
   `/metrics` answers HTTP 200 with 1209 Kyverno series. There is deliberately no Prometheus alert
   on policy violations: Kyverno is not one of ADR-026 §1's scrape jobs, and ADR-026 §3 defers the
   `policy-reporter` UI, so PolicyReports + `/metrics` are the documented surface.

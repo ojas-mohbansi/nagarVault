@@ -3431,10 +3431,14 @@ kyverno_policy_execution_duration_seconds_bucket{policy_name="disallow-host-acce
   rule_result="pass",resource_kind="Deployment",…} 129
 ```
 
-The 34 failures are the **Phase-1 baseline** policies flagging Kyverno's own workloads (they
-exclude only `kube-system*`, not `kyverno`/`nagar-system`); they are pre-existing, outside this
-phase's scope, and recorded here because they are what makes the reporting path demonstrably live
-rather than vacuously green. The three Phase-9 policies report zero failures against the running
+The **Phase-1 baseline** policies scope to every namespace except `kube-system*`, so they flag the
+control planes too. 32 of the 34 failures are in `kyverno` (a bundle namespace); the other **2 are
+in `nagar-system`, a mission namespace** — `Pod/sealed-secrets-controller` failing
+`require-nagar-labels` (CONVENTIONS §5). They are pre-existing and Phase-1's to fix, and they are
+recorded here because they make the reporting path demonstrably live rather than vacuously green —
+but the earlier gloss that they are all "Kyverno's own workloads" with "zero fails in any mission
+namespace" was **wrong** (gap 2), and it survived only because the check meant to prove it could
+not fail. The three Phase-9 policies report zero failures against the running
 estate, which is the scoping claim `policies.yaml`'s header makes.
 
 There is deliberately **no Prometheus alert** on policy violations: Kyverno is not one of the
@@ -3688,10 +3692,13 @@ context, not the sampler, that varies.
 
 ***2. The in-scope fix*** (`deploy/phases/10-parity-cutover/e2e/e2e-smoke.py`, Phase-10 subtree).
 §11 step 5 tests the ask **path** (edge → BFF → slmService → queryService → SQL + rows), not the
-model's accuracy, so the probe must not hinge on one sample. The question now names the table it
-means ("How many rows are in the nmc_complaints table?"), and a `403` is re-asked up to three times
-with **every blocked attempt logged**. The assertion itself is unchanged — a real `200` carrying SQL
-and rows is still required, so a cluster where the officer can never get a valid answer still fails.
+model's accuracy, so the probe must not hinge on the model's per-sample table choice. The question
+now names the table it means ("How many rows are in the nmc_complaints table?"), removing that
+choice at the source. The assertion is unchanged — a real `200` carrying SQL and rows is still
+required, so a cluster where the officer can never get a valid answer still fails.
+An earlier attempt at the same fix (`e368d467`) also re-asked a `403` up to three times; that block
+was **removed** once the reword alone was shown to answer on the first attempt in every run (the
+2026-10-03 audit flagged it as unexercised dead machinery, and deleting it re-proved the gate).
 
 ***3. The witnessed run.*** Method exactly as §5/§11 prescribe: seed a fresh admin through the
 sanctioned out-of-band ritual (`kubectl -n nagar-app exec deploy/auth-service -- python
@@ -3718,10 +3725,10 @@ and **exit code 0**:
     EXIT CODE: 0
 
 Step 4 saw `11 -> 12` and `12 -> 13` on runs 2 and 3; step 5 answered on the **first** attempt in all
-three runs, so the new retry path was never exercised — it exists for the diagnosed failure mode,
-not to make a passing gate look green. Item 2's archived `nmc_complaints|7` baseline still holds as
-history; the live count at closure is **13** because this gate's own step-3 ingests add a fresh row
-per run (new `sourceRecordId` each time, so the upsert never collides — the I-2 witness).
+three runs, which is the evidence that the reworded question alone removed the mis-targeting. Item
+2's archived `nmc_complaints|7` baseline still holds as history; the live count at closure is **13**
+because this gate's own step-3 ingests add a fresh row per run (new `sourceRecordId` each time, so
+the upsert never collides — the I-2 witness).
 
 ***4. Open finding, recorded not fixed (out of Phase-10 scope).*** The model behaviour underneath the
 failure is real and an operator will meet it: for a vague "complaints" question, Qwen3 1.7B sometimes
@@ -3822,9 +3829,12 @@ returned it over the edge:
     fails by REPORT namespace: {'kyverno': 32, 'nagar-system': 2}
     fails by policy:           {'require-nagar-labels': 10, 'require-pod-security-context': 24}
 
-**Zero fails in any mission namespace** — all 34 are the Phase-1 *baseline* policies against
-Kyverno's and Argo's own workloads, which are deliberately outside the mission's label/PSS
-conventions. Pre-existing, out of Phase-10 scope, and left untouched under I-9.
+This is **not** "zero fails in any mission namespace": 2 of the 34 land inside `nagar-system`, a
+mission namespace (labels `app.kubernetes.io/part-of=nagarvault`, `nagar.io/phase=1`), on
+`Pod/sealed-secrets-controller-…` violating `require-nagar-labels`. The other 32 are the Phase-1
+*baseline* policies against Kyverno's own workloads, which are deliberately outside the mission's
+label/PSS conventions. All 34 are pre-existing, out of Phase-10 scope, and left untouched under
+I-9. The old "zero in any mission namespace" claim was found false by the 2026-10-03 audit.
 
 **9. No Argo drift** — 16/16 Applications `Synced/Healthy`, `git status --porcelain` empty.
 
@@ -3870,12 +3880,6 @@ See the commit; the landing page no longer describes Compose as the runnable pat
 `docs/PHASES.md` Phase 10 → Complete, and `AGENTS.md` §7 refreshed (it still read "Phases 9–10 are
 not yet implemented" after Phase 9 closed).
 
-**Post-closure correction.** The §1 ledger rows for Phase 9 and Phase 10 were still "Not started"
-after this flip (only the §2 heading had been changed), contradicting the charter — the exact
-failure AGENTS.md §6.3 forbids. Fixed in `c3589a39`: both rows now carry the table's own
-`**<status> (<date>, k3d substrate)**` shape, and `AGENTS.md` §7 no longer says "Phases 1–8" or calls
-the cutover checklist "pending".
-
 ---
 
 ## Handover report (MISSION.md §5, Day 7 closure) — 2026-10-03
@@ -3912,19 +3916,35 @@ kubectl get applications -n nagar-system                     # 16 rows, all Sync
 kubectl get pods -A --field-selector=status.phase!=Running   # no Pending/CrashLoop/Error
 # 3  the broker CR is Ready
 kubectl get kafka nagar -n nagar-platform                    # READY True
-# 4  the six frozen topic names exist (CONVENTIONS
-#    §4 / ARCHITECTURE §4.2)
+# 4  the six frozen topic names exist (CONVENTIONS §4 / ARCHITECTURE §4.2)
+#    --list also prints Kafka's internal __consumer_offsets, so expect 7 lines, not 6
 MSYS_NO_PATHCONV=1 kubectl exec -n nagar-platform nagar-dual-role-0 -- \
   /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server kafka-bootstrap.nagar-platform.svc.cluster.local:29092 --list
 # 5  the warehouse is a healthy 2-replica CNPG cluster
 kubectl get cluster postgres -n nagar-platform               # Instances 2, all Ready
-# 6  the three frozen buckets exist on the storage layer
-kubectl exec -n nagar-platform minio-0 -- ls /data          # raw-media raw-sensitive-media pg-backups
+# 6  the three frozen buckets exist on the storage layer. The MSYS guard is REQUIRED:
+#    without it Git Bash rewrites /data to a Windows path and the command exits 1
+MSYS_NO_PATHCONV=1 kubectl exec -n nagar-platform minio-0 -- ls /data
+#    -> pg-backups  raw-media  raw-sensitive-media
 # 7  every Kyverno policy is Ready
 kubectl get clusterpolicy                                    # each READY=True
-# 8  no policy violation in any mission namespace
-kubectl get policyreport -A | grep -E "nagar-(app|platform|observability|system)" | grep -v PASS
+# 8  COUNT the FAILING policy results in a namespace scope and exit 1 if any exist.
+#    (The previous version of this line, `... | grep -v PASS`, could never fail: measured,
+#    0 of 133 mission-namespace report rows contain the literal "PASS", so the filter
+#    removed nothing and the command exited 0 either way — found by the 2026-10-03 audit.)
+#    Proof it can fail: SCOPE='kyverno' prints 32 and exits 1.
+SCOPE='nagar-app nagar-platform nagar-observability nagar-system'
+kubectl get policyreport -A -o json | SCOPE="$SCOPE" python -c '
+import json,os,sys
+ns=set(os.environ["SCOPE"].split()); n=0
+for r in json.load(sys.stdin)["items"]:
+    if r["metadata"]["namespace"] in ns:
+        n += sum(1 for x in r.get("results",[]) if x.get("result")=="fail")
+print("failing policy results in", " ".join(sorted(ns)), "=", n); sys.exit(1 if n else 0)'
+#    -> 2026-10-03 result: "... = 2", exit 1. Both failures are Pod/sealed-secrets-controller
+#       in nagar-system violating require-nagar-labels (CONVENTIONS §5) — see gap 2.
+#       So the claim this line was originally written to support does NOT hold.
 # 9  the entry gate end-to-end over HTTPS (seed per OPERATIONS §5 first):
 kubectl -n nagar-app exec deploy/auth-service -- \
   python seed_admin.py --username ops-check --user-id ops-check-001
@@ -3948,33 +3968,35 @@ Recorded rather than buried. Each is a real limitation of the shipped state, not
    (1 fail in 4 identical runs — the retrieved context is what varies), which makes the model's
    *accuracy* a product-quality issue in `07-app-slm`, outside this phase's subtree (I-9). An
    operator will meet it; the blocked attempt is at least always visible in `audit_logs`.
-2. **The new `403`-retry branch is proven only by inspection.** `e2e-smoke.py` step 5 re-asks up to
-   three times when the model mis-targets, logging each blocked attempt. All three witnessed runs
-   answered on the **first** attempt, so the retry path never executed. It guards a failure mode
-   that was observed empirically, but the branch itself has no runtime evidence.
-3. **"Zero Kyverno violations" is not literally true.** 34 `fail` results exist, all attributable:
-   32 in the `kyverno` namespace and 2 in `nagar-system`, i.e. the Phase-1 baseline policies firing
-   against Kyverno's and Argo's *own* workloads, which sit outside the mission's label/PSS
-   conventions by design. **Zero fails in any mission namespace.** Left untouched under I-9.
-4. **"No drift in Argo for 7 consecutive days" is not observable.** The substrate is 2d21h old, so
+2. **"Zero Kyverno violations" is false, and its earlier attribution was wrong too.** 34 `fail`
+   results exist: 32 in `kyverno` (a bundle namespace, genuinely outside the mission's label
+   conventions) and **2 in `nagar-system`, which IS one of the mission namespaces** — both on
+   `Pod/sealed-secrets-controller`, failing `require-nagar-labels` for a missing
+   `app.kubernetes.io/part-of` and `nagar.io/phase` (CONVENTIONS §5). The earlier reading called
+   all 34 "Kyverno's and Argo's own workloads … zero fails in any mission namespace"; that was
+   wrong, and it survived because the check written to support it could not fail. The repaired
+   verify-command 8 counts failures and reports this one (`... = 2`, exit 1). Left unfixed here:
+   patching the Phase-1 sealed-secrets manifests is Phase-1 subtree work needing its own Argo
+   cycle, not a Phase-10 cleanup.
+3. **"No drift in Argo for 7 consecutive days" is not observable.** The substrate is 2d21h old, so
    the criterion cannot have been met by observation. What is proven: 16/16 `Synced`/`Healthy` now,
    and a self-heal test that reverted a manual mutation within ~30 s (G2.2).
-5. **Supply-chain controls (SECURITY §7) are not implemented.** No image has a bystander SBOM, scan
+4. **Supply-chain controls (SECURITY §7) are not implemented.** No image has a bystander SBOM, scan
    or signature; for the two *source-built* images (ADR-015) there is no upstream CVE backstop
    either. In force: digest pinning plus a build-time binary checksum gate (R8, first raised Phase 3).
-6. **The Sealed Secrets controller key backup was ephemeral.** The Phase-1 round-trip drill exported
+5. **The Sealed Secrets controller key backup was ephemeral.** The Phase-1 round-trip drill exported
    the key to prove recovery, then shredded it on the disposable cluster. A production posture needs
    an offline vault, and OPERATIONS §7 documents the procedure that would use it.
-7. **enrichWorker still dies on a per-message database error.** ADR-029 fixed the specific
+6. **enrichWorker still dies on a per-message database error.** ADR-029 fixed the specific
    `media_bucket` bug and added the regression test, but a `psycopg` error in the consumer loop still
    terminates the process rather than routing that one message to the DLQ — recorded in ADR-029, not
    fixed by it.
-8. **The substrate is disposable and single-node.** k3d on one host, 16 GB RAM (Docker VM 8.17 GB),
+7. **The substrate is disposable and single-node.** k3d on one host, 16 GB RAM (Docker VM 8.17 GB),
    Kafka and MinIO single-node by risk acceptance (ADR-006). State lives on a host bind-mount, and the
    `~/.wslconfig` raise to 14 GB written on Day 0 is still **pending owner approval** (R1) — the
    mission completed without it. Host ports 3000–4005 are occupied, so the edge is reached by
    port-forward (R4), not by a published port.
-9. **The Day grid was not followed in days.** MISSION.md §2 marks days as targets, not walls; the
+8. **The Day grid was not followed in days.** MISSION.md §2 marks days as targets, not walls; the
    whole build executed in one continuous session with gates honoured in order, so the "Day 7" label
    on this report denotes the final phase, not seven elapsed days.
 
@@ -3985,7 +4007,7 @@ In MISSION.md §2's priority order, with the two this session surfaced promoted 
 1. **Close gap 1 — make the SLM reliably map intent to table.** Fix retrieval/prompt quality in
    `07-app-slm` and add a regression check for table choice. Highest value: it is the only gap an
    officer can trigger by accident.
-2. **Close gap 4 — run a real 7-day drift soak.** Nothing else can turn that criterion green; a
+2. **Close gap 3 — run a real 7-day drift soak.** Nothing else can turn that criterion green; a
    chaos/drift storm (kill pods, churn manifests, watch self-heal) both proves it and stresses the
    control plane.
 3. **Multi-broker Kafka.** `KafkaNodePool/dual-role` is already split, so widening is a manifest
@@ -3993,7 +4015,7 @@ In MISSION.md §2's priority order, with the two this session surfaced promoted 
 4. **mTLS east-west** — needs an ADR first (every hop today trusts the cluster network).
 5. **Load and restore drills** as routine, building on the Phase-5 restore drill (G5.5,
    `RESTORE-DRILL-VERIFIED`, 8/8 tables + canary row + role matrix).
-6. **Supply-chain pipeline (gap 5)** — vendor `syft`/`trivy`/`cosign` the way every other tool was
+6. **Supply-chain pipeline (gap 4)** — vendor `syft`/`trivy`/`cosign` the way every other tool was
    vendored, then gate the image builds on it.
 7. **SLM tier performance tuning.** CPU-only inference is 10–30 s per query (R5, documented, not a
    defect); batching, model warm-keeping or a GPU node pattern would change it.
@@ -4032,8 +4054,8 @@ Each criterion is quoted as written in §6 and marked with the evidence that dec
 |---|---|---|---|
 | 1 | "Every phase 1–10 marked Done in the PHASES.md status ledger **with evidence links**" | **Met** | All rows 0–10 read `Done`/`Complete`, and every row now carries its own evidence reference in the ledger: each Status cell cites the mission-log gate range that decided it (`G1.1–G1.3` … `G10.0–G10.7`), with the 7a–7g row citing all seven micro ranges and pointing at §2 Phase 7's per-micro detail. The references are **textual, in the idiom §2 already uses** ("(G7a.1–G7a.7 in the mission log)") — this file has no hyperlink convention for internal evidence, and §0 item 5 fixes the table's shape, so no column was added. One honest exception is stated in the row rather than fabricated: Phase 0 has **no gate of its own** (G0.1–G0.3 cover cluster bring-up), so its row cites the Day-0 baseline commit `21472138` and mission-log §0.3. |
 | 2 | "OPERATIONS §11 smoke script green over HTTPS on the cluster" | **Met** | Three consecutive witnessed runs 2026-10-03T16:06:33Z/47Z/53Z, each all six markers, `SMOKE-RESULT: 6/6 PASS`, exit code 0. Raw output in G10.1. |
-| 3 | "Parity checklist fully signed, including RBAC enforced, PII denylist enforced, DLQ inspectable, backup restore drill succeeded, Argo drift-free" | **Met except one item** | G10.2: all 6 topics consumed (LAG 0 on all five raw topics), all 5 dept tables written, RBAC matrix enforced via the edge (admin/officer/no-JWT rows), PII denylist enforced (`pii-column` 403 + allowed control), DLQ inspectable (live malformed event → `nmc.complaints.dlq.v1` → `GET /admin/dlq` 200). **RBAC** additionally re-proven at closure by a *correct block* (gap 1). Backup restore drill succeeded in Phase 5 (G5.5). The one unmet item is **"no drift in Argo for 7 consecutive days"** — see gap 4. |
-| 4 | "`kustomize build` clean across the whole `deploy/` tree; **zero Kyverno violations**" | **Partly met** | First half **verified live at report time**: 41/41 kustomization trees build clean, 0 failures. Second half **not met literally**: 34 Kyverno `fail` results exist — 32 `kyverno` + 2 `nagar-system`, i.e. the baseline policies against the control plane's own workloads; **0 in any mission namespace**. |
+| 3 | "Parity checklist fully signed, including RBAC enforced, PII denylist enforced, DLQ inspectable, backup restore drill succeeded, Argo drift-free" | **Met except one item** | G10.2: all 6 topics consumed (LAG 0 on all five raw topics), all 5 dept tables written, RBAC matrix enforced via the edge (admin/officer/no-JWT rows), PII denylist enforced (`pii-column` 403 + allowed control), DLQ inspectable (live malformed event → `nmc.complaints.dlq.v1` → `GET /admin/dlq` 200). **RBAC** additionally re-proven at closure by a *correct block* (gap 1). Backup restore drill succeeded in Phase 5 (G5.5). The one unmet item is **"no drift in Argo for 7 consecutive days"** — see gap 3. |
+| 4 | "`kustomize build` clean across the whole `deploy/` tree; **zero Kyverno violations**" | **Partly met** | First half **verified live at report time**: 41/41 kustomization trees build clean, 0 failures. Second half **not met**: 34 Kyverno `fail` results exist — 32 in `kyverno` plus **2 in `nagar-system`, which is a mission namespace** (`Pod/sealed-secrets-controller` failing `require-nagar-labels`). So the criterion fails on a real violation in a mission namespace, not merely on a bundle-namespace technicality (gap 2). |
 | 5 | "Compose files and per-service Dockerfiles deleted; legacy `.env` audit recorded; `frontend/frontend/` duplicate resolved" | **Met, with a documented deviation** | 0 tracked Compose files and 0 on disk; 0 tracked `.env` files; 0 `frontend/frontend/` paths with exactly one frontend directory (`deploy/phases/07-app-ui/frontend`) — all re-verified at HEAD for this report. Deviation: the **13** tracked Dockerfiles are *not* deleted — they are the **new** per-service build recipes the rebuild created (ADR-013 §3), retained deliberately; the legacy frozen ones were already gone (I-10). The charter's "delete" became "verify absence" under ADR-013. |
 | 6 | "Doc suite updated to describe reality (no aspiration stated as fact)" | **Met** | `README.md` no longer describes Compose as runnable; `AGENTS.md` §7 says Phases 1–10 and calls the rebuild the shipped state; the §1 ledger and §2 charters agree (`c3589a39`). The last stale phrase is now gone too: Phase 10's skip-consequence cell reads **mandatory** (the cutover is what certifies the shipped state), matching §0 item 4's "mandatory" convention for phases 1, 7a and 10 and dropping the retired "transition" framing. |
 | 7 | "All ADRs written; mission log complete; handover report delivered" | **Met** | 29 ADRs, numbering 001–029 contiguous (0 gaps), ADR-013 and ADR-027–029 written by this mission's rebuild and closure work. The log's per-phase sections carry commands + outputs for phases 0–10. This report is delivered as the journal's final entry, which is the location MISSION.md §5 prescribes for it. |
@@ -4041,7 +4063,8 @@ Each criterion is quoted as written in §6 and marked with the evidence that dec
 **Summary: 5 of 7 fully met (1, 2, 5, 6, 7); #3 is met except its 7-day drift item and #4 remains
 partly met — no criterion is silently claimed.** Criteria 1 and 6 were the two documentation-sized
 shortfalls and both are now closed: the ledger rows carry their evidence references, and the retired
-"transition" framing is gone from the last place it survived. #4 stays partly met because the 34
-Kyverno violations are real and sit outside this phase's subtree (I-9). Two criteria have
+"transition" framing is gone from the last place it survived. #4 stays partly met, and the repaired
+failure-count check showed it is worse than first reported: 2 of the 34 failures are in
+`nagar-system`, a mission namespace, not outside them (gap 2). Two criteria have
 *observational* limits that no code change can close: the 7-day drift window (cluster is 2d21h old)
 and the unproven restart-from-scratch runbook.
