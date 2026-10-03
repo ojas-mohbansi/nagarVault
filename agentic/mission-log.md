@@ -3289,3 +3289,22 @@ Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`).
 each be denied; the compliant control pod admitted). The full Kyverno set is deployed and Argo-clean;
 only its adversarial verification is outstanding, so PHASES.md's Phase-9 entry is marked IN PROGRESS
 rather than Done. **Next unfinished phase after that:** Phase 10 — parity cutover & cleanup.
+### G9.7 — closure checkpoint: transport advanced so Argo's revision equals HEAD
+
+G9.1–G9.6 above were recorded in the docs commit `163b6769`, which the mirror did not yet carry (the
+`phase9-6` payload was cloned before it — the ADR-018 circularity §12.16 names: Argo cannot learn a
+new revision until the operator rebuilds the transport, and the rebuild commit is itself the thing
+being published). This commit performs the one-per-cycle advance to `phase9-7` so the mirror serves
+HEAD, giving a steady state where Argo's `targetRevision: HEAD` resolves to the recorded state:
+
+```
+$ git clone --bare . deploy/phases/02-gitops/git-mirror/payload/nagarvault.git
+$ docker build -t localhost:35000/mission/git-repo-mirror:phase9-7 deploy/phases/02-gitops/git-mirror
+$ docker push  localhost:35000/mission/git-repo-mirror:phase9-7
+$ kustomize build deploy/phases/02-gitops/git-mirror | kubectl apply --server-side --force-conflicts -f -
+$ kubectl -n nagar-system exec deploy/git-repo-mirror -- git ls-remote git://127.0.0.1:9418/nagarvault.git HEAD
+   → this commit
+```
+
+The phase's manifests were unchanged by `163b6769` (docs only), which is why every Application read
+`Synced/Healthy` at `53a0f1fa` throughout — the advance is transport hygiene, not a state change.
