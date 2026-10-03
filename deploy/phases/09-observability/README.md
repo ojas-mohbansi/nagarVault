@@ -12,7 +12,7 @@ disposable 16 GB substrate. Design rationale and deviations: [ADR-026](../../../
 | Object | Namespace | Port | Notes |
 |---|---|---|---|
 | `nagar-prometheus` | nagar-observability | 9090 | 15 d retention, 8 Gi PVC, rule files with `runbook_url` anchors |
-| `nagar-alertmanager` | nagar-observability | 9093 | null receiver (air-gap); the place a firing alert is inspected |
+| `nagar-alertmanager` | nagar-observability | 9093 | the delivery point for firing alerts (Prometheus → `alerting.alertmanagers`, a static target on this service's DNS); null receiver (air-gap), so `GET /api/v2/alerts` is where a firing alert is inspected |
 | `nagar-grafana` | nagar-observability | 3300 | provisioned datasources + 2 dashboards; admin password is the SealedSecret `nagar-grafana-admin` |
 | `nagar-loki` | nagar-observability | 3100 | filesystem storage, 7 d retention, 5 Gi PVC |
 | `nagar-alloy` | nagar-observability | 12345 | tails pod logs **through the API server** (`pods/log`); PSS restricted forbids hostPath, so Promtail cannot run (ADR-026 §3) |

@@ -3009,3 +3009,283 @@ commit → worker row in Postgres**. The Phase-8 charter exit criterion "browser
 from the frontend origin" is met without adaptation notes. Next unfinished phase: **Phase 9 —
 Observability & hardening** (`deploy/phases/09-observability/`; alert→runbook gate per OPERATIONS
 §10).
+## Phase 9 — G9: observability gate through the real deployed surface (2026-10-03, k3d substrate)
+
+### G9.0 — reconciliation of the working tree (the handoff premise was stale)
+
+The handoff described an uncommitted Phase-9 build ("26 uncommitted changed files"). That was not
+the state of the tree: `git status --porcelain` was empty and the Phase-9 work was already committed
+in the stack `14275f3a … 181a378a`, with the mirror transport at `phase9-5` and all 16 Argo
+Applications at that revision. Nothing was lost, restored or re-applied. The only git change this
+pass made is the delivery fix in G9.5. Separately: Docker Desktop had been stopped, so the first
+cluster read failed with connection-refused — the substrate was brought back up before any
+conclusion was drawn, and the k3d cluster itself had survived intact.
+
+```
+$ git status --porcelain          # (empty)
+$ git log --oneline -4
+181a378a fix(phase-9): kube-state-metrics liveness answered on the main port, not telemetry
+20870490 fix(phase-9): correct the two probe paths and pin config revisions
+35514c19 chore(phase-9): advance the git transport to phase9-3
+e1d3d357 fix(phase-9): three first-sync defects, each proven live
+$ kubectl -n nagar-system get applications.argoproj.io \
+    -o custom-columns=S:.status.sync.status,H:.status.health.status --no-headers | sort | uniq -c
+     16 Synced   Healthy
+$ kubectl -n nagar-system get deploy git-repo-mirror -o jsonpath='{…containers[0].image}'
+k3d-nagar.localhost:5000/mission/git-repo-mirror:phase9-5
+```
+
+### G9.1 — the Grafana console, authenticated, with both provisioned datasources
+
+```
+$ kubectl -n nagar-observability port-forward --address 127.0.0.1 svc/nagar-grafana 3300:3300
+Forwarding from 127.0.0.1:3300 -> 3300
+$ curl -s --noproxy '*' http://127.0.0.1:3300/api/health
+{ "database": "ok", "version": "11.4.0", "commit": "b58701869e1a11b696010a6f28bd96b68a2cf0d0" }
+```
+
+Opened in the browser through the preview tools; the persistent profile already held a live admin
+session, so **no password was typed, read aloud or displayed** (and see G9.2: the seeded password is
+not recoverable from the cluster at all). The dashboard
+`/d/nagarvault-platform/nagarvault-e28094-platform-overview` rendered as "NagarVault — Platform
+overview" with every panel live:
+
+```
+Scrape targets up              10
+Pods not Running/Succeeded     No data
+Alerts firing                  0   → 1  while the G9.5 drill ran
+Certs expiring < 30d           0
+Active series                  7792 → 8197
+Edge requests by code          200 / 307 / 401 / 404   (exactly the G9.3 hits)
+Edge 5xx by service            No data
+Container restarts (15m)       populated; includes nagar-observability/p9-crashloop-drill during G9.5
+Error-ish logs (Loki)          real lines — git-daemon "waitpid … No child process", Loki ingester
+                               "entry too far behind", traefik "no servers found for nagar-app/ingestion"
+                               during the restart, kafkajs ECONNREFUSED while Kafka came up, postgres
+                               checkpoints
+```
+
+Connections → Data sources (`/connections/datasources`) — both provisioned sources exist:
+
+```
+Loki        Loki        http://nagar-loki.nagar-observability.svc.cluster.local:3100
+Prometheus  Prometheus  http://nagar-prometheus.nagar-observability.svc.cluster.local:9090   [default]
+```
+
+### G9.2 — the Phase-8 app surface, reached through the deployed edge
+
+```
+$ kubectl -n nagar-system port-forward --address 127.0.0.1 svc/traefik-edge 8443:443
+Forwarding from 127.0.0.1:8443 -> 443
+$ curl -sk --resolve k3d-nagar.localhost:8443:127.0.0.1 -D - https://k3d-nagar.localhost:8443/
+HTTP/1.1 307 Temporary Redirect
+Location: /dashboard
+<title>NagarVault — Officer Console</title>
+$ curl -sk … https://k3d-nagar.localhost:8443/dashboard        → HTTP 200, 6467 bytes
+$ curl -sk … -X POST -H 'Content-Type: application/json' \
+    -d '{"files":[{"filename":"p9-telemetry.txt","contentType":"text/plain"}]}' \
+    https://k3d-nagar.localhost:8443/api/v1/uploads/presign
+{"detail":"missing session"}   HTTP 401
+$ curl -sk … https://k3d-nagar.localhost:8443/api/v1/events/evt-p9
+{"detail":"missing session"}   HTTP 401
+$ kubectl -n nagar-app port-forward --address 127.0.0.1 svc/ingestion 13000:3000   # host TCP 3000 is taken
+$ curl -s http://127.0.0.1:13000/       → {"status":"ok","service":"ingestion"}    HTTP 200
+$ curl -s http://127.0.0.1:13000/health → {"api":true,"minio":true,"kafka":true}   HTTP 200
+```
+
+Two recorded notes. (a) **No authenticated `/api` call was made, deliberately:** the seeded admin
+password is generated once by `seed_admin.py` and printed once (it is in no Secret — `kubectl -n
+nagar-app get secrets` holds only `nagar-jwt`, `nagar-minio`, `nagar-postgres-app`, `edge-tls`), and
+this pass was instructed not to re-seed. The API's documented boundary (401 `missing session` on both
+`/api/v1` routes) plus the service's own 200 `/health` are the evidence instead. (b) The host already
+had TCP 3000 bound by an **unrelated host process** (its `/health` answers a chat-bridge shape, not
+ingestion's); the tunnel therefore used 13000 and that host service was left untouched.
+
+### G9.3 — telemetry: one edge request produces a scrapeable metric *and* a log line
+
+```
+$ curl … 'http://127.0.0.1:9090/api/v1/query?query=sum(traefik_service_requests_total)'   # T0
+3
+   … exercised: GET /dashboard (200), POST /api/v1/uploads/presign (401), GET /api/v1/events/evt-p9 (401) …
+$ curl … 'sum by (code,service,method) (traefik_service_requests_total)'                  # T+40s
+401  POST  nagar-app-edge-ingestion-ba69e23eea182ac0ade7@kubernetescrd   1
+401  GET   nagar-app-edge-ingestion-ba69e23eea182ac0ade7@kubernetescrd   1
+200  GET   nagar-app-edge-frontend-ebcef7b90917ee187770@kubernetescrd    1
+307  GET   nagar-app-edge-frontend-ebcef7b90917ee187770@kubernetescrd    1
+404  GET   nagar-app-edge-ingestion-ba69e23eea182ac0ade7@kubernetescrd   1
+404  GET   nagar-app-edge-auth-1e6aa3502fbd59742d9a@kubernetescrd         1
+
+$ curl -G http://127.0.0.1:3100/loki/api/v1/query_range \
+    --data-urlencode 'query={namespace="nagar-system",app="traefik-edge"} |= "presign"'
+127.0.0.1 - - [03/Oct/2026:08:52:36 +0000] "POST /api/v1/uploads/presign HTTP/1.1" 401 28 "-" "-" 5
+  "nagar-app-edge-ingestion-ba69e23eea182ac0ade7@kubernetescrd" "http://10.42.0.99:3000" 23ms
+```
+
+Path note, as the handoff allowed for: the mission profile's `/waiting` route does not exist — the 7e
+app has no request logger and its only public routes are `/` and `/health`, neither of which the
+edge's `/api` router can reach (`grep -rn waiting` over `deploy/phases/07-app-ingestion/ingestion/src/`
+finds only the startup `console.log`). The documented substitute is the edge itself: Traefik runs with
+`--accesslog=true` and serves its own metrics on the `ping` entrypoint, so **one** request yields both
+the log line and the counter — and that counter is exactly what `Ingest5xxRate` is computed from
+(ADR-026 §3).
+
+### G9.4 — scrape targets, and the Loki deviation
+
+```
+$ curl -s http://127.0.0.1:9090/api/v1/targets   →  (health, job, instance)
+up  alertmanager       10.42.0.79:9093
+up  cert-manager       10.42.0.74:9402 · 10.42.0.88:9402 · 10.42.0.102:9402
+up  cnpg-instances     10.42.0.106:9187 · 10.42.0.107:9187
+up  kafka-exporter     10.42.0.98:9308
+up  kube-state-metrics 10.42.0.97:8080        ← the source of kube_pod_container_status_waiting_reason
+up  prometheus         localhost:9090
+up  traefik            10.42.0.85:8082
+
+$ curl … 'sum(up)'  → 10                       # agrees with the Grafana panel exactly
+```
+
+**Deviation, recorded rather than papered over:** there is no Prometheus target named `loki`. The
+phase declares none on purpose — `prometheus.yaml`'s header says every job "targets a port that some
+deployed object actually serves", and the job set is exactly prometheus / kube-state-metrics /
+alertmanager / kafka-exporter / traefik / cert-manager / cnpg-instances (ADR-026 §1). Loki is
+consumed as a **Grafana datasource** instead, and that was proven directly: `GET
+http://127.0.0.1:3100/ready` → 200 and real log lines in the dashboard's Loki panel (G9.1, G9.3).
+The handoff's "confirm a Target up … for loki" therefore has no target to confirm; adding one is a
+scrape-list change, not part of this gate.
+
+### G9.5 — the intentional alert drill: fixture → Alertmanager, carrying its runbook link
+
+First run — this is where the real defect surfaced:
+
+```
+$ kubectl apply -f deploy/phases/09-observability/e2e/fixtures/crashloop-pod.yaml
+pod/p9-crashloop-drill created                                                    # 08:54:10Z
+t+20s   status=CrashLoopBackOff restarts=2  metric=0  alert=[]
+t+80s   status=Error            restarts=4  metric=1  alert=[]        # kube-state-metrics saw it
+t+100s  status=CrashLoopBackOff restarts=4  metric=1  alert=[pending p9-crashloop-drill]
+t+160s  status=Error            restarts=5  metric=1  alert=[firing  p9-crashloop-drill]
+
+$ curl … http://127.0.0.1:9090/api/v1/alerts
+state   : firing
+labels  : {"alertname": "PodCrashLooping", "container": "crasher", "namespace": "nagar-observability",
+           "pod": "p9-crashloop-drill", "severity": "warning"}
+annot   : {"runbook_url": "docs/OPERATIONS.md#rb-12.1",
+           "summary": "Pod nagar-observability/p9-crashloop-drill container crasher is in CrashLoopBackOff"}
+activeAt: 2026-10-03T08:55:37.110164408Z   value: 1e+00
+
+$ curl … http://127.0.0.1:9090/api/v1/alertmanagers
+active: []            ← nothing to deliver to
+$ curl … http://127.0.0.1:9093/api/v2/alerts
+total alerts in AM: 0
+```
+
+Root cause: `nagar-prometheus-config` carried a *scrape* job for Alertmanager's own metrics but no
+`alerting:` block, so `firing` was terminal. The phase's own gate text ("applied until the alert
+fires in Alertmanager with its `runbook_url` annotation"), the README's table and OPERATIONS §10 all
+assume delivery, so the rule was only half of the I-7 contract. Fixed in commit `53a0f1fa` — an
+`alerting.alertmanagers` static target on the Alertmanager service DNS, plus `nagar.io/config-rev:
+1 → 2` so the pod actually rolls (the template is otherwise byte-identical; the earlier Alloy
+incident on this substrate proved that trap).
+
+Gates, then the sanctioned transport (§9.4 / §12.16):
+
+```
+$ kustomize build --load-restrictor LoadRestrictionsNone deploy/phases/09-observability   # 1919 lines
+$ kustomize build deploy/phases/09-observability | kubectl apply --dry-run=server -f -    # admitted
+$ promtool check config   (run inside the live pod; temp dir on the PVC, removed afterwards)
+  SUCCESS: 1 rule files found
+  SUCCESS: /prometheus/p9check/prometheus.yml is valid prometheus config file syntax
+  SUCCESS: 5 rules found
+$ docker build -t localhost:35000/mission/git-repo-mirror:phase9-6 deploy/phases/02-gitops/git-mirror
+$ docker push  localhost:35000/mission/git-repo-mirror:phase9-6
+  phase9-6: digest: sha256:213e564fad57a5cd573103f32a6a7540363580f6f9aa91d250ea25514bbb6146
+$ kustomize build deploy/phases/02-gitops/git-mirror | kubectl apply --server-side --force-conflicts -f -
+  deployment "git-repo-mirror" successfully rolled out
+$ kubectl -n nagar-system exec deploy/git-repo-mirror -- sh -c 'git ls-remote git://127.0.0.1:9418/nagarvault.git HEAD'
+53a0f1fa13217a6a0e0daa57c3f7d69b8dec6131
+$ (Argo polls every ~3 min)
+t+200s  argo=Synced/Progressing  rev=181a378a  prom-ready=/1   config-rev=2
+t+240s  argo=Synced/Healthy      rev=53a0f1fa  prom-ready=1/1  config-rev=2
+```
+
+Delivery, re-read after the roll (the fixture was still crash-looping, so the rule re-fired):
+
+```
+$ curl … http://127.0.0.1:9090/api/v1/alertmanagers
+active  : [{"url": "http://nagar-alertmanager.nagar-observability.svc.cluster.local:9093/api/v2/alerts"}]
+dropped : []
+
+$ curl … http://127.0.0.1:9093/api/v2/alerts        ← the proof this gate asked for
+status.state   : active
+startsAt       : 2026-10-03T09:17:07.110Z
+updatedAt      : 2026-10-03T09:17:37.100Z
+labels         : {"alertname": "PodCrashLooping", "cluster": "nagarvault", "container": "crasher",
+                  "namespace": "nagar-observability", "pod": "p9-crashloop-drill", "severity": "warning"}
+annotations    : {"runbook_url": "docs/OPERATIONS.md#rb-12.1",
+                  "summary": "Pod nagar-observability/p9-crashloop-drill container crasher is in CrashLoopBackOff"}
+receivers      : ['devnull']
+generatorURL   : http://nagar-prometheus-568cb85675-sqnvf:9090/graph?g0.expr=max+by+(namespace,+pod,+container)+…
+
+cross-check:  alertmanager alerts = 1 · prometheus firing = 1 · sum(up) = 10
+in Grafana:   "Alerts firing" panel = 1 while the drill ran (screenshot + accessibility tree)
+```
+
+The runbook anchor is real (the other half of the drill), and the alert resolves on both sides when
+the fixture goes away:
+
+```
+$ grep -n 'id="rb-12.1"' -A 1 docs/OPERATIONS.md
+215:| <a id="rb-12.1"></a>12.1 | Pod `CrashLoopBackOff` | bad env/secret, dependency unreachable |
+     `kubectl logs`; check §6.2 key map; verify NetworkPolicy allows the flow (SECURITY §8) |
+
+$ kubectl delete -f deploy/phases/09-observability/e2e/fixtures/crashloop-pod.yaml
+pod "p9-crashloop-drill" deleted from nagar-observability namespace
+t+15s  prometheus=pending  alertmanager=0
+t+60s  prometheus=none     alertmanager=0        ← resolved on both sides
+```
+
+### G9.6 — teardown, orphan check, and the invariants
+
+```
+$ kubectl -n nagar-observability get pod p9-crashloop-drill
+Error from server (NotFound): pods "p9-crashloop-drill" not found
+$ taskkill //F //IM kubectl.exe            → 0 remaining
+$ netstat -ano | grep LISTENING | grep -E ':(13000|3300|8443|9090|9093|3100)\b'   → (empty)
+$ kubectl -n nagar-system get applications.argoproj.io … | sort | uniq -c
+     16 Synced   Healthy
+$ kubectl get pods -A | grep -v -E "Running|Completed"        → (empty)
+```
+
+- **I-1** — the only git change this pass (`53a0f1fa`) reached the cluster through git → mirror →
+  Argo. The out-of-band actions were the sanctioned §9.4 transport advance and the fixture
+  apply/delete this gate prescribes; both are recorded above.
+- **I-2** — the fix is idempotent (a static target, re-appliable forever); the drill is a no-op on re-run.
+- **I-3** — no password, token or key was displayed anywhere. The Grafana proof rode the browser
+  profile's existing session; the seeded admin password proved **unrecoverable** (generated once by
+  `seed_admin.py`, never stored), so no login was attempted and none was needed.
+- **I-5** — digest pins untouched; the mirror transport advances by `newTag` per ADR-018.
+- **I-6** — no port, topic or bucket changed: the `alerting` target references the *existing*
+  Alertmanager `:9093` service. The host-side tunnel on 13000 exists only because the host's own
+  TCP 3000 was already occupied.
+- **I-7** — the anchor is real and delivery is now proven, not assumed.
+- **I-8** — no new ADR: the fix restores wiring the charter, README and OPERATIONS §10 already
+  assumed, and ADR-026 never claimed a delivery mechanism, so no decision is being reversed.
+- **I-9** — scope: `deploy/phases/09-observability/**`, the git-mirror transport tag (per-cycle
+  exception, ADR-018), and the three docs whose contract changed (OPERATIONS §10, PHASES.md, the
+  phase README).
+- **I-12** — every touched tree builds; the server dry-run admits the phase.
+
+### Result — fired, delivered, linked, resolved; and what Phase 9 still owes
+
+The phase's "one alert intentionally fired and linked to its runbook" criterion is met **at the
+Alertmanager**, not merely inside the rule engine: `PodCrashLooping` → `active` in Alertmanager with
+`runbook_url: docs/OPERATIONS.md#rb-12.1`, after first exposing and then closing a real no-delivery
+defect. Dashboards are populated (10/10 targets, 8197 active series, live Loki lines), the app
+surface answers through the edge, and the restore-drill criterion was already satisfied by the
+Phase-5 drill (G5.5, `RESTORE-DRILL-VERIFIED`).
+
+**Still open for Phase 9:** the Kyverno admission gate —
+`e2e/fixtures/policy-violation-pods.yaml` (tagged image, upstream registry and `hostNetwork` must
+each be denied; the compliant control pod admitted). The full Kyverno set is deployed and Argo-clean;
+only its adversarial verification is outstanding, so PHASES.md's Phase-9 entry is marked IN PROGRESS
+rather than Done. **Next unfinished phase after that:** Phase 10 — parity cutover & cleanup.

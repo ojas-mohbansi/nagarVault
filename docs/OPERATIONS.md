@@ -185,6 +185,12 @@ in any markdown viewer (an air-gapped room has no wiki host). Initial set:
 `CertExpiringSoon` (`#rb-12.4`), `Ingest5xxRate` (`#rb-12.3`). The five rules live in
 `deploy/phases/09-observability/prometheus.yaml`; the anchor-existence check is part of G9.5.
 
+Prometheus **delivers** firing alerts to `nagar-alertmanager` (`alerting.alertmanagers`, a static
+target on the Alertmanager service DNS at `:9093`); the receiver is intentionally null (air-gap), so
+`GET /api/v2/alerts` on the Alertmanager console — not the Prometheus UI alone — is the proof that
+an alert fired. A rule that reaches `firing` in Prometheus while `/api/v1/alertmanagers` is empty has
+not been delivered (this was a real first-sync defect, fixed 2026-10-03).
+
 ## 11. Post-deploy smoke test (E2E, scripted in Phase 10)
 
 ```bash
