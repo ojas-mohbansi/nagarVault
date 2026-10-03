@@ -73,6 +73,10 @@ FIELD_MAPS = {
     "ev_bus_telemetry": {"busId": True, "routeId": False, "latitude": False, "longitude": False,
                          "speedKph": False, "stateOfCharge": False},
 }
+# Tables whose DDL carries media_bucket/media_object_key (migration 001). Keep in step with
+# 05-postgres/migrations/001_create_tables.sql.
+MEDIA_TABLES = {"nmc_complaints", "traffic_events"}
+
 INT_FIELDS = {"vehicleCount"}
 FLOAT_FIELDS = {"averageSpeed", "value", "latitude", "longitude", "speedKph", "stateOfCharge"}
 CAMEL_TO_SNAKE = re.compile(r"(?<!^)(?=[A-Z])")
@@ -95,19 +99,29 @@ def snake(name: str) -> str:
 def build_upsert(table: str, envelope: dict, columns: dict) -> tuple[str, tuple]:
     """INSERT ... ON CONFLICT upsert on the (source_system, source_record_id) dedup key.
     Re-delivery overwrites the row with the latest enrichment (I-2: idempotent re-run)."""
-    cols = ["event_id", "source_system", "source_record_id", "occurred_at", "payload",
-            "media_bucket", "media_object_key", *columns.keys()]
+    # Only nmc_complaints and traffic_events carry media columns (migration 001); water, health
+    # and ev tables do not. Emitting media_bucket/media_object_key for those three raised
+    # `UndefinedColumn` inside the consumer loop, which killed the worker process and left every
+    # later department unenriched — found by G10.2, the first time those topics were ever
+    # exercised (traffic/complaints had carried every prior gate, so the bug never surfaced).
+    cols = ["event_id", "source_system", "source_record_id", "occurred_at", "payload"]
+    if table in MEDIA_TABLES:
+        cols += ["media_bucket", "media_object_key"]
+    cols += list(columns.keys())
     placeholders = ", ".join(["%s"] * len(cols))
     # Identity columns stay; everything else (incl. occurred_at, payload, media refs)
     # refreshes from the latest envelope on conflict — at-least-once redelivery wins.
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols[3:])
     sql = (f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "
            f"ON CONFLICT (source_system, source_record_id) DO UPDATE SET {updates}")
+    media = []
+    if table in MEDIA_TABLES:
+        first = (envelope.get("attachments") or [{}])[0]
+        media = [first.get("bucket"), first.get("objectKey")]
     params = (
         envelope["eventId"], envelope["sourceSystem"], envelope["sourceRecordId"],
         envelope["occurredAt"], json.dumps(envelope.get("payload", {})),
-        (envelope.get("attachments") or [{}])[0].get("bucket"),
-        (envelope.get("attachments") or [{}])[0].get("objectKey"),
+        *media,
         *columns.values(),
     )
     return sql, params

@@ -926,3 +926,35 @@ deviation.
   that produced the G10.1 stall. Note the corruption itself is not explained by this ADR — a
   third occurrence in the same substrate is worth a follow-up on Qdrant storage/pressure, and the
   `searchable` signal is what would surface it.
+
+---
+
+## ADR-029 — enrichWorker emits media columns only for the tables whose DDL carries them
+
+- **Status:** Accepted (2026-10-03) · **Phases:** 7 (worker tree) · 10 (parity checklist)
+- **Context:** the Phase-10 parity checklist requires "all 5 dept tables written", so G10.2
+  exercised **all five** department topics for the first time — every earlier gate had used
+  `complaints` (and `traffic`) only. The first `water.sensors.raw.v1` event crashed the consumer:
+
+      psycopg.errors.UndefinedColumn: column "media_bucket" of relation
+      "water_sensor_readings" does not exist
+      … File "/app/enrich.py", line 240, in run_consumer
+          verdict = process_message(msg.topic(), msg.value())
+
+  `build_upsert` emitted `media_bucket`/`media_object_key` for **every** table, but migration 001
+  defines those columns on `nmc_complaints` and `traffic_events` only. The exception escaped the
+  consumer loop and killed the worker process, so `enrichWorker` entered `CrashLoopBackOff` and
+  every department after the first bad one stayed unenriched — a single malformed assumption
+  taking the whole enrichment tier down. `water` and `health` had **never** been written by any
+  gate in this mission.
+- **Decision:** the column list is derived from the table, not assumed. A `MEDIA_TABLES` set
+  (`nmc_complaints`, `traffic_events`) mirrors migration 001 and the media columns are appended
+  only for those tables; the parameter tuple is built the same way so the two lists cannot drift.
+  A regression test asserts the media columns appear **only** where the DDL has them, and that
+  the emitted column count always equals the parameter count for all five tables.
+- **Consequences:** all five departments enrich. The guard is the general one — "the upsert's
+  column list must match the DDL" — so adding a sixth table or a new column now fails a test
+  instead of a pod. Shipped as `phase7c-2` (digest `5bad93aa…`). Note the deeper issue this
+  exposed and did not fix: a per-message DB error currently terminates the process, which is
+  why one bad event took down the tier. Routing an unexpected DB error to the DLQ (or restarting
+  the poll loop without exiting) is the follow-up, deliberately not bundled here.

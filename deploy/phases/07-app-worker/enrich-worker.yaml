@@ -68,7 +68,7 @@ spec:
       containers:
         - name: enrich-worker
           # Rewritten by digest-pins/ to the registry-verified pin (I-5/I-11).
-          image: registry.nagar.internal:5000/nagar-enrich-worker:phase7c-1
+          image: registry.nagar.internal:5000/nagar-enrich-worker:phase7c-2
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

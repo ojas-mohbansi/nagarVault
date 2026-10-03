@@ -165,6 +165,32 @@ def test_upsert_refreshes_enrichment_on_conflict():
     assert "event_id = EXCLUDED.event_id" not in sql  # identity columns stay
 
 
+def test_upsert_media_columns_only_where_the_ddl_has_them():
+    """Regression for the G10.2 worker crash.
+
+    Only nmc_complaints and traffic_events carry media_bucket/media_object_key (migration 001).
+    The upsert used to emit both columns for EVERY table, so the first water/health/ev event
+    raised psycopg.errors.UndefinedColumn inside the consumer loop and killed the worker —
+    taking every later department down with it. Those three topics had never been exercised
+    before G10.2, which is why the suite stayed green.
+    """
+    for table in ("nmc_complaints", "traffic_events"):
+        sql, params = ew.build_upsert(table, envelope(ward="1"), {"ward": "1"})
+        assert "media_bucket" in sql and "media_object_key" in sql, table
+        # 5 identity columns + 2 media + 1 department column
+        assert len(params) == 8, table
+    for table in ("water_sensor_readings", "health_camp_records", "ev_bus_telemetry"):
+        sql, params = ew.build_upsert(table, envelope(sensorId="s1"), {"sensor_id": "s1"})
+        assert "media_bucket" not in sql and "media_object_key" not in sql, table
+        # event_id, source_system, source_record_id, occurred_at, payload, <dept columns>
+        assert len(params) == 6, table
+    # The column list and the value list must stay the same length for every table.
+    for table in ew.MEDIA_TABLES | {"water_sensor_readings", "health_camp_records", "ev_bus_telemetry"}:
+        sql, params = ew.build_upsert(table, envelope(ward="1"), {"ward": "1"})
+        cols = sql.split("INSERT INTO %s (" % table)[1].split(")")[0].split(", ")
+        assert len(cols) == len(params), table
+
+
 def test_process_message_routes(monkeypatch):
     calls = {"upserts": 0, "dlq": 0}
     monkeypatch.setattr(ew, "upsert_batch", lambda ups: calls.__setitem__("upserts", calls["upserts"] + len(ups)))
