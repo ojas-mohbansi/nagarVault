@@ -164,8 +164,10 @@ rollback:
   negative control, with nothing persisted. The reporting path of SECURITY §8 is live:
   PolicyReports carried 1061 results (1027 pass / 34 fail) at Phase-9 close; the 2 in
   **`nagar-system`, a mission namespace** (`Pod/sealed-secrets-controller`, pod-template labels
-  missing) were fixed in the 2026-10-03 closure (mission log G10.8, commit `90cb2cb9`), leaving
-  32 fails in the `kyverno` bundle namespace as a recorded control-plane residual, and the
+  missing) were fixed in the 2026-10-03 closure (mission log G10.8, commit `90cb2cb9`); the
+  `kyverno` bundle namespace was then cut 34 -> 12 (G10.9, commit `42cd7faa`), every live workload
+  there now conforming. The 12 remaining are 4 immutable-selector labels + 8 frozen superseded-
+  ReplicaSet reports, a recorded control-plane residual, and the
   reports-controller
   `/metrics` answers HTTP 200 with 1209 Kyverno series. There is deliberately no Prometheus alert
   on policy violations: Kyverno is not one of ADR-026 §1's scrape jobs, and ADR-026 §3 defers the
