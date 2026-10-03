@@ -3467,6 +3467,64 @@ $ netstat | grep LISTENING | grep -E ':(8000|13000|3300|9090|9093|3100|8443)\b' 
   changes no applied resource and both trees still build.
 - **I-9** — scope: `deploy/phases/09-observability/e2e/fixtures/**`, `docs/PHASES.md`, this log.
 
+### G9.8b — the PolicyViolation event path: the deny is recorded, not just returned
+
+SECURITY §8 promises violations are "admission-denied **and reported**". Each of the three denials
+above left three independent traces — the webhook response, a `Warning/PolicyViolation` Event, and
+Kyverno's own admission log:
+
+```
+$ kubectl get events -A --no-headers | grep -i p9-violation
+default 17m Warning PolicyViolation clusterpolicy/require-image-digest
+  Pod nagar-observability/p9-violation-tag-only: [digest-pinned-app-and-observability] fail (blocked);
+  … Every container image must be pinned by digest (@sha256:…) — I-5.
+  rule digest-pinned-app-and-observability failed at path /spec/containers/0/image/
+default 17m Warning PolicyViolation clusterpolicy/restrict-image-registries
+  Pod nagar-observability/p9-violation-registry: [internal-registry-app-and-observability] fail (blocked);
+  … Images must come from the internal registry — k3d-nagar.localhost:5000 (registry.nagar.internal:5000)
+  only (I-11). rule internal-registry-app-and-observability[0] failed at path /spec/containers/0/image/
+  rule internal-registry-app-and-observability[1] failed at path /spec/containers/0/image/
+default 13m Warning PolicyViolation clusterpolicy/disallow-host-access
+  Pod default/p9-probe-hostnet-kyverno: [no-host-namespaces] fail (blocked); … hostPath volumes,
+  hostNetwork, hostPID and hostIPC are forbidden (SECURITY §5 …) … failed at path /spec/hostNetwork/
+
+$ kubectl get events -A --no-headers | grep -o 'clusterpolicy/[a-z0-9-]*' | sort | uniq -c
+      1 clusterpolicy/disallow-host-access
+      1 clusterpolicy/require-image-digest
+     10 clusterpolicy/require-nagar-labels
+     24 clusterpolicy/require-pod-security-context
+      1 clusterpolicy/restrict-image-registries
+
+$ kubectl -n kyverno logs deploy/kyverno-admission-controller --since=60m \
+    | grep -E 'validation failed|admission request denied' | grep p9-
+09:55:08Z TRC validation.go:125 > validation failed action=Enforce
+    failed rules=["digest-pinned-app-and-observability"] name=p9-violation-tag-only
+    namespace=nagar-observability operation=CREATE policy=require-image-digest
+09:55:08Z INF handlers.go:165 > admission request denied name=p9-violation-tag-only
+    namespace=nagar-observability operation=CREATE
+09:55:08Z TRC validation.go:125 > validation failed action=Enforce
+    failed rules=["internal-registry-app-and-observability"] name=p9-violation-registry
+    namespace=nagar-observability operation=CREATE policy=restrict-image-registries
+09:55:08Z INF handlers.go:165 > admission request denied name=p9-violation-registry
+    namespace=nagar-observability operation=CREATE
+09:58:09Z TRC validation.go:125 > validation failed action=Enforce
+    failed rules=["no-host-namespaces"] name=p9-probe-hostnet-kyverno
+    namespace=default operation=CREATE policy=disallow-host-access
+09:58:09Z INF handlers.go:165 > admission request denied name=p9-probe-hostnet-kyverno
+    namespace=default operation=CREATE
+```
+
+Two notes for whoever runs this next. (1) The per-policy event counts sum `10 + 24 = 34` for the
+baseline findings, exactly the PolicyReport FAIL total above — Events and reports are two views of
+the same findings, so they corroborate rather than merely coexist. (2) `kubectl get events
+--field-selector source=kyverno` returns "No resources found": Kyverno writes these Events without
+that field, so filtering on it silently hides every violation — grep the message instead.
+
+Kyverno's admission controller also confirms `action=Enforce` for each, i.e. these were real
+Enforce decisions, not Audit warnings. Together with the webhook response, PolicyReports and the
+controller's `/metrics`, all four surfaces of the documented reporting path are proven; there is
+still no Prometheus alert on violations by design (not a scrape job, ADR-026 §1).
+
 ### Result — Phase 9 gate green; ledger flipped to Done
 
 All four README gate fixtures have now been exercised: the `PodCrashLooping` drill fired **and
