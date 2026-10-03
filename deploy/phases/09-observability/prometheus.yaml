@@ -6,6 +6,10 @@
 # the rule was written) — there is deliberately no generic "pod with nagar.io/scrape=true"
 # job, because no mission workload exposes /metrics yet; that gap is recorded in
 # ADR-026 §3 and SECURITY §8's note. RBAC is the minimum the pod-role discovery needs.
+#
+# Alert DELIVERY is separate from the alertmanager scrape job below (which only collects
+# Alertmanager's own metrics): the `alerting:` block forwards firing alerts to the
+# Alertmanager service, which is where OPERATIONS §10 says a firing alert is inspected.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -72,6 +76,18 @@ data:
         cluster: nagarvault
     rule_files:
       - /etc/prometheus/rules/*.yaml
+
+    # A firing rule is only half the contract (I-7): the alert must also reach Alertmanager.
+    # Cluster DNS is used directly — the same service-DNS form Grafana's provisioned
+    # Prometheus datasource uses — so delivery needs no second discovery pass and no extra
+    # RBAC. Discovered live in the G9.5 drill: without this block the rule fires in
+    # Prometheus and `/api/v1/alertmanagers` is empty, so Alertmanager showed nothing.
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                - nagar-alertmanager.nagar-observability.svc.cluster.local:9093
+
     scrape_configs:
       - job_name: prometheus
         static_configs:
@@ -270,7 +286,7 @@ spec:
       annotations:
         # Bump when the config/rules ConfigMaps change: the pod template is otherwise
         # byte-identical, so neither the Deployment controller nor Argo rolls the pod.
-        nagar.io/config-rev: "1"
+        nagar.io/config-rev: "2"
       labels:
         app.kubernetes.io/name: nagar-prometheus
         app.kubernetes.io/part-of: nagarvault
