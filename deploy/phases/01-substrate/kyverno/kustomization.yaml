@@ -1,8 +1,10 @@
 # kyverno: the upstream bundle is self-consistent in its native `kyverno` namespace
-# (35 hardcoded namespace references + admission webhook clientConfig) and its pods are
-# natively restricted-compliant (audited in ../../../third_party/README.md — no
-# exemptions, no patches beyond PSS labels on its Namespace). Documented deviation from
-# ARCHITECTURE.md §1, which places Kyverno support in nagar-system.
+# (35 hardcoded namespace references + admission webhook clientConfig). Documented
+# deviation from ARCHITECTURE.md §1, which places Kyverno support in nagar-system.
+# Its Namespace gets the PSS restricted labels (kyverno-patches.yaml) and its four
+# controller pod templates get the policy-required phase label, pod securityContext and
+# CPU limits (kyverno-workload-patches.yaml) — the bundle is NOT natively fully
+# conformant, contrary to an earlier claim corrected in the mission log G10.9.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 # Cross-root reference to deploy/third_party/ (ADR-002 layout): build with
@@ -14,5 +16,6 @@ patches:
     target:
       kind: Namespace
       name: kyverno
+  - path: kyverno-workload-patches.yaml
 components:
   - ../digest-pins

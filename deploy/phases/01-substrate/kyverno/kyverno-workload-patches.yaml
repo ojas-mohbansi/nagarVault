@@ -1,0 +1,100 @@
+# Conformance patches for the Kyverno engine's own four controllers — the 32
+# background-scan `fail` results the 2026-10-03 audit's repaired check surfaced in the
+# `kyverno` namespace. The vendor pod templates lack `nagar.io/phase`, carry no pod-level
+# securityContext, and omit CPU limits; all three are required by the Phase-1 baseline
+# policies, which the upstream bundle never anticipated. third_party stays pristine
+# (ADR-002). These are additive — nothing is removed or relaxed.
+#
+# NOT patched, and why (mission log G10.9): `app.kubernetes.io/part-of: kyverno` is a
+# Deployment *selector* key on all four controllers AND a Service selector key on six
+# Services, including `kyverno-svc` — the failurePolicy=Fail admission webhook Service.
+# `spec.selector` is immutable, so conforming `check-part-of-label` would require deleting
+# and recreating the policy engine's own Deployments (a transient admission outage) and
+# rewriting six Service selectors; the documented git -> Argo apply cannot deliver an
+# immutable-field change at all. Left as the recorded residual rather than forced.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: kyverno
+  name: kyverno-admission-controller
+spec:
+  template:
+    metadata:
+      labels:
+        nagar.io/phase: "1"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kyverno
+          resources:
+            limits:
+              # vendor ships requests.cpu 100m and no CPU cap; a generous limit satisfies
+              # require-resources-limits without throttling the admission hot path.
+              cpu: 1000m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: kyverno
+  name: kyverno-background-controller
+spec:
+  template:
+    metadata:
+      labels:
+        nagar.io/phase: "1"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          resources:
+            limits:
+              cpu: 500m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: kyverno
+  name: kyverno-cleanup-controller
+spec:
+  template:
+    metadata:
+      labels:
+        nagar.io/phase: "1"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          resources:
+            limits:
+              cpu: 500m
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: kyverno
+  name: kyverno-reports-controller
+spec:
+  template:
+    metadata:
+      labels:
+        nagar.io/phase: "1"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          resources:
+            limits:
+              cpu: 500m
