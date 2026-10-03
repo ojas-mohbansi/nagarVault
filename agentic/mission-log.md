@@ -4068,6 +4068,78 @@ namespace has a Kyverno violation; every live workload in `kyverno` conforms; th
 are two structurally-blocked classes in the policy engine's own namespace, each with the exact test
 above. No policy was weakened, disabled or exempted, and no rollback target was deleted.
 
+### G11 — Known-gaps audit: accepted-by-design vs genuinely-open, and the poison-pill fix — 2026-10-04
+
+Each of the eight recorded gaps was read against the ADR or doc section it cites, to separate a
+genuine unresolved defect from a decision the repository deliberately took. Four are
+**accepted-by-design** (changing them would contradict a recorded decision) and four are
+**genuinely open**; one of the open four is a hard environmental bound, and the single
+highest-severity in-scope defect was then fixed and re-proved live.
+
+| Gap | Cited source | Classification |
+|---|---|---|
+| 2 kyverno residual | — | **Closed as far as the invariants allow** (G10.10): two independently verified structural blockers, out of bounds to clear |
+| 3 7-day drift soak | — | **Genuinely open, environmental bound**: the substrate is ~3 days old, so the window cannot have elapsed; no code change can close it |
+| 4 supply-chain controls | SECURITY §7 ("CI (per phase, **not yet built**)") | **Accepted-by-design**: §7 states the target state, not current behaviour; AGENTS §6.3 forbids documenting an aspiration as reality — the gap is the honest record |
+| 5 sealed-secrets key backup | SECURITY §6 / OPERATIONS §7 | **Accepted-by-design**: the drill's key was shredded on purpose (disposable cluster); OPERATIONS §7 documents the offline-vault procedure a production posture would use |
+| 7 disposable single-node substrate | ADR-006 ("single-node data plane **accepted** (with named mitigations)") | **Accepted-by-design**: explicit risk acceptance with named mitigations; not a defect |
+| 8 Day grid not followed | MISSION.md §2 ("days are targets, not walls") | **Accepted-by-design**: the whole build executed in one continuous session with gates honoured in order; the "Day 7" label denotes the final phase, not seven elapsed days |
+| 1 SLM table mis-targeting | ARCHITECTURE §3.4 ("the LLM has no direct database access") + SECURITY §3 | **Genuinely open, contained**: the generated SQL must pass queryService's AST + RBAC gate, and the observed failure produced a correct `403 table-rbac` — a quality issue, not a security hole. Deferred as a scope decision (product quality in `07-app-slm`), not a bound |
+| 6 enrichWorker per-message death | ADR-029 ("the follow-up, deliberately not bundled") | **Genuinely open, high severity — FIXED in this pass** |
+
+**Gap 6 reproduced live before touching anything.** ADR-029's "deeper issue" is a poison pill. An
+`occurredAt` that `handle_message` accepts (it only checks the field is a non-empty *string*) but
+PostgreSQL rejects (`timestamptz NOT NULL` column):
+
+```
+$ produce occurredAt="not-a-timestamp" to nmc.complaints.raw.restricted.v1
+  -> psycopg.errors.InvalidDatetimeFormat: invalid input syntax for type timestamp with time zone:
+     "not-a-timestamp"
+     [the traceback escaped the loop; the offset is committed only AFTER process_message returns,
+      so the same message was re-polled on every restart]
+$ kubectl -n nagar-app get pods   ->  enrich-worker  RESTARTS 0 -> 1 -> 2 -> 3   (CrashLoopBackOff)
+$ kafka-consumer-groups --describe --group enrichWorker
+  nmc.complaints.raw.restricted.v1  16  16  1   (LAG 0 -> 1, member `-` = no live consumer
+```
+
+**The fix** (Phase-7c subtree, no policy or invariant touched): `process_message` wraps the DB write
+and quarantines a **data-level** `psycopg.Error` to the DLQ, acknowledging the message, while
+connection-level failures (`psycopg.OperationalError` / `InterfaceError`) still propagate — a database
+outage is a readiness problem, not the message's fault. `OperationalError` does *not* cover data
+errors (`InvalidDatetimeFormat` is a `DataError`, a sibling), so the guard is keyed on the base
+`psycopg.Error` with the connection classes re-raised. Regression tests added (hermetic):
+`test_data_level_db_error_is_quarantined_not_raised` and `test_connection_error_still_propagates`.
+
+```
+$ cd deploy/phases/07-app-worker/worker && python -m pytest -q    ->  24 passed
+$ kustomize build deploy/phases/07-app-worker                    ->  exit 0  (image @sha256:152b1f14…, I-12)
+$ kubectl apply --dry-run=server                                 ->  exit 0 (admitted by the same webhook)
+$ shipped as mission/nagar-enrich-worker:phase7c-3 sha256:152b1f14… (registry-push header), digest pin updated
+$ Argo nagar-phase7c-worker  ->  Synced Healthy @ be7ef1ab
+```
+
+**Re-proved against the real surface, not by reading.** The poison message was still queued (LAG=1)
+when the fixed worker started, so the recovery is the operator-visible one:
+
+```
+$ kubectl -n nagar-app logs deploy/enrich-worker
+  nmc.complaints.raw.restricted.v1 None -> db-error          (was: process death)
+$ kubectl -n nagar-app get pods   ->  RESTARTS 0             (was: 3 and climbing)
+$ kafka-consumer-groups --describe --group enrichWorker
+  nmc.complaints.raw.restricted.v1  16  16  0   rdkafka-…   (LAG 0, member live)
+$ kafka-console-consumer --topic nmc.complaints.dlq.v1
+  {"dlqReason": "db-error", "detail": "InvalidDatetimeFormat: invalid input syntax for type
+   timestamp with time zone: \"not-a-timestamp\"", "originalTopic": "nmc.complaints.raw.restricted.v1",
+   "raw": "{\"eventId\":\"evt-g11-bad-ts\",…,\"occurredAt\":\"not-a-timestamp\",…}"}  (quarantined)
+$ psql -d nagardb -tAc "SELECT count(*) FROM nmc_complaints WHERE event_id='evt-g11-bad-ts'"  ->  0
+$ psql -d nagardb  5 dept counts  ->  complaints 14 | traffic 2 | water 2 | health 2 | ev 2
+```
+
+**Net effect.** Gap 6 is closed and the tier now survives a bad event the way ARCHITECTURE §3.3's
+contract requires ("malformed events … never crash the loop"). The other three genuinely-open gaps
+stay open for the stated reasons — gap 3 is an elapsed-time bound, gap 1 is a contained quality
+ADR-gated follow-up — and the four accepted-by-design gaps were left exactly as their ADRs decided.
+
 ---
 
 ## Handover report (MISSION.md §5, Day 7 closure) — 2026-10-03
@@ -4187,10 +4259,15 @@ Recorded rather than buried. Each is a real limitation of the shipped state, not
 5. **The Sealed Secrets controller key backup was ephemeral.** The Phase-1 round-trip drill exported
    the key to prove recovery, then shredded it on the disposable cluster. A production posture needs
    an offline vault, and OPERATIONS §7 documents the procedure that would use it.
-6. **enrichWorker still dies on a per-message database error.** ADR-029 fixed the specific
-   `media_bucket` bug and added the regression test, but a `psycopg` error in the consumer loop still
-   terminates the process rather than routing that one message to the DLQ — recorded in ADR-029, not
-   fixed by it.
+6. **enrichWorker's per-message-death defect is CLOSED (was open; fixed in G11, 2026-10-04).**
+   ADR-029 fixed the specific `media_bucket` bug and named the deeper one — a `psycopg` error in the
+   consumer loop terminating the process — as the deliberate follow-up it did not bundle. G11
+   reproduced it live (one `occurredAt` the DB rejected: `InvalidDatetimeFormat`, restarts 0 → 1 → 2 →
+   3 CrashLoopBackOff, `nmc.complaints.raw.restricted.v1` LAG stuck at 1) and fixed it in
+   `process_message`: a data-level psycopg error is now quarantined to the DLQ and the message
+   acknowledged, while connection-level failures still propagate. Shipped as `phase7c-3`; re-proved
+   live against the still-queued poison message — `-> db-error`, restarts 0, LAG 0, the message in the
+   DLQ.
 7. **The substrate is disposable and single-node.** k3d on one host, 16 GB RAM (Docker VM 8.17 GB),
    Kafka and MinIO single-node by risk acceptance (ADR-006). State lives on a host bind-mount, and the
    `~/.wslconfig` raise to 14 GB written on Day 0 is still **pending owner approval** (R1) — the

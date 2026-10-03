@@ -958,3 +958,10 @@ deviation.
   exposed and did not fix: a per-message DB error currently terminates the process, which is
   why one bad event took down the tier. Routing an unexpected DB error to the DLQ (or restarting
   the poll loop without exiting) is the follow-up, deliberately not bundled here.
+- **Amendment (2026-10-04, G11):** the named follow-up landed. `process_message` now quarantines a
+  data-level `psycopg.Error` to the DLQ and acknowledges the message, while connection-level
+  failures (`OperationalError` / `InterfaceError`) still propagate so a DB outage is never drained
+  into the DLQ. Reproduced live first (an `occurredAt` the DB rejected CrashLooped the worker,
+  `nmc.complaints.raw.restricted.v1` LAG stuck at 1) and re-proved after shipping `phase7c-3`
+  (`-> db-error`, restarts 0, LAG 0, the message in the DLQ). This ADR's decision is unchanged; the
+  deferred consequence is now closed.
