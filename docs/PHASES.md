@@ -24,17 +24,17 @@
 
 | # | Phase | Status | Charter (one line) | Skip-consequence |
 |---|---|---|---|---|
-| 0 | Documentation suite | **Done (2026-09-29)** | This suite | impossible (foundation) |
-| 1 | Cluster substrate | **Done (2026-09-29, k3d substrate)** | k3s + namespaces + cert-manager + Sealed Secrets + Kyverno/PSS | **mandatory** (all K8s phases need it) |
-| 2 | GitOps control plane | **Done (2026-09-29, k3d substrate)** | Argo CD app-of-apps + `deploy/` skeleton | self-heal/prune lost; manual `kustomize apply` fallback documented |
-| 3 | Object store & cache | **Done (2026-09-29, k3d substrate)** | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
-| 4 | Messaging | **Done (2026-09-29, k3d substrate)** | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
-| 5 | Relational store | **Done (2026-09-29, k3d substrate)** | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
-| 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
-| 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c Done (2026-09-30, k3d); 7d Done (2026-09-30, k3d); 7e Done (2026-09-30, k3d); 7f Done (2026-09-30, k3d); 7g Done (2026-09-30, k3d)** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
-| 8 | Edge & TLS | **Done (2026-09-30, k3d substrate)** | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
-| 9 | Observability & hardening | **Done (2026-10-03, k3d substrate)** | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
-| 10 | Parity cutover & cleanup | **Complete (2026-10-03, k3d substrate)** | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
+| 0 | Documentation suite | **Done (2026-09-29)** — suite delivered in the Day-0 baseline commit `21472138` (mission log §0.3; no G0.x gate, which covers cluster bring-up) | This suite | impossible (foundation) |
+| 1 | Cluster substrate | **Done (2026-09-29, k3d substrate)** — G1.1–G1.3 in the mission log | k3s + namespaces + cert-manager + Sealed Secrets + Kyverno/PSS | **mandatory** (all K8s phases need it) |
+| 2 | GitOps control plane | **Done (2026-09-29, k3d substrate)** — G2.1–G2.2 in the mission log | Argo CD app-of-apps + `deploy/` skeleton | self-heal/prune lost; manual `kustomize apply` fallback documented |
+| 3 | Object store & cache | **Done (2026-09-29, k3d substrate)** — G3.1–G3.4 in the mission log | MinIO + Redis + bucket Job | ingestion/backend phases (7) can't deploy |
+| 4 | Messaging | **Done (2026-09-29, k3d substrate)** — G4.1–G4.6 in the mission log | Strimzi Kafka + topics + DLQ | ingestion + enrichWorker can't deploy |
+| 5 | Relational store | **Done (2026-09-29, k3d substrate)** — G5.1–G5.6 in the mission log | CNPG 1.30.1 + migration Job + backups + restore drill | auth/query/admin/enrich can't deploy |
+| 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** — G6.1–G6.6 in the mission log | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
+| 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c Done (2026-09-30, k3d); 7d Done (2026-09-30, k3d); 7e Done (2026-09-30, k3d); 7f Done (2026-09-30, k3d); 7g Done (2026-09-30, k3d)** — gates G7a.1–G7a.7, G7b.1–G7b.7, G7c.1–G7c.5, G7d.1–G7d.7, G7e.1–G7e.5, G7f.1–G7f.5, G7g.1–G7g.3 in the mission log (§2 Phase 7 below lists them per micro) | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
+| 8 | Edge & TLS | **Done (2026-09-30, k3d substrate)** — G8.1–G8.7 in the mission log | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
+| 9 | Observability & hardening | **Done (2026-10-03, k3d substrate)** — G9.0–G9.8 in the mission log | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
+| 10 | Parity cutover & cleanup | **Complete (2026-10-03, k3d substrate)** — G10.0–G10.7 in the mission log | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory** (the cutover is what certifies the shipped state) |
 
 ## 2. Phase charters
 
