@@ -3667,6 +3667,13 @@ run is the verification that they hold against the live cluster. Next subphase: 
 checklist**, then Compose/.env/Dockerfile verification (G10.3–G10.5), the README rewrite (G10.6), and
 the ledger flip (G10.7).
 
+**Closure note (2026-10-03), recorded honestly.** The `6/6 PASS` above is **inherited from that
+earlier live run, not re-witnessed at closure**: the closure pass restored this log after a splice
+truncated it, re-proved its integrity, and re-queried the live warehouse — `nmc_complaints=7`,
+`traffic_events=2`, `water_sensor_readings=2`, `health_camp_records=2`, `ev_bus_telemetry=2`, which
+corroborate step 4's `6 -> 7` and item 2's table counts — but did **not** re-run the §11 script. The
+gate stands proven by the execution recorded in this section, not by a second run.
+
 ### G10.2 — Parity checklist: nine items, each proven live
 
 The checklist is the phase's substance, so every line below is measured, not cited. Items 1 and 2

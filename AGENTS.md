@@ -145,13 +145,13 @@ verified on the disposable k3d substrate (see `docs/PHASES.md` for the ledger an
 absence of any Compose remnant (ADR-013) — the repository is fully GitOps-shipped with no
 Compose in the deployment path.**
 
-- The runtime substrate today is **the k3d cluster reconciled by Argo CD** (Phases 1–8). The
+- The runtime substrate today is **the k3d cluster reconciled by Argo CD** (Phases 1–10). The
   manifests in `docs/manifests/exemplars/` remain canonical reference shapes for review, not the
   reconciled source — `deploy/phases/` is.
 - `docs/PHASES.md` §1 defines each phase's charter, exit criteria, rollback, and skip-consequence.
-- Until Phase 10 completes, this repository is in **transition**: the frozen legacy stack is gone
-  (rebuilt from scratch per ADR-013), the parity cutover checklist and README rewrite are pending,
-  and that is intentional and documented.
+- The 2026-09-29 rebuild (ADR-013) is the **shipped state**, not a transition: the frozen legacy
+  stack is gone, the parity cutover checklist is signed, and the README describes the GitOps path
+  only.
 
 ---
 

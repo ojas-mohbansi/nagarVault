@@ -33,8 +33,8 @@
 | 6 | Vector & LLM tier | **Done (2026-09-29, k3d substrate)** | Qdrant + Ollama + model Job + schemaIndexer | slm + RAG features can't deploy |
 | 7a–7g | App tier (per service) | **7a Done (2026-09-30, k3d); 7b Done (2026-09-30, k3d); 7c Done (2026-09-30, k3d); 7d Done (2026-09-30, k3d); 7e Done (2026-09-30, k3d); 7f Done (2026-09-30, k3d); 7g Done (2026-09-30, k3d)** | Deploy each of the 7 app components in dependency order | per-service; UI phases depend on 7a–7d |
 | 8 | Edge & TLS | **Done (2026-09-30, k3d substrate)** | Traefik routes, cert-manager certs, CORS + rate-limit middleware | platform reachable only via port-forward workarounds |
-| 9 | Observability & hardening | Not started | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
-| 10 | Parity cutover & cleanup | Not started | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
+| 9 | Observability & hardening | **Done (2026-10-03, k3d substrate)** | Prometheus + Loki + full Kyverno set + NetworkPolicy completion | blind ops; policy gaps — strongly discouraged |
+| 10 | Parity cutover & cleanup | **Complete (2026-10-03, k3d substrate)** | E2E parity gate → delete Compose & Dockerfiles → README rewrite | **mandatory to close the transition** |
 
 ## 2. Phase charters
 
