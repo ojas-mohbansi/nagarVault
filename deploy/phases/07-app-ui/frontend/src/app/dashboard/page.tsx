@@ -6,6 +6,20 @@ import { useRouter } from "next/navigation";
 type Whoami = { sub: string; role: string; exp: number };
 type AskResult = { sql: string; rows: Record<string, unknown>[]; row_count: number; role: string };
 
+// queryService gate verdicts arrive as a structured detail ({reason, verdict}) via the BFF.
+// Render it as text: an object child would make React throw and unmount the page, so the
+// error alert would never be announced (WCAG 3.3.1).
+function errorText(detail: unknown, status: number): string {
+  if (typeof detail === "string" && detail) return detail;
+  if (detail && typeof detail === "object") {
+    const d = detail as { reason?: string; verdict?: string; detail?: string };
+    const reason = d.reason ?? d.detail;
+    if (reason) return [reason, d.verdict].filter(Boolean).join(" ");
+    return JSON.stringify(detail);
+  }
+  return `ask failed (${status})`;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [me, setMe] = useState<Whoami | null>(null);
@@ -39,7 +53,7 @@ export default function DashboardPage() {
       if (r.ok) {
         setResult(j as AskResult);
       } else {
-        setError(j.detail ?? `ask failed (${r.status})`);
+        setError(errorText(j.detail, r.status));
       }
     } catch {
       setError("slm service unreachable");
@@ -67,18 +81,30 @@ export default function DashboardPage() {
 
       <h2>Ask the warehouse</h2>
       <form onSubmit={ask}>
-        <textarea
-          rows={3}
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="e.g. How many open complaints are there in each ward?"
-          maxLength={2000}
-          required
-        />
+        <label className="field-label">
+          Ask a question about the warehouse
+          <textarea
+            rows={3}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="e.g. How many open complaints are there in each ward?"
+            maxLength={2000}
+            required
+            aria-describedby="ask-hint"
+          />
+        </label>
+        <p id="ask-hint" className="muted">
+          Tip: ask for counts, totals, or breakdowns — the warehouse only answers{
+            " "}SQL SELECT questions.
+        </p>
         <button disabled={asking}>{asking ? "Thinking…" : "Ask"}</button>
       </form>
 
-      {error && <p className="err">{error}</p>}
+      {error && (
+        <p className="err" role="alert">
+          Error: {error}
+        </p>
+      )}
 
       {result && (
         <section>

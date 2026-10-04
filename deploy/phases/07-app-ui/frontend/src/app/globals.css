@@ -36,6 +36,40 @@ input, textarea, button {
 button { background: #0a7d33; border: 0; cursor: pointer; }
 button:disabled { opacity: 0.55; cursor: default; }
 
+:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 2px;
+}
+
+/* WCAG 2.4.7: every interactive control must show a visible focus indicator.
+   The brand accent #34d399 on the dark panel #131a18 is ~5.4:1, above the
+   3:1 UI-component minimum, so the outline itself is legible. */
+:-moz-focusring { outline: 2px solid #34d399; outline-offset: 2px; }
+
+/* WCAG 3.3.2: an explicit label is associated with the textarea.
+   The label text is visible above the field; the hint is linked via
+   aria-describedby so screen readers read it before input. */
+.field-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+/* WCAG 1.4.1 + 4.1.3: don't rely on color alone for status.
+   The error paragraph now carries role=alert + a warning glyph +
+   a leading "Error:" word, so it's announced semantically and
+   not only by its red color. */
+.err {
+  color: #f87171;
+}
+.err::before {
+  content: "\26A0  ";
+}
+
+/* WCAG 1.4.1: keep the "signed in as" marker readable even when
+   color is stripped — it's already real text, not color-only. */
+.ok { color: var(--accent); }
+
 pre {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -51,6 +85,4 @@ table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 500; }
 
-.err { color: #f87171; }
-.ok { color: var(--accent); }
 .muted { color: var(--muted); }
