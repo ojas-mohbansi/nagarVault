@@ -4277,6 +4277,10 @@ Recorded rather than buried. Each is a real limitation of the shipped state, not
    whole build executed in one continuous session with gates honoured in order, so the "Day 7" label
    on this report denotes the final phase, not seven elapsed days.
 
+> **Status re-check (2026-10-04):** each of the eight gaps below was re-read against the doc/ADR
+> section it cites and given a current status in **G12 — gap-ledger status re-check and verification
+> sweep** (at the end of this journal). No accepted-by-design decision was rewritten there.
+
 ### Extension-sprint recommendations
 
 In MISSION.md §2's priority order, with the two this session surfaced promoted where they belong:
@@ -4351,3 +4355,115 @@ the 8 ReplicaSet reports are owned by superseded `desired=0` ReplicaSets — and
 residual is not clearable through git → Argo without destroying rollback history. Two criteria have
 *observational* limits that no code change can close: the 7-day drift window (cluster is 2d21h old)
 and the unproven restart-from-scratch runbook.
+
+---
+
+## G12 — Gap-ledger status re-check and verification sweep — 2026-10-04
+
+Appended after G11's audit. **No accepted-by-design decision is rewritten, no policy is weakened,
+and no ADR is added** — this section records what each of the eight gaps *is now*, the doc/ADR
+section it rests on, and the fresh evidence gathered from a host with **no cluster access and no
+running Docker engine**. Every in-cluster or daemon-dependent check below is marked **unverifiable
+from this host** rather than simulated.
+
+### Gap status now
+
+| Gap | Status now | Rests on |
+|---|---|---|
+| 1 SLM table mis-targeting | **Code-complete; NOT shipped.** The fix is in `07-app-slm` and green; the image rebuild, registry push and digest re-pin are **blocked** (Docker engine + local registry are down), so the cluster still runs the previous SLM prompt. | ARCHITECTURE §3.4 + SECURITY §3 (the generated SQL still has no database access of its own and must pass the queryService gate) |
+| 2 kyverno residual | **Unchanged, recorded not exempted**: 4 non-conformable immutable-selector labels + 8 frozen reports on superseded `desired=0` ReplicaSets, all confined to the `kyverno` bundle namespace; no mission namespace affected. | G10.9 / G10.10; CONVENTIONS §5 |
+| 3 7-day Argo drift soak | **Open, environmental bound**: the substrate is ~3 days old, so the window cannot have elapsed; no code change closes it. | MISSION.md §6 criterion 3 |
+| 4 supply-chain controls (SBOM / scan / sign) | **Accepted-by-design, target state**: §7 states *"CI (per phase, not yet built)"*, so this records the target, not a current behaviour. | **SECURITY §7** |
+| 5 sealed-secrets controller key backup | **Accepted-by-design**: the drill's key was shredded on purpose on the disposable cluster; the offline-vault procedure a production posture would use is documented. | **SECURITY §6 / OPERATIONS §7** |
+| 6 enrichWorker per-message death | **CLOSED and RE-CONFIRMED this pass** (see below). | ADR-029 + ARCHITECTURE §3.3 |
+| 7 disposable single-node substrate | **Accepted-by-design**: single-node Kafka/MinIO is an explicit risk acceptance with named mitigations; the `.wslconfig` 14 GB raise is still pending owner approval (R1). | **ADR-006** |
+| 8 "Day grid" not followed | **Not a defect**: days are targets, not walls; gates were honoured in order in one continuous session. | **MISSION.md §2** |
+
+### Gap 6 — re-confirmed (evidence only, no code change)
+
+The guard read in `deploy/phases/07-app-worker/worker/enrich.py`:
+
+* `DB_CONNECTION_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)` — connection-level
+  failures, re-raised so a database **outage** is not drained into the DLQ.
+* `process_message(topic, raw) -> "upserted" | "db-error" | "dlq"` wraps the DB write; a **data-level**
+  `psycopg.Error` (any non-connection psycopg error) clears the upserts, quarantines the message to
+  `nmc.complaints.dlq.v1` and lets it be acknowledged, so one bad event can no longer become a
+  poison-pill CrashLoopBackOff.
+
+The two regression tests named in G11 are present and pass:
+
+```
+$ cd deploy/phases/07-app-worker/worker && python -m pytest tests -q      ->  24 passed in 0.51s   (exit 0)
+$ python -m pytest tests -q -k "quarantined or propagates"                ->  2 passed, 22 deselected (exit 0)
+      test_data_level_db_error_is_quarantined_not_raised
+      test_connection_error_still_propagates
+```
+
+### Gap 1 — code-complete, deterministic test green, ship blocked
+
+The prompt/retrieval fix landed in `deploy/phases/07-app-slm/slm/app.py` (Phase-7d subtree, I-9):
+`qdrant_search` now surfaces each hit's `table`, `build_prompt` labels every context block
+(`[table: <name>]` / `[schema overview]`), the prompt carries an explicit **choose-one-table-from-context**
+rule plus a `` `-- no relevant table` `` sentinel instead of guessing, and `TOP_K` rose 5 → 8 so the
+target table's docs stay in context. Untouched: the `/ask` flow, JWT inheritance, `extract_sql`, the
+port (4004) and the queryService AST/RBAC gate — generated SQL must still pass that gate. No port,
+topic, bucket or table changed, so no ADR is required.
+
+```
+$ cd deploy/phases/07-app-slm/slm && python -m pytest tests -q   ->  24 passed  (21 before; +3 regression tests)
+$ kustomize build deploy/phases/07-app-slm                        ->  exit 0   (I-12)
+```
+
+**Blocked ship step — reported, not simulated.** The Docker engine is not running on this host and
+the local registry is unreachable, so the Dockerfile rebuild, the push of the next tag
+(`phase7d-3`), the `Docker-Content-Digest` read and the digest re-pin in
+`deploy/phases/07-app-slm/digest-pins/kustomization.yaml` **were not performed**:
+
+```
+$ docker info --format '{{.ServerVersion}}'
+  failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine;
+  check if the path is correct and if the daemon is running
+$ curl -s -o /dev/null -w '%{http_code}' http://localhost:35000/v2/   ->  000
+```
+
+The pin therefore still resolves to the previous image —
+`mission/nagar-slm-service:phase7d-2`, `sha256:c83f6435c28722116984457e71c949cb261380e776de972bc0974305e242726b`
+— so **the cluster still runs the previous SLM prompt.** The pin was deliberately left untouched
+because there is no real digest to pin to; the fix cannot reach the cluster until the daemon and
+registry return.
+
+### Verification sweep run this pass (from this host)
+
+| Check | Command | Result |
+|---|---|---|
+| Kustomize trees (I-12) | `kustomize build --load-restrictor LoadRestrictionsNone` over every `deploy/**/kustomization.yaml` | **41/41 build, 0 fail** |
+| Worker suite | `python -m pytest tests -q` (`07-app-worker/worker`) | **24 passed**, exit 0 |
+| Admin suite | `python -m pytest tests -q` (`07-app-admin/admin`) | **14 passed**, exit 0 |
+| Auth suite | `python -m pytest tests -q` (`07-app-auth/auth`) | **22 passed**, exit 0 |
+| Query suite | `python -m pytest tests -q` (`07-app-query/query`) | **29 passed**, exit 0 |
+| SLM suite | `python -m pytest tests -q` (`07-app-slm/slm`) | **24 passed**, exit 0 |
+| Ingestion suite | `node --test tests/ingestion.test.js tests/presign-url.test.js` | **10 pass / 0 fail**, exit 0 |
+| Frontend BFF suite | `npm test` (`07-app-ui/frontend`) | **7 pass / 0 fail**, exit 0 |
+| vault-ui proxy suite | `node --test tests/proxy.test.mjs` (`07-app-ui/vault-ui`) | **5 pass / 0 fail**, exit 0 |
+
+The ingestion suite has **no `npm test` script**; the canonical invocation is the one G7e used
+(`node --test tests/ingestion.test.js tests/presign-url.test.js`). Note that `node --test tests/`
+(a bare directory argument) fails on Node 22 with `Cannot find module '…/ingestion/tests'` + `not ok 1
+tests` — that is a runner-invocation artefact, not a suite failure; the same two files pass 10/10 when
+named explicitly.
+
+**Unverifiable from this host (not run, not simulated):**
+
+* **Client-side dry-run apply** — `kubectl apply --dry-run=client -k <tree>` needs API-group discovery
+  from a live server even with `--validate=false`, so with no reachable cluster it fails:
+  `unable to recognize "deploy/phases/07-app-slm": Get "http://localhost:8080/api?timeout=32s": ...`.
+  The manifests are unchanged this pass; `kustomize build` (above) is the strongest host-local proof.
+* **Everything in-cluster** — the Argo drift soak, the OPERATIONS §11 smoke, the in-cluster e2e suites,
+  the Kyverno policy reports, and the SLM image ship/pull. The kubeconfig still points at the retired
+  k3d server (`host.docker.internal:62398`), which no longer answers.
+
+**Net effect.** Gap 6 is re-confirmed closed. Gap 1 is code-complete with its deterministic
+regression tests green, but **not shipped** — the cluster still runs the previous SLM prompt until the
+Docker engine and local registry are restored and the digest re-pinned. Gaps 2, 3, 5, 7 and 8 keep the
+status G11 assigned them; gap 4 remains the SECURITY §7 target state. No accepted-by-design decision
+was rewritten and no ADR was added.
