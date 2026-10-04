@@ -4362,15 +4362,16 @@ and the unproven restart-from-scratch runbook.
 
 Appended after G11's audit. **No accepted-by-design decision is rewritten, no policy is weakened,
 and no ADR is added** — this section records what each of the eight gaps *is now*, the doc/ADR
-section it rests on, and the fresh evidence gathered from a host with **no cluster access and no
-running Docker engine**. Every in-cluster or daemon-dependent check below is marked **unverifiable
-from this host** rather than simulated.
+section it rests on, and the fresh evidence gathered from a host that **started the sweep with no
+cluster access and no running Docker engine**. Every in-cluster or daemon-dependent check is either
+run for real once Docker Desktop (and with it the `k3d-nagar` cluster) came back up, or marked
+**unverifiable from this host** — never simulated.
 
 ### Gap status now
 
 | Gap | Status now | Rests on |
 |---|---|---|
-| 1 SLM table mis-targeting | **Code-complete; NOT shipped.** The fix is in `07-app-slm` and green; the image rebuild, registry push and digest re-pin are **blocked** (Docker engine + local registry are down), so the cluster still runs the previous SLM prompt. | ARCHITECTURE §3.4 + SECURITY §3 (the generated SQL still has no database access of its own and must pass the queryService gate) |
+| 1 SLM table mis-targeting | **Code-complete and SHIPPED to the registry** (`phase7d-3`, digest pinned, pull-verified in-cluster). The running Deployment still reads the previous digest until the updated pin reaches the git mirror and Argo reconciles. | ARCHITECTURE §3.4 + SECURITY §3 (the generated SQL still has no database access of its own and must pass the queryService gate) |
 | 2 kyverno residual | **Unchanged, recorded not exempted**: 4 non-conformable immutable-selector labels + 8 frozen reports on superseded `desired=0` ReplicaSets, all confined to the `kyverno` bundle namespace; no mission namespace affected. | G10.9 / G10.10; CONVENTIONS §5 |
 | 3 7-day Argo drift soak | **Open, environmental bound**: the substrate is ~3 days old, so the window cannot have elapsed; no code change closes it. | MISSION.md §6 criterion 3 |
 | 4 supply-chain controls (SBOM / scan / sign) | **Accepted-by-design, target state**: §7 states *"CI (per phase, not yet built)"*, so this records the target, not a current behaviour. | **SECURITY §7** |
@@ -4399,7 +4400,7 @@ $ python -m pytest tests -q -k "quarantined or propagates"                ->  2 
       test_connection_error_still_propagates
 ```
 
-### Gap 1 — code-complete, deterministic test green, ship blocked
+### Gap 1 — code-complete, deterministic test green, image shipped
 
 The prompt/retrieval fix landed in `deploy/phases/07-app-slm/slm/app.py` (Phase-7d subtree, I-9):
 `qdrant_search` now surfaces each hit's `table`, `build_prompt` labels every context block
@@ -4414,23 +4415,38 @@ $ cd deploy/phases/07-app-slm/slm && python -m pytest tests -q   ->  24 passed  
 $ kustomize build deploy/phases/07-app-slm                        ->  exit 0   (I-12)
 ```
 
-**Blocked ship step — reported, not simulated.** The Docker engine is not running on this host and
-the local registry is unreachable, so the Dockerfile rebuild, the push of the next tag
-(`phase7d-3`), the `Docker-Content-Digest` read and the digest re-pin in
-`deploy/phases/07-app-slm/digest-pins/kustomization.yaml` **were not performed**:
+**Ship step completed in the same pass once the Docker engine was started.** The engine was down at
+the start of the sweep; Docker Desktop was launched, which restored the daemon and the `k3d-nagar`
+cluster's registry container (`k3d-nagar.localhost`, `registry:2`, `localhost:35000`), after which the
+image was rebuilt, pushed, digest-pinned and pull-verified:
 
 ```
-$ docker info --format '{{.ServerVersion}}'
-  failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine;
-  check if the path is correct and if the daemon is running
-$ curl -s -o /dev/null -w '%{http_code}' http://localhost:35000/v2/   ->  000
+$ docker build --provenance=false --sbom=false -f deploy/phases/07-app-slm/slm/Dockerfile \
+    -t localhost:35000/mission/nagar-slm-service:phase7d-3 deploy/phases/07-app-slm      ->  exit 0
+$ docker push localhost:35000/mission/nagar-slm-service:phase7d-3
+  phase7d-3: digest: sha256:c4bfbb09732e893c00f50e107dbde8376165c7ab2570c700c79a3c5d76ca2085 size: 1812
+$ curl -sI -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+    http://localhost:35000/v2/mission/nagar-slm-service/manifests/phase7d-3
+  Content-Type: application/vnd.oci.image.manifest.v1+json
+  Docker-Content-Digest: sha256:c4bfbb09732e893c00f50e107dbde8376165c7ab2570c700c79a3c5d76ca2085   (agrees with
+    `docker image inspect … RepoDigests`)  — a single manifest, not an index: unambiguous to pin
+$ kustomize build deploy/phases/07-app-slm   ->  exit 0; renders
+  image: k3d-nagar.localhost:5000/mission/nagar-slm-service@sha256:c4bfbb09732e893c00f50e107dbde8376165c7ab2570c700c79a3c5d76ca2085
+$ kubectl apply --dry-run=client -k deploy/phases/07-app-slm   ->  exit 0  (service/deployment/PDB/netpol configured)
+$ kubectl apply --dry-run=server -k deploy/phases/07-app-slm   ->  exit 0
+$ docker exec k3d-nagar-server-0 crictl pull \
+    k3d-nagar.localhost:5000/mission/nagar-slm-service@sha256:c4bfbb09…  ->  exit 0  (registry round-trip, I-11)
 ```
 
-The pin therefore still resolves to the previous image —
-`mission/nagar-slm-service:phase7d-2`, `sha256:c83f6435c28722116984457e71c949cb261380e776de972bc0974305e242726b`
-— so **the cluster still runs the previous SLM prompt.** The pin was deliberately left untouched
-because there is no real digest to pin to; the fix cannot reach the cluster until the daemon and
-registry return.
+The pin in `deploy/phases/07-app-slm/digest-pins/kustomization.yaml` now resolves to `phase7d-3`
+(`sha256:c4bfbb09…`), replacing the superseded `phase7d-2` (`sha256:c83f6435…`).
+
+**Not yet reconciled to the cluster (I-1).** The live Deployment still pins the previous digest
+(`k3d-nagar.localhost:5000/mission/nagar-slm-service@sha256:c83f6435…`); the new pin is committed to
+git but **not pushed to the in-cluster git mirror**, so Argo has nothing new to reconcile. No
+imperative apply or rollout was used — cluster state must arrive from git. Until the pin is pushed,
+the cluster still runs the previous SLM prompt even though the new image is in the registry and
+pullable.
 
 ### Verification sweep run this pass (from this host)
 
@@ -4452,18 +4468,21 @@ The ingestion suite has **no `npm test` script**; the canonical invocation is th
 tests` — that is a runner-invocation artefact, not a suite failure; the same two files pass 10/10 when
 named explicitly.
 
-**Unverifiable from this host (not run, not simulated):**
+**Cluster reached later in the same pass.** Docker Desktop coming up also restarted the `k3d-nagar`
+cluster, so the `kubectl apply` dry-runs and the registry round-trip above were run for real (they had
+been unverifiable earlier in the sweep, when only `kustomize build` was possible). One environment
+wrinkle, recorded because it will bite the next operator: the kubeconfig's
+`server: https://host.docker.internal:62398` does not resolve to the load balancer from this host, so
+the in-cluster checks were run against `--server=https://127.0.0.1:62398 --insecure-skip-tls-verify=true`
+(the LB publishes on `0.0.0.0:62398`).
 
-* **Client-side dry-run apply** — `kubectl apply --dry-run=client -k <tree>` needs API-group discovery
-  from a live server even with `--validate=false`, so with no reachable cluster it fails:
-  `unable to recognize "deploy/phases/07-app-slm": Get "http://localhost:8080/api?timeout=32s": ...`.
-  The manifests are unchanged this pass; `kustomize build` (above) is the strongest host-local proof.
-* **Everything in-cluster** — the Argo drift soak, the OPERATIONS §11 smoke, the in-cluster e2e suites,
-  the Kyverno policy reports, and the SLM image ship/pull. The kubeconfig still points at the retired
-  k3d server (`host.docker.internal:62398`), which no longer answers.
+**Still unverifiable from this host (not run, not simulated):** the Argo 7-day drift soak, the
+OPERATIONS §11 smoke (needs the seeded admin), and the in-cluster e2e suites. Separately, the new pin
+is **not yet reconciled** — see the ship note above.
 
-**Net effect.** Gap 6 is re-confirmed closed. Gap 1 is code-complete with its deterministic
-regression tests green, but **not shipped** — the cluster still runs the previous SLM prompt until the
-Docker engine and local registry are restored and the digest re-pinned. Gaps 2, 3, 5, 7 and 8 keep the
-status G11 assigned them; gap 4 remains the SECURITY §7 target state. No accepted-by-design decision
-was rewritten and no ADR was added.
+**Net effect.** Gap 6 is re-confirmed closed. Gap 1 is code-complete with its deterministic regression
+tests green, and the image is **built, pushed, digest-pinned and pull-verified in-cluster**
+(`phase7d-3`); the running Deployment still reads the previous digest until the updated pin is pushed
+to the git mirror and Argo reconciles, so the cluster does not yet execute the new prompt. Gaps 2, 3,
+5, 7 and 8 keep the status G11 assigned them; gap 4 remains the SECURITY §7 target state. No
+accepted-by-design decision was rewritten and no ADR was added.
