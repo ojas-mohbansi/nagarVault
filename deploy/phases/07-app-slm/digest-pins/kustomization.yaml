@@ -6,9 +6,11 @@ kind: Component
 # via localhost:35000, digest read from the registry header (Docker-Content-Digest) and
 # machine-compared against this file before landing.
 #   mission/nagar-slm-service:phase7d-1 (superseded: prompt hardened after live E2E)
-#   mission/nagar-slm-service:phase7d-2
+#   mission/nagar-slm-service:phase7d-2 (superseded: table-selection fix, gap 1)
 #     sha256:c83f6435c28722116984457e71c949cb261380e776de972bc0974305e242726b
+#   mission/nagar-slm-service:phase7d-3 (gap 1: table-labeled context + selection rule, TOP_K 5->8)
+#     sha256:c4bfbb09732e893c00f50e107dbde8376165c7ab2570c700c79a3c5d76ca2085
 images:
   - name: registry.nagar.internal:5000/nagar-slm-service
     newName: k3d-nagar.localhost:5000/mission/nagar-slm-service
-    digest: sha256:c83f6435c28722116984457e71c949cb261380e776de972bc0974305e242726b
+    digest: sha256:c4bfbb09732e893c00f50e107dbde8376165c7ab2570c700c79a3c5d76ca2085

@@ -122,19 +122,68 @@ def test_ask_returns_sql_and_rows(client, monkeypatch):
     assert seen["bearer"] == token()
 
 
-def test_prompt_carries_context_rules_and_question(client, monkeypatch):
+def _capture_prompt(client, monkeypatch, contexts, response="SELECT 1"):
     captured = {}
     monkeypatch.setattr(slm, "ollama_embed", lambda texts: [[0.2] * 1024])
-    monkeypatch.setattr(slm, "qdrant_search",
-                        lambda vector, top_k: [{"text": "CTX-DOC", "score": 0.8}])
-    monkeypatch.setattr(slm, "ollama_generate", lambda prompt: captured.update(prompt=prompt) or "SELECT 1")
+    monkeypatch.setattr(slm, "qdrant_search", lambda vector, top_k: contexts)
+    monkeypatch.setattr(slm, "ollama_generate", lambda prompt: captured.update(prompt=prompt) or response)
     monkeypatch.setattr(slm, "query_forward", lambda sql, bearer: (200, {"rows": [], "row_count": 0, "role": "nmc_officer"}))
     client.post("/ask", json={"question": "HOW-MANY-COMPLAINTS"}, headers=auth(token()))
-    p = captured["prompt"]
+    return captured["prompt"]
+
+
+def test_prompt_carries_context_rules_and_question(client, monkeypatch):
+    p = _capture_prompt(client, monkeypatch, [{"text": "CTX-DOC", "table": None, "score": 0.8}])
     assert "CTX-DOC" in p                      # schema context injected (RAG)
     assert "HOW-MANY-COMPLAINTS" in p          # the question
     assert "SELECT" in p                       # SELECT-only rule
     assert "name, phone, email, address, aadhaar" in p  # PII denylist surfaced to the model
+
+
+def test_prompt_labels_each_context_block_with_its_table(client, monkeypatch):
+    """Gap 1: context blocks must carry a concrete table name so the model selects from
+    named tables rather than guessing at unattributed prose."""
+    p = _capture_prompt(client, monkeypatch, [
+        {"text": "health camps run monthly", "table": "health_camp_records", "score": 0.9},
+        {"text": "warehouse overview", "table": None, "score": 0.5},
+    ])
+    assert "[table: health_camp_records]" in p
+    assert "[schema overview]" in p
+    assert "[table: health_camp_records] health camps run monthly" in p
+
+
+def test_prompt_enforces_table_selection_and_no_guess_sentinel(client, monkeypatch):
+    """Gap 1: the prompt must (a) restrict the model to context tables, (b) forbid inventing
+    a table, and (c) offer a sentinel so a vague question yields no guess."""
+    p = _capture_prompt(client, monkeypatch, [{"text": "c", "table": "nmc_complaints", "score": 0.9}])
+    assert "Choose exactly ONE table" in p
+    assert "Never query a table that does not appear" in p
+    assert "Restrict yourself to tables named in the schema context" in p
+    assert "-- no relevant table" in p
+    assert "Do not guess a table" in p
+
+
+def test_context_table_sql_flows_through_gate_unchanged(client, monkeypatch):
+    """A model that answers with the context table's SQL reaches query_forward verbatim
+    (fences stripped by extract_sql) under the CALLER's token — the gate is untouched."""
+    seen = {}
+    monkeypatch.setattr(slm, "ollama_embed", lambda texts: [[0.4] * 1024])
+    monkeypatch.setattr(slm, "qdrant_search", lambda vector, top_k: [
+        {"text": "water sensor readings", "table": "water_sensor_readings", "score": 0.9}])
+    monkeypatch.setattr(slm, "ollama_generate",
+                        lambda prompt: "```sql\nSELECT count(*) FROM water_sensor_readings\n```")
+
+    def fake_forward(sql, bearer):
+        seen["sql"], seen["bearer"] = sql, bearer
+        return 200, {"rows": [{"count": 3}], "row_count": 1, "role": "nmc_officer"}
+
+    monkeypatch.setattr(slm, "query_forward", fake_forward)
+    t = token()
+    r = client.post("/ask", json={"question": "how many water readings"}, headers=auth(t))
+    assert r.status_code == 200, r.text
+    assert r.json()["sql"] == "SELECT count(*) FROM water_sensor_readings"
+    assert seen["sql"] == "SELECT count(*) FROM water_sensor_readings"
+    assert seen["bearer"] == t  # RBAC inheritance preserved
 
 
 def test_generate_request_shape():
@@ -154,7 +203,9 @@ def test_retrieval_uses_expected_top_k(client, monkeypatch):
     monkeypatch.setattr(slm, "ollama_generate", lambda prompt: "")
     monkeypatch.setattr(slm, "query_forward", lambda sql, bearer: (200, {"rows": [], "row_count": 0, "role": "x"}))
     client.post("/ask", json={"question": "q"}, headers=auth(token()))
-    assert seen["k"] == 5
+    # Recall raised from 5 to 8 so the target table's docs stay in context (Gap 1).
+    assert seen["k"] == 8
+    assert seen["k"] == slm.TOP_K
 
 
 # --------------------------------------------------------------------------- SQL extraction

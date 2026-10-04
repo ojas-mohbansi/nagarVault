@@ -7,8 +7,10 @@
 # temperature=0, "think": false):
 #   GET  /         liveness (public)
 #   GET  /health   ollama/qdrant/query status (public; 503 when any is down)
-#   POST /ask      JWT; embed the question (bge-m3, /api/embed) -> RAG top-5 from qdrant
-#                  nagar_schema -> prompt with schema context + SELECT-only + PII rules ->
+#   POST /ask      JWT; embed the question (bge-m3, /api/embed) -> RAG top-k from qdrant
+#                  nagar_schema (each block labeled with its table; the prompt must select a
+#                  table present in context or emit the `-- no relevant table` sentinel) ->
+#                  prompt with schema context + SELECT-only + PII rules ->
 #                  qwen3:1.7b /api/generate (stream=false, think=false, temperature=0) ->
 #                  extract the SQL (strips ```sql fences and <think> blocks) -> forward to
 #                  queryService /query WITH THE CALLER'S BEARER TOKEN (RBAC inheritance:
@@ -38,7 +40,10 @@ QUERY_URL = os.environ.get("QUERY_URL", "http://query-service.nagar-app.svc.clus
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")          # Phase 6: dim 1024, Cosine
 GENERATE_MODEL = os.environ.get("GENERATE_MODEL", "qwen3:1.7b")  # Phase 6 payload
 COLLECTION = os.environ.get("COLLECTION", "nagar_schema")
-TOP_K = 5
+# Recall over precision: the schema corpus is 40 docs, so a small k can omit the one table
+# a vague question actually needs, leaving the model to guess from partial context. 8 keeps
+# the target table's docs in context at a negligible prompt cost.
+TOP_K = 8
 EMBED_DIM = 1024
 
 app = FastAPI(title="slmService", docs_url=None, redoc_url=None, openapi_url=None)
@@ -66,7 +71,13 @@ def qdrant_search(vector: list[float], top_k: int) -> list[dict]:
                    json={"vector": vector, "limit": top_k, "with_payload": True}, timeout=60)
     r.raise_for_status()
     return [
-        {"text": (hit.get("payload") or {}).get("text", ""), "score": hit.get("score", 0.0)}
+        {
+            "text": (hit.get("payload") or {}).get("text", ""),
+            # Indexer payload carries the owning table (null for overview docs): surface it
+            # so the prompt can label each context block with a concrete table name.
+            "table": (hit.get("payload") or {}).get("table"),
+            "score": hit.get("score", 0.0),
+        }
         for hit in r.json().get("result", [])
     ]
 
@@ -146,8 +157,12 @@ Rules:
 - Never reference these PII columns ANYWHERE (not even inside COUNT or WHERE):
   name, phone, email, address, aadhaar.
 - For counts and totals use COUNT(event_id), never COUNT over a PII column.
-- Do not invent filter values that are not in the question; only filter on what is asked.
 - Restrict yourself to tables named in the schema context.
+- Choose exactly ONE table to query, picked only from the tables named in the schema context
+  blocks above. Never query a table that does not appear there.
+- Do not invent filter values that are not in the question; only filter on what is asked.
+- If no table in the schema context can answer the question, output exactly
+  `-- no relevant table` and nothing else. Do not guess a table.
 
 Schema context:
 {context}
@@ -156,8 +171,16 @@ Question: {question}
 SQL:"""
 
 
+def _context_block(c: dict) -> str:
+    """Label each retrieved block with its table so the model selects from named tables,
+    not from unattributed prose (overview docs carry table=null)."""
+    table = c.get("table")
+    tag = f"[table: {table}]" if table else "[schema overview]"
+    return f"- {tag} {c['text']}"
+
+
 def build_prompt(question: str, contexts: list[dict]) -> str:
-    ctx = "\n".join(f"- {c['text']}" for c in contexts if c.get("text"))
+    ctx = "\n".join(_context_block(c) for c in contexts if c.get("text"))
     return PROMPT_TEMPLATE.format(context=ctx or "(no schema context retrieved)", question=question)
 
 
