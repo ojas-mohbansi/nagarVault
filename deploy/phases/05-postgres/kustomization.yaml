@@ -34,6 +34,10 @@ configMapGenerator:
     namespace: nagar-platform
     files:
       - migrations/001_create_tables.sql
+      # Listed explicitly, NOT globbed: the Job header claims a new 002_*.sql needs no
+      # edit here, which was false — kustomize does not expand a directory here, so an
+      # unlisted file would silently never be applied and the backstop would never run.
+      - migrations/002_pii_column_grants.sql
     options:
       labels:
         app.kubernetes.io/part-of: nagarvault

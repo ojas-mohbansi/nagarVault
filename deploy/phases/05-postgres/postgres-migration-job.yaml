@@ -1,7 +1,10 @@
 # Idempotent schema migration Job (invariant I-2; exemplar
 # docs/manifests/exemplars/postgres-migration-job.yaml). Applies every file in
-# migrations/ in lexical order through the ConfigMap kustomize generates from that directory, so
-# adding 002_*.sql later needs no edit here.
+# migrations/ in lexical order through the ConfigMap kustomize generates from that directory.
+# NOTE: that ConfigMap lists files EXPLICITLY, not as a glob, so a new migration must
+# also be added to kustomization.yaml. Adding the .sql alone ships nothing — found while
+# landing 002_pii_column_grants.sql (ADR-030), which had to be registered before it would
+# have been applied at all.
 #
 # Deviations from the exemplar, both load-bearing:
 #
