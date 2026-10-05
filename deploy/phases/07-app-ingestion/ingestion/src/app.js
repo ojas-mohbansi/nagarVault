@@ -85,7 +85,15 @@ function buildApp() {
   app.get('/api/v1/uploads/:attachmentId', requireJwt, async (req, res) => {
     const raw = await deps().redisGet(`upload-intent:${req.params.attachmentId}`);
     if (!raw) return res.status(404).json({ detail: 'unknown or expired intent' });
-    return res.status(200).json({ status: 'pending', ttlSeconds: UPLOAD_TTL_S, ...JSON.parse(raw) });
+    // The intent records who minted it and carries the bucket/objectKey that the caller
+    // would upload to. Handing that to any authenticated officer leaks another officer's
+    // upload target, so ownership is enforced here. 404 rather than 403: a mismatched
+    // caller must not be able to probe which attachment ids exist.
+    const intent = JSON.parse(raw);
+    if (intent.subject !== req.claims.sub) {
+      return res.status(404).json({ detail: 'unknown or expired intent' });
+    }
+    return res.status(200).json({ status: 'pending', ttlSeconds: UPLOAD_TTL_S, ...intent });
   });
 
   app.post('/api/v1/events', requireJwt, async (req, res) => {

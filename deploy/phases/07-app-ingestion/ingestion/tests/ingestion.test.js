@@ -38,6 +38,12 @@ const officer = () =>
     secret,
   );
 
+const otherOfficer = () =>
+  jwt.sign(
+    { iss: 'nagar-auth', aud: 'nagar-services', sub: 'off-2', role: 'nmc_officer', jti: 'j-o2', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600 },
+    secret,
+  );
+
 // --------------------------------------------------------------------- unit: envelope + routing
 
 await import('../src/envelope.js');
@@ -309,4 +315,54 @@ test('HTTP: a REJECTED event does not consume the referenced upload intent', asy
   assert.equal(r.status, 400);
   assert.equal(env.published.length, 0);
   assert.equal(env.store[`upload-intent:${upload.attachmentId}`].ttl, 600); // untouched by the rejection
+});
+
+// ------------------------------------------------------------------ upload-intent ownership
+
+test('HTTP: an upload intent is readable only by the officer who minted it', async (t) => {
+  // The intent body carries the bucket/objectKey the uploader would PUT to, plus the
+  // minting subject. Returning it to any authenticated caller leaked another officer's
+  // upload target (IDOR). A mismatch must be indistinguishable from "no such intent" so
+  // the endpoint cannot be used to probe which attachment ids exist.
+  const env = { store: {}, published: [] };
+  const port = await startServer(env, t);
+  const base = `http://127.0.0.1:${port}`;
+  const req = (path, opts = {}) =>
+    new Promise((resolve, reject) => {
+      const r = http.request(`${base}${path}`, { method: opts.method || 'GET', headers: opts.headers || {} }, (res) => {
+        let b = '';
+        res.on('data', (c) => (b += c));
+        res.on('end', () => resolve({ status: res.statusCode, body: b ? JSON.parse(b) : null }));
+      });
+      r.on('error', reject);
+      if (opts.body) r.write(opts.body);
+      r.end();
+    });
+
+  let r = await req('/api/v1/uploads/presign', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${officer()}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ files: [{ filename: 'private.jpg', contentType: 'image/jpeg' }] }),
+  });
+  assert.equal(r.status, 201);
+  const { attachmentId } = r.body.uploads[0];
+
+  // owner: 200, and the intent comes back as before
+  r = await req(`/api/v1/uploads/${attachmentId}`, { headers: { authorization: `Bearer ${officer()}` } });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.status, 'pending');
+  assert.equal(r.body.subject, 'off-1');
+
+  // a different authenticated officer: 404, and none of the intent leaks
+  r = await req(`/api/v1/uploads/${attachmentId}`, { headers: { authorization: `Bearer ${otherOfficer()}` } });
+  assert.equal(r.status, 404);
+  assert.equal(r.body.objectKey, undefined);
+  assert.equal(r.body.bucket, undefined);
+  assert.equal(r.body.subject, undefined);
+
+  // ...and it reads identically to an id that does not exist at all
+  const missing = await req('/api/v1/uploads/00000000-0000-0000-0000-000000000000',
+    { headers: { authorization: `Bearer ${otherOfficer()}` } });
+  assert.equal(missing.status, r.status);
+  assert.deepEqual(missing.body, r.body);
 });
