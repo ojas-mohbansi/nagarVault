@@ -42,6 +42,10 @@ AUDIENCE = "nagar-services"
 ALGORITHM = "HS256"
 COOKIE_NAME = "session_token"
 ROW_LIMIT = 500  # service cap below the wall-level fetch limit
+# The gate can bound the SHAPE of a query, never the work it does. A statement timeout
+# is what stops an expensive-but-legal SELECT (cartesian joins, pg_sleep) from pinning a
+# connection; it is a per-connection setting, applied in _conn().
+STATEMENT_TIMEOUT_MS = 15000
 
 # SECURITY §3 matrix -> Phase-5 DDL grant roles. The JWT wire constant ROLE_HEALTH_OFFICER
 # maps to the PostgreSQL role health_officer (migration 001 header note).
@@ -104,7 +108,8 @@ def dbcheck_query() -> None:
 
 
 def _conn():
-    return psycopg.connect(env("DATABASE_URL"), connect_timeout=5)
+    return psycopg.connect(env("DATABASE_URL"), connect_timeout=5,
+                           options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -174,11 +179,30 @@ def parse_single_select(sql: str):
 
     if not is_select_shape(statements[0]):
         raise GateBlock("non-select")
+
+    # A SELECT-shaped statement can still carry a data-modifying statement in a CTE
+    # (PostgreSQL 14+: `WITH x AS (INSERT ... RETURNING *) SELECT * FROM x`). Block any
+    # DML node anywhere in the tree rather than relying on its target table happening to
+    # miss the role's set.
+    for node_kind in _DML_NODES:
+        if next(statements[0].find_all(node_kind), None) is not None:
+            raise GateBlock("non-select")
     return statements[0]
 
 
+_DML_NODES = (exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Create, exp.Drop)
+
+
+def cte_names(tree) -> set[str]:
+    """CTE aliases are not tables. `find_all(exp.Table)` sees the alias reference in the
+    outer FROM as a table, which both failed the RBAC set for a legitimate CTE and let a
+    smuggled CTE borrow an allowlisted name. Bodies are still collected, so a CTE cannot
+    hide a non-allowlisted table from the RBAC check."""
+    return {c.alias.lower() for c in tree.find_all(exp.CTE) if c.alias}
+
+
 def referenced_tables(tree) -> set[str]:
-    return {t.name.lower() for t in tree.find_all(exp.Table)}
+    return {t.name.lower() for t in tree.find_all(exp.Table)} - cte_names(tree)
 
 
 def check_table_rbac(role: str, tables: set[str]) -> None:
@@ -189,18 +213,63 @@ def check_table_rbac(role: str, tables: set[str]) -> None:
         raise GateBlock("table-rbac")
 
 
+# Aggregates that collapse their argument to a scalar. A whole-row or star argument
+# inside one of these never reaches the result set, so it cannot leak a column. Every
+# other wrapper (to_json, to_jsonb, row_to_json, json_agg, array_agg, string_agg, ...)
+# can serialise the row it is handed and is therefore NOT exempt.
+_SCALAR_AGGS = {"count", "sum", "avg", "min", "max", "stddev", "variance",
+                "bool_and", "bool_or", "every", "bit_and", "bit_or"}
+
+
+def _ancestors(node):
+    while node.parent is not None:
+        node = node.parent
+        yield node
+
+
+def _in_scalar_agg(node) -> bool:
+    """True when `node` is an argument of a scalar-collapsing aggregate. The walk stops at
+    the enclosing Select: past the projection the value escapes into the returned rows."""
+    for anc in _ancestors(node):
+        if isinstance(anc, exp.AggFunc):
+            return (anc.sql_name() or "").lower() in _SCALAR_AGGS
+        if isinstance(anc, exp.Select):
+            return False
+    return False
+
+
+def _pii_aliases(tree) -> set[str]:
+    """Every name a PII table can be referred to: its own name plus each alias, collected
+    across the whole tree so a subquery alias is covered too."""
+    names: set[str] = set()
+    for tbl in tree.find_all(exp.Table):
+        if tbl.name.lower() in PII_TABLES:
+            names.add(tbl.name.lower())
+            if tbl.alias:
+                names.add(tbl.alias.lower())
+    return names
+
+
 def check_pii(tree, tables: set[str]) -> None:
+    aliases = _pii_aliases(tree)
     for column in tree.find_all(exp.Column):
-        if column.name and column.name.lower() in PII_COLUMNS:
+        name = (column.name or "").lower()
+        if name in PII_COLUMNS:
             raise GateBlock("pii-column")
-    # A star must not project PII columns past the column scan. A star in a SELECT list
-    # projects every column (blocked over PII tables); a star as an aggregate argument
-    # (COUNT(*)) projects nothing and is allowed — the denylist is about COLUMNS
-    # (ARCHITECTURE §3.4), refined after the live Phase-7d E2E caught COUNT(*) blocked.
+        # A bare reference to a table or its alias IS the whole row, PII columns included,
+        # and it survives every column-name rewrite: `SELECT c ...`, `to_jsonb(c)`,
+        # `row_to_json(c)`, `json_agg(c)`. Blocking the denylisted column names alone is
+        # not enough — the projection must be proven column-by-column.
+        if name in aliases and not _in_scalar_agg(column):
+            raise GateBlock("pii-column")
+    # A star must not project PII columns past the column scan. A star anywhere over a PII
+    # table is blocked — in a SELECT list, qualified (`c.*`), or wrapped in a function
+    # (`to_jsonb(c.*)`) — unless a scalar aggregate collapses it. COUNT(*) stays allowed:
+    # the denylist is about COLUMNS (ARCHITECTURE §3.4), refined after the live Phase-7d
+    # E2E caught COUNT(*) blocked.
     if tables & PII_TABLES:
         for star in tree.find_all(exp.Star):
-            sel = star.find_ancestor(exp.Select)
-            if sel is not None and any(star is e for e in sel.expressions):
+            if not _in_scalar_agg(star):
                 raise GateBlock("pii-column")
 
 
@@ -238,6 +307,18 @@ def query(body: QueryBody, request: Request):
             # SQL exactly as received).
             exec_sql = body.sql.strip().rstrip(";").rstrip()
             rows = run_query_rows(exec_sql, ROW_LIMIT)
+        except psycopg.errors.InsufficientPrivilege:
+            # The Phase-5 column-level grants are the independent second wall under the
+            # AST gate (ADR-030). A denial here is a BLOCKED verdict, not an outage: it
+            # must be audited as such and must never be reported as "database unreachable".
+            insert_audit(actor, role, body.sql, "blocked", "db-wall", None, "queryService")
+            raise HTTPException(status_code=403,
+                                detail={"reason": "db-wall", "verdict": "blocked"})
+        except psycopg.errors.QueryCanceled:
+            insert_audit(actor, role, body.sql, "blocked", "statement-timeout", None,
+                         "queryService")
+            raise HTTPException(status_code=504,
+                                detail={"reason": "statement-timeout", "verdict": "blocked"})
         finally:
             wall_end()
 

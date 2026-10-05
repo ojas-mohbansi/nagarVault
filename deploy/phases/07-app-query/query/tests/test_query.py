@@ -272,3 +272,129 @@ def test_db_errors_surface_503(client, monkeypatch):
 
 def test_liveness(client):
     assert client.get("/").status_code == 200
+
+
+# ------------------------------------------------- whole-row PII exfiltration (ADR-030)
+#
+# The denylist used to match denylisted COLUMN NAMES only. That left a hole any
+# `nmc_officer` could walk through: reference the PII table itself (or an alias of it) and
+# PostgreSQL hands back every column, PII included. Every case below reached the database
+# before the fix; the to_jsonb/row_to_json/json_agg family wraps the same whole-row
+# reference in a serializer and leaked just as effectively.
+
+WHOLE_ROW_LEAKS = [
+    "SELECT c FROM nmc_complaints c",
+    "SELECT nmc_complaints FROM nmc_complaints",
+    "SELECT to_jsonb(c) FROM nmc_complaints c",
+    "SELECT to_json(c) FROM nmc_complaints c",
+    "SELECT row_to_json(c) FROM nmc_complaints c",
+    "SELECT json_agg(c) FROM nmc_complaints c",
+    "SELECT array_agg(c) FROM nmc_complaints c",
+    "SELECT string_agg(c::text, ',') FROM nmc_complaints c",
+    "SELECT to_jsonb(c.*) FROM nmc_complaints c",
+    "SELECT c.* FROM nmc_complaints c",
+    "SELECT to_json(t) FROM (SELECT * FROM nmc_complaints) t",
+    "SELECT (nmc_complaints).name FROM nmc_complaints",
+]
+
+
+@pytest.mark.parametrize("sql", WHOLE_ROW_LEAKS)
+def test_whole_row_reference_over_pii_table_is_blocked(client, db, sql):
+    r = client.post("/query", json={"sql": sql}, headers=auth_header(token()))
+    assert r.status_code == 403, f"{sql} was not blocked: {r.text}"
+    assert r.json()["detail"]["reason"] == "pii-column"
+    assert db.audit[-1]["block_reason"] == "pii-column"
+    assert db.audit[-1]["verdict"] == "blocked"
+
+
+LEGITIMATE_OVER_PII = [
+    "SELECT count(*) FROM nmc_complaints",
+    "SELECT count(c) FROM nmc_complaints c",
+    "SELECT ward, count(*) FROM nmc_complaints GROUP BY ward",
+    "SELECT max(occurred_at) FROM nmc_complaints",
+    "SELECT c.ward, c.status FROM nmc_complaints c",
+    "SELECT upper(description) FROM nmc_complaints",
+    "SELECT count(*) FROM nmc_complaints JOIN traffic_events ON true",
+    "SELECT * FROM traffic_events",
+    "WITH recent AS (SELECT ward, occurred_at FROM nmc_complaints) "
+    "SELECT count(*) FROM recent",
+]
+
+
+@pytest.mark.parametrize("sql", LEGITIMATE_OVER_PII)
+def test_legitimate_queries_still_pass_the_gate(client, sql):
+    """The whole-row rule must not become a blanket block: officers and the SLM both need
+    aggregates, explicit non-PII columns, and CTEs to keep working."""
+    r = client.post("/query", json={"sql": sql}, headers=auth_header(token()))
+    assert r.status_code == 200, f"{sql} was wrongly blocked: {r.text}"
+
+
+def test_dml_hidden_in_a_cte_is_blocked(client):
+    """A CTE can smuggle a data-modifying statement under a SELECT root. This was stopped
+    before only because the CTE alias was miscounted as an unknown table - naming the CTE
+    after an allowlisted table slipped past the application gate entirely."""
+    for sql in ["WITH nmc_complaints AS (INSERT INTO nmc_complaints (complaint_text) "
+                "VALUES ('x') RETURNING *) SELECT count(*) FROM nmc_complaints",
+                "WITH traffic_events AS (DELETE FROM nmc_complaints RETURNING *) "
+                "SELECT count(*) FROM traffic_events"]:
+        r = client.post("/query", json={"sql": sql}, headers=auth_header(token()))
+        assert r.status_code == 403, f"{sql} was not blocked: {r.text}"
+        assert r.json()["detail"]["reason"] == "non-select"
+
+
+def test_cte_alias_cannot_hide_a_non_allowlisted_table(client):
+    """Subtracting CTE aliases from the table set must not blind the RBAC check to the
+    tables inside the CTE body."""
+    r = client.post("/query",
+                    json={"sql": "WITH traffic_events AS (SELECT * FROM users) "
+                                 "SELECT count(*) FROM traffic_events"},
+                    headers=auth_header(token()))
+    assert r.status_code == 403
+    assert r.json()["detail"]["reason"] == "table-rbac"
+
+
+# ------------------------------------------------- DB wall is a block, not an outage
+
+
+def test_insufficient_privilege_is_reported_as_a_block(client, db, monkeypatch):
+    """The Phase-5 column-level grants (ADR-030) can deny a column the AST gate let
+    through. That must surface as an audited 403, never as 'database unreachable'."""
+    import psycopg
+
+    def deny(sql, limit):
+        raise psycopg.errors.InsufficientPrivilege("permission denied for table")
+
+    monkeypatch.setattr(qs, "run_query_rows", deny)
+    r = client.post("/query", json={"sql": "SELECT ward FROM nmc_complaints"},
+                    headers=auth_header(token()))
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == {"reason": "db-wall", "verdict": "blocked"}
+    assert db.audit[-1]["block_reason"] == "db-wall"
+
+
+def test_statement_timeout_is_reported_as_a_block(client, db, monkeypatch):
+    import psycopg
+
+    def slow(sql, limit):
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(qs, "run_query_rows", slow)
+    r = client.post("/query", json={"sql": "SELECT pg_sleep(60)"},
+                    headers=auth_header(token()))
+    assert r.status_code == 504, r.text
+    assert r.json()["detail"]["reason"] == "statement-timeout"
+    assert db.audit[-1]["block_reason"] == "statement-timeout"
+
+
+def test_connections_carry_a_statement_timeout(monkeypatch):
+    """The gate bounds query shape, not query cost; the timeout bounds the cost."""
+    seen = {}
+
+    class FakeConn:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
+    monkeypatch.setattr(qs.psycopg, "connect", lambda dsn, **kw: FakeConn(**kw))
+    qs._conn()
+    assert "statement_timeout" in seen["options"]
