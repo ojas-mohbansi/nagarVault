@@ -20,13 +20,16 @@
 #   5. SET ROLE wall — the Phase-5 grants make the service role a member of nmc_officer /
 #      health_officer; every execution runs after `SET ROLE <pg_role>` and RESETs after,
 #      so the database re-checks what the application allowed (SECURITY §3 layer 3,
-#      migration 001 grant block). One fresh connection per request: SET ROLE is
-#      connection-scoped and must never leak across requests.
+#      migration 001 grant block). SET ROLE, the query and RESET share ONE connection —
+#      the role is connection-scoped, so setting it on a different connection leaves the
+#      statement running as the owner. One fresh connection per request, so the role
+#      cannot leak into the next one.
 #   6. Audit — every attempt, allowed or blocked, with reason, to audit_logs (SECURITY §9).
 #
-# The DB surface is the module-level seam (run_query_rows, wall_begin, wall_end,
-# insert_audit, jti_is_revoked, dbcheck_query); tests monkeypatch it, the real
-# implementations use psycopg3 per request.
+# The DB surface is the module-level seam (run_query_rows, insert_audit, jti_is_revoked,
+# dbcheck_query); tests monkeypatch it, the real implementations use psycopg3 per request.
+# run_query_rows takes the pg_role and opens the walled connection itself — the role and
+# the statement MUST share one connection, which is why they are one function.
 import os
 import time
 
@@ -72,23 +75,33 @@ def jti_is_revoked(jti: str) -> bool:
         return cur.fetchone() is not None
 
 
-def wall_begin(pg_role: str) -> None:
+def run_query_rows(sql: str, limit: int, pg_role: str) -> list[dict]:
+    """Run one gated statement INSIDE the role wall, on a single connection.
+
+    SET ROLE is connection-scoped. It used to be issued by `wall_begin` on a connection
+    that was closed immediately afterwards, while the query ran on a fresh one — so the
+    role never applied and every statement executed as the connecting role. In production
+    that role is `nagar`, which OWNS every warehouse table, so the wall blocked nothing and
+    column-level grants (migration 002) were bypassed outright by the owner. Proven against
+    a live PostgreSQL 15.17: `current_user` at query time was `postgres`, not `nmc_officer`.
+
+    One connection now carries SET ROLE -> query -> RESET, so the wall is real and the
+    connection is still torn down per request, so it cannot leak into the next one.
+    """
     with _conn() as conn, conn.cursor() as cur:
         cur.execute(f'SET ROLE "{pg_role}"')  # role names are from ROLE_PG above, not input
         conn.commit()
-
-
-def wall_end() -> None:
-    with _conn() as conn, conn.cursor() as cur:
-        cur.execute("RESET ROLE")
-        conn.commit()
-
-
-def run_query_rows(sql: str, limit: int) -> list[dict]:
-    with _conn() as conn, conn.cursor() as cur:
+        # Deliberately NOT in a finally: a denied statement leaves the transaction
+        # aborted, so RESET ROLE would raise InFailedSqlTransaction and mask the real
+        # InsufficientPrivilege, turning a security verdict into a 503. The connection is
+        # per-request and is rolled back and closed below, so the role cannot leak into
+        # the next request; RESET here is hygiene on the success path only.
         cur.execute(f"SELECT * FROM ({sql}) AS gated LIMIT %s", (limit,))
         cols = [d.name for d in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        cur.execute("RESET ROLE")
+        conn.commit()
+        return rows
 
 
 def insert_audit(actor, role, query_sql, verdict, block_reason, row_count, source) -> None:
@@ -300,13 +313,12 @@ def query(body: QueryBody, request: Request):
             raise HTTPException(status_code=g.status,
                                 detail={"reason": g.reason, "verdict": "blocked"})
 
-        wall_begin(ROLE_PG[role])
         try:
             # The gate tolerates a trailing semicolon (single statement either way); the
             # wall-wrap subquery does not, so strip it for execution only (audit keeps the
             # SQL exactly as received).
             exec_sql = body.sql.strip().rstrip(";").rstrip()
-            rows = run_query_rows(exec_sql, ROW_LIMIT)
+            rows = run_query_rows(exec_sql, ROW_LIMIT, ROLE_PG[role])
         except psycopg.errors.InsufficientPrivilege:
             # The Phase-5 column-level grants are the independent second wall under the
             # AST gate (ADR-030). A denial here is a BLOCKED verdict, not an outage: it
@@ -319,8 +331,6 @@ def query(body: QueryBody, request: Request):
                          "queryService")
             raise HTTPException(status_code=504,
                                 detail={"reason": "statement-timeout", "verdict": "blocked"})
-        finally:
-            wall_end()
 
         rows = rows[:ROW_LIMIT]
         insert_audit(actor, role, body.sql, "allowed", None, len(rows), "queryService")

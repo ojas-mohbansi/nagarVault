@@ -977,6 +977,14 @@ deviation.
   defence: migration 001 granted `SELECT` at **table** level, so the database would have returned
   `name`, `phone`, `email`, `address` and `aadhaar` to any role holding that grant. A single
   application-layer matcher stood between an officer and citizen PII.
+- **The backstop was inert until the wall was fixed.** Applying the column grants to a
+  live PostgreSQL and then running queryService against it showed the statements executing
+  as `postgres`, not `nmc_officer`: `wall_begin` issued `SET ROLE` on a connection it then
+  closed, and the query ran on a fresh one. In production the connecting role is `nagar`,
+  which **owns** every warehouse table — an owner bypasses column-level grants outright, so
+  ADR-030's layer 2 would have blocked nothing. Layer 1 (the AST gate) was the only control
+  actually in force. `SET ROLE`, the statement and `RESET` now share one connection, and the
+  role is asserted in tests rather than assumed.
 - **Decision:** two independent layers, and neither is trusted alone.
   1. **Shape gate (primary).** The denylist is no longer a name blacklist; the projection must be
      *proven column-by-column*. A reference to a PII table or any alias of it (in any subquery) is
@@ -992,7 +1000,10 @@ deviation.
 - **Consequences:** a query that slips past the gate can no longer return PII. A database denial
   is therefore a normal control outcome, not an outage: `InsufficientPrivilege` is caught and
   reported as an audited `403 db-wall` (it previously fell through to `503 database unreachable`,
-  which would have mislabelled a security decision as a readiness failure). Separately, this
+  which would have mislabelled a security decision as a readiness failure). Getting there took
+  two attempts: the first still returned 503, because `RESET ROLE` in a `finally` ran inside the
+  aborted transaction and raised `InFailedSqlTransaction`, masking the real error. `RESET` is now
+  on the success path only — the connection is per-request and cannot leak the role. Separately, this
   pass found the RBAC table set counted CTE **aliases** as tables — blocking legitimate CTE
   queries while a CTE named after an allowlisted table could smuggle a data-modifying statement
   past the gate; DML nodes are now rejected anywhere in the AST and aliases are subtracted.

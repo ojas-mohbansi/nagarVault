@@ -11,9 +11,9 @@
 #   * JWT via cookie or Bearer; iss/aud/exp verified; denylisted jti -> 401
 #   * row caps on the response (defense against table dumps)
 #
-# The DB seam is the module-level function surface (run_query_rows, wall_begin, wall_end,
-# insert_audit, jti_is_revoked); tests monkeypatch it. The REAL path (SET ROLE wall against
-# the live grants) is proven in-cluster (G7b.4).
+# The DB seam is the module-level function surface (run_query_rows, insert_audit,
+# jti_is_revoked); tests monkeypatch it. run_query_rows takes the pg_role and opens the
+# walled connection itself — role and statement must share one connection.
 import sys
 import time
 from pathlib import Path
@@ -49,9 +49,9 @@ def db():
 def client(db, monkeypatch):
     monkeypatch.setenv("JWT_SECRET", SECRET)
     monkeypatch.setattr(qs, "jti_is_revoked", lambda jti: False)
-    monkeypatch.setattr(qs, "run_query_rows", lambda sql, limit: db.rows)
-    monkeypatch.setattr(qs, "wall_begin", lambda role: db.wall.append(("BEGIN", role)))
-    monkeypatch.setattr(qs, "wall_end", lambda: db.wall.append(("END", None)))
+    monkeypatch.setattr(
+        qs, "run_query_rows",
+        lambda sql, limit, pg_role: (db.wall.append(("SET ROLE", pg_role)), db.rows)[1])
     monkeypatch.setattr(
         qs, "insert_audit",
         lambda actor, role, query_sql, verdict, block_reason, row_count, source:
@@ -226,10 +226,72 @@ def test_select_star_still_blocked(client):
 
 
 def test_set_role_wall_wraps_execution(client, db):
+    """The pg_role must reach the executor, or the statement runs as the connecting role."""
     r = client.post("/query", json={"sql": "SELECT ward FROM nmc_complaints"},
                     headers=auth_header(token(role="nmc_officer")))
     assert r.status_code == 200
-    assert db.wall == [("BEGIN", "nmc_officer"), ("END", None)]
+    assert db.wall == [("SET ROLE", "nmc_officer")]
+
+
+def test_health_officer_executes_as_health_officer(client, db):
+    r = client.post("/query", json={"sql": "SELECT camp_id FROM health_camp_records"},
+                    headers=auth_header(token(role="ROLE_HEALTH_OFFICER")))
+    assert r.status_code == 200
+    assert db.wall == [("SET ROLE", "health_officer")]
+
+
+class _FakeCursor:
+    def __init__(self, log):
+        self.log = log
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, *params):
+        self.log.append(sql)
+        if sql.startswith("SELECT * FROM (") and self.description is None:
+            self.description = [type("D", (), {"name": "ward"})()]
+
+    def fetchall(self):
+        return [("W1",)]
+
+    def commit(self):
+        pass
+
+
+class _FakeConn:
+    def __init__(self, log):
+        self.log = log
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self):
+        return _FakeCursor(self.log)
+
+    def commit(self):
+        pass
+
+
+def test_set_role_and_statement_share_one_connection(monkeypatch):
+    """Regression for the wall that never applied: SET ROLE was issued on a connection that
+    was closed before the statement ran, so the statement executed as the connecting role —
+    in production `nagar`, the owner of every table. The role must be set on the SAME
+    connection that carries the query, and RESET on the way out."""
+    log: list[str] = []
+    monkeypatch.setattr(qs, "_conn", lambda: _FakeConn(log))
+    rows = qs.run_query_rows("SELECT ward FROM nmc_complaints", 500, "nmc_officer")
+    assert rows == [{"ward": "W1"}]
+    assert log[0].startswith('SET ROLE "nmc_officer"'), log
+    assert any(s.startswith("SELECT * FROM (") for s in log), log
+    assert log[-1] == "RESET ROLE", log
 
 
 def test_audit_row_on_success(client, db):
@@ -259,7 +321,7 @@ def test_row_cap_applied(client, db, monkeypatch):
 
 
 def test_db_errors_surface_503(client, monkeypatch):
-    def boom(sql, limit):
+    def boom(sql, limit, pg_role):
         raise RuntimeError("connection refused")
 
     monkeypatch.setattr(qs, "run_query_rows", boom)
@@ -361,7 +423,7 @@ def test_insufficient_privilege_is_reported_as_a_block(client, db, monkeypatch):
     through. That must surface as an audited 403, never as 'database unreachable'."""
     import psycopg
 
-    def deny(sql, limit):
+    def deny(sql, limit, pg_role):
         raise psycopg.errors.InsufficientPrivilege("permission denied for table")
 
     monkeypatch.setattr(qs, "run_query_rows", deny)
@@ -375,7 +437,7 @@ def test_insufficient_privilege_is_reported_as_a_block(client, db, monkeypatch):
 def test_statement_timeout_is_reported_as_a_block(client, db, monkeypatch):
     import psycopg
 
-    def slow(sql, limit):
+    def slow(sql, limit, pg_role):
         raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
 
     monkeypatch.setattr(qs, "run_query_rows", slow)
