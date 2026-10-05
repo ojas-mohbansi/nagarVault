@@ -4602,3 +4602,82 @@ contract — the key exists, and may be null — rather than a truthiness check 
   **not yet running anywhere**; the running Deployment still executes the old gate. Reported,
   not simulated (MISSION §4.3).
 - No push to `origin`.
+
+
+### G13.6 The backstop executed against a real PostgreSQL — and found a worse bug
+
+Docker Desktop was started and the daemon answered (29.8.1), which also brought the k3d
+cluster back with it. The project's own pinned operand image was pulled from the k3d registry
+(`localhost:35000/mission/cnpg-postgresql:15.17-system-trixie`, digest
+`sha256:0e1a5a4e…`) and run as a scratch PostgreSQL **15.17** — the same major version the
+cluster pins — because the CNPG operand image has no stock entrypoint and needs
+`initdb`/`postgres` invoked by hand.
+
+```
+$ docker exec pg002 bash -c 'cd /migrations && psql -X … -f 001_create_tables.sql'   -> exit 0
+$ … -f 002_pii_column_grants.sql
+NOTICE:  nmc_complaints: table-level SELECT revoked, 13 non-PII columns granted        -> exit 0
+```
+
+**The hole, at the database layer, with real data** (`Asha Verma / +91-98765-43210 /
+asha@example.in / 123456789012` inserted first):
+
+```
+pre-002, SET ROLE nmc_officer; SELECT name, phone, email, aadhaar FROM nmc_complaints;
+    name    |      phone      |      email      |   aadhaar
+ Asha Verma | +91-98765-43210 | asha@example.in | 123456789012     <-- the exfiltration
+```
+
+**After 002**, for BOTH `nmc_officer` and `health_officer`:
+
+```
+PII name/phone/email/address/aadhaar -> ERROR: permission denied for table nmc_complaints
+non-PII ward, status, description    -> W1|open|drain blocked
+count(*)                             -> 1
+SELECT *                             -> ERROR: permission denied for table nmc_complaints
+```
+
+Idempotency (I-2): run twice more, both `exit 0`, `information_schema` table-privilege
+snapshot byte-identical across all three runs, 26 column-privilege rows (13 columns x 2
+roles). Blast radius: `traffic_events`, `water_sensor_readings`, `ev_bus_telemetry` keep
+their table-level grants for both roles and `health_camp_records` remains health-only, so
+the SECURITY §3 role matrix is unchanged.
+
+**Then queryService was run against that same database, and it failed a case** — the one that
+mattered:
+
+```
+DB denies what AST allowed -> HTTP 200 [{'ward': 'W1'}]      <-- the wall was not applying
+```
+
+`current_user` at query time was **`postgres`**, not `nmc_officer`. `wall_begin` issued
+`SET ROLE` on a connection it closed immediately, and `run_query_rows` opened a fresh one.
+In production that role is `nagar`, which **owns** every warehouse table, so the whole SET
+ROLE wall (SECURITY §3 layer 3, ADR-019) had never been in force — and 002's column grants,
+which an owner bypasses, would have blocked nothing either. The AST gate was the only
+control actually enforcing anything.
+
+Fixed by putting `SET ROLE`, the statement and `RESET` on one connection. The first version
+still returned 503: `RESET ROLE` in a `finally` runs inside the aborted transaction and
+raises `InFailedSqlTransaction`, masking the `InsufficientPrivilege`. `RESET` now sits on
+the success path only. Re-run, all ten end-to-end assertions pass:
+
+```
+PASS  legal non-PII query                 HTTP 200  [{'ward': 'W1', 'status': 'open'}]
+PASS  DB denies what AST allowed          HTTP 403  {'reason': 'db-wall', 'verdict': 'blocked'}
+PASS  recovered after re-grant            HTTP 200  [{'ward': 'W1'}]
+PASS  PII column -> AST gate              HTTP 403  {'reason': 'pii-column', 'verdict': 'blocked'}
+PASS  whole-row to_jsonb -> AST gate      HTTP 403  {'reason': 'pii-column', 'verdict': 'blocked'}
+PASS  whole-row SELECT c -> AST gate      HTTP 403  {'reason': 'pii-column', 'verdict': 'blocked'}
+PASS  star -> AST gate                    HTTP 403  {'reason': 'pii-column', 'verdict': 'blocked'}
+PASS  COUNT(*) carve-out                  HTTP 200  [{'count': 1}]
+PASS  non-PII table unaffected            HTTP 200  []
+PASS  nmc_officer denied users            HTTP 403  {'reason': 'table-rbac', 'verdict': 'blocked'}
+```
+
+Full sweep after the change: query 57, worker 27, slm 24, auth 22, admin 14, indexer 10
+passed; ingestion 12, frontend 10, vault-ui 5 passed; 41/41 kustomize trees build.
+
+**Lesson worth carrying:** the hermetic suite passed 55 tests while the database wall was
+silently inert, because the seam was mocked. Only running the real service against a real
+database exposed it. A mocked seam proves the code calls the seam, not that the seam works.
