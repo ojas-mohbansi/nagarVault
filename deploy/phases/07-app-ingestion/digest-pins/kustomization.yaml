@@ -18,7 +18,10 @@ kind: Component
 #     successful publish, so a rejected event no longer consumes the 600s upload window; and a
 #     real `npm test` in package.json)
 #     sha256:d43961d6443c48533b52698529c77a97bdb74a4e7afb26b303dc389c9b303671
+#   mission/nagar-ingestion:phase7e-6  (G13: an upload intent is readable only by the officer
+#     who minted it — the response carried another officer's bucket/objectKey)
+#     sha256:acb0d7984af1f8280462dfed37c05c1af9b97471f85bbdb886683472815d3f08
 images:
   - name: registry.nagar.internal:5000/nagar-ingestion
     newName: k3d-nagar.localhost:5000/mission/nagar-ingestion
-    digest: sha256:d43961d6443c48533b52698529c77a97bdb74a4e7afb26b303dc389c9b303671
+    digest: sha256:acb0d7984af1f8280462dfed37c05c1af9b97471f85bbdb886683472815d3f08

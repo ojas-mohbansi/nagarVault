@@ -7,7 +7,11 @@ kind: Component
 # (Docker-Content-Digest) and machine-compared against this file before landing.
 #   mission/nagar-query-service:phase7b-2 (phase7b-2: COUNT(*) gate refinement)
 #     sha256:7c70081f4ab8003f7365d0b00c9dbc0bd40584f272d117d9a10e98297419fed7
+#   mission/nagar-query-service:phase7b-3 (G13: whole-row PII gate, CTE/DML correctness,
+#     statement_timeout, and the SET ROLE wall on ONE connection — it previously ran on a
+#     connection that was closed before the statement, so the role never applied)
+#     sha256:398b5f52f1a91de70bb4248c836618cac5a60ec6a58494e4cb8b734cae465489
 images:
   - name: registry.nagar.internal:5000/nagar-query-service
     newName: k3d-nagar.localhost:5000/mission/nagar-query-service
-    digest: sha256:7c70081f4ab8003f7365d0b00c9dbc0bd40584f272d117d9a10e98297419fed7
+    digest: sha256:398b5f52f1a91de70bb4248c836618cac5a60ec6a58494e4cb8b734cae465489
