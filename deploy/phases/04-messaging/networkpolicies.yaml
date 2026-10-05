@@ -47,8 +47,23 @@ spec:
     # reconciliation was stuck on `Error getting broker config: TimeoutException`.
     #
     #   PLAIN-29092 (frozen client port, CONVENTIONS §4 / ADR-009) — in-namespace clients (the
-    #     topics Job now; migration Jobs in Phase 5) and nagar-app producers/consumers (ingestion
-    #     backend 7e, enrichWorker 7c).
+    #     topics Job now; migration Jobs in Phase 5), nagar-app producers/consumers (ingestion
+    #     backend 7e, enrichWorker 7c), and the Phase-9 kafka-exporter.
+    #
+    #     The exporter peer is namespace+pod scoped, NOT the whole nagar-observability
+    #     namespace: a bare namespaceSelector would admit every observability pod (Grafana,
+    #     Loki, Alloy, Prometheus) to the broker, which is not a flow any of them has.
+    #     NetworkPolicyPeer ANDs the two selectors, so this admits exactly one pod.
+    #
+    #     Why it was missing: this rule was written in Phase 4, when the only cross-namespace
+    #     consumer was nagar-app. Phase 9 added `nagar-kafka-exporter` and gave IT an egress
+    #     rule, but NetworkPolicy is evaluated on both sides — the broker's ingress half was
+    #     never widened, so the exporter crash-looped on
+    #     `Error Init Kafka Client: … dial tcp <bootstrap>:29092: connect: connection refused`
+    #     for its entire life. Confirmed by probe, not by reading: from a pod with an egress
+    #     rule (nagar-app/enrich-worker) the same ClusterIP connects fine, while nagar-alloy
+    #     is dropped — netpol is enforced, and the exporter's own egress was never the
+    #     problem. Same class as OPERATIONS §12.19.
     #   REPLICATION-9091 (broker-to-broker + the Cluster Operator's AdminClient) — in-namespace
     #     pods and nagar-system, where the operator runs.
     #   CONTROLPLANE-9090 (KRaft quorum, TLS) — broker pods only. The operator has no business
@@ -58,6 +73,12 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: nagar-app
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nagar-observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nagar-kafka-exporter
       ports:
         - protocol: TCP
           port: 29092

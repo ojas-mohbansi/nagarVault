@@ -122,6 +122,11 @@ Ordered rules mirroring [ARCHITECTURE.md](ARCHITECTURE.md) §4.4:
 - auth/admin/query → Postgres; admin → Kafka, schemaIndexer
 - slm → Ollama, Qdrant, queryService; schemaIndexer → Ollama, Qdrant
 - DNS (kube-system CoreDNS) allowed everywhere — always include it or everything breaks
+- kafka-exporter → Kafka `PLAIN-29092`, scoped to that ONE pod on both sides: the exporter
+  carries its own egress rule, and the broker's ingress rule in `deploy/phases/04-messaging/`
+  admits `nagar-observability` **with a podSelector**, so Grafana/Loki/Alloy/Prometheus gain no
+  access to the broker. NetworkPolicy is evaluated on both ends of a connection — widening only
+  the exporter's egress half is not enough (this was the exporter's crash-loop, OPERATIONS §12.19)
 - observability ingresses: Prometheus scrapes the pod endpoints it discovers (Phase 9 jobs:
   kube-state-metrics :8080, cert-manager :9402, Traefik edge :8082, CNPG instance-manager :9187,
   kafka-exporter :9308, Alertmanager :9093); Alloy is the only pod allowed to `GET pods/log`; Loki/Loki-push
