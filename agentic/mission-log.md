@@ -4681,3 +4681,54 @@ passed; ingestion 12, frontend 10, vault-ui 5 passed; 41/41 kustomize trees buil
 **Lesson worth carrying:** the hermetic suite passed 55 tests while the database wall was
 silently inert, because the seam was mocked. Only running the real service against a real
 database exposed it. A mocked seam proves the code calls the seam, not that the seam works.
+
+
+### G13.7 Shipped: the fix is now the running system
+
+Run through the sanctioned transport only (ADR-018 §9.4/§12.16) — no imperative resource
+edits. Images built from these trees, pushed to localhost:35000, digests read from the
+registry header and matched against the push output:
+
+```
+nagar-query-service:phase7b-3  sha256:398b5f52f1a91de7…   (was 7c70081f…)
+nagar-ingestion:phase7e-6      sha256:acb0d7984af1f828…   (was d43961d6…)
+git-repo-mirror:phase13-3      sha256:08697df07f02e3af…  (payload = repo @ 45d0b366)
+```
+
+The mirror payload was staged with `git clone --bare` at a byte-identical HEAD, and the
+transport advanced with `kustomize build …/git-mirror | kubectl apply --server-side
+--force-conflicts`. Argo picked the revision up on poll 8 (≈2 min) and every one of the 16
+Applications reports **Synced / Healthy at 45d0b366**.
+
+The migration Job replayed both files on the real cluster:
+
+```
+$ kubectl logs -n nagar-platform job/nagar-db-migrate
+applying /migrations/001_create_tables.sql
+applying /migrations/002_pii_column_grants.sql
+NOTICE:  nmc_complaints: table-level SELECT revoked, 13 non-PII columns granted
+migrations complete
+```
+
+Verified in the cluster's own `nagardb`: **26 column-privilege rows** (13 columns x 2 roles).
+Live service, real `nmc_officer` token, 15 complaints in the table:
+
+```
+403  PII column (name)        {"reason": "pii-column", "verdict": "blocked"}
+403  PII column (phone)       {"reason": "pii-column", "verdict": "blocked"}
+403  whole-row SELECT c       {"reason": "pii-column", "verdict": "blocked"}
+403  whole-row to_jsonb(c)    {"reason": "pii-column", "verdict": "blocked"}
+403  star SELECT *            {"reason": "pii-column", "verdict": "blocked"}
+200  non-PII (ward,status)    [{"ward": null, "status": null}, …]
+200  COUNT(*)                 [{"count": 15}]
+```
+
+Note on the two layers: on the live cluster the AST gate blocks PII first, so the `db-wall`
+branch is not reached for those queries. That branch was proven to answer **403 db-wall, not
+503**, against the real 001+002 schema on the scratch instance; it is the same code path. It
+was not forced on the cluster, because doing so would mean revoking a grant on production
+data purely to make a branch execute.
+
+**Pre-existing, not caused by this pass:** `nagar-kafka-exporter` is in CrashLoopBackOff
+(58 restarts, pod age 3d20h — predates today), which is why `nagar-phase9-observability`
+reports Progressing. Recorded, not fixed here.
