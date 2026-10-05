@@ -4729,6 +4729,58 @@ branch is not reached for those queries. That branch was proven to answer **403 
 was not forced on the cluster, because doing so would mean revoking a grant on production
 data purely to make a branch execute.
 
-**Pre-existing, not caused by this pass:** `nagar-kafka-exporter` is in CrashLoopBackOff
-(58 restarts, pod age 3d20h — predates today), which is why `nagar-phase9-observability`
-reports Progressing. Recorded, not fixed here.
+`nagar-phase9-observability` was still Progressing at this point because
+`nagar-kafka-exporter` was in CrashLoopBackOff (58 restarts, pod age 3d20h). Diagnosed and
+fixed in G13.8 below.
+
+
+### G13.8 kafka-exporter: the missing half of a NetworkPolicy
+
+```
+$ kubectl logs -n nagar-observability deploy/nagar-kafka-exporter --previous
+F1005 15:47:05 kafka_exporter.go:901] Error Init Kafka Client: kafka: client has run out of
+available brokers to talk to: dial tcp 10.43.74.110:29092: connect: connection refused
+```
+
+Ruled out by probe, in order, rather than by reading the manifest and guessing:
+
+| Hypothesis | Probe | Result |
+|---|---|---|
+| Broker down / not listening | `/proc/net/tcp` in `nagar-dual-role-0` | **29092 IS listening** |
+| Bootstrap Service broken | endpoints + `enrich-worker` connect to `10.43.74.110:29092` and `10.42.0.52:29092` | **both OK** |
+| Exporter egress rule wrong | `allow-kafka-exporter-egress` selects the pod's real labels; ns label present | **rule is correct** |
+| netpol not enforced at all | `nagar-alloy` → `10.43.74.110:29092` | **BLOCKED — netpol IS enforced** |
+
+That left the one direction nobody had checked: NetworkPolicy is evaluated on **both** ends of
+a connection. Phase 9 gave the exporter an egress rule; `allow-kafka-ingress` (Phase 4) still
+admitted only intra-namespace pods and `nagar-app`. The broker's ingress half was never
+widened, so the exporter could never have worked — it has been crash-looping since it was
+created, and `nagar-phase9` has been Progressing for the whole project.
+
+The peer added is namespace **and** pod scoped:
+
+```yaml
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: nagar-observability
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nagar-kafka-exporter
+```
+
+A bare `namespaceSelector` would have admitted Grafana, Loki, Alloy and Prometheus to the
+broker — flows none of them has. Same class as OPERATIONS §12.19, which is why the §8 flow
+list now names the exporter and states the both-sides rule.
+
+Shipped the same way as everything else (no imperative edits): commit → mirror payload at a
+byte-identical HEAD → `phase13-4` → transport advanced server-side → Argo. Result:
+
+```
+$ kubectl logs -n nagar-observability deploy/nagar-kafka-exporter
+I1005 15:57:17 kafka_exporter.go:971] Listening on HTTP :9308      # no init error
+$ … wget -qO- http://127.0.0.1:9308/metrics | grep ^kafka_brokers
+kafka_brokers 1
+```
+
+**All 16 Applications now report Synced + Healthy** — first time in this mission — and all
+7 observability pods are 1/1 Running.
