@@ -302,7 +302,14 @@ spec:
     options:
       name: edge-tls-options
 ---
-# /minio -> MinIO (browser presigned PUT route ONLY; CORS middleware lives here — ADR-024 §6)
+# /minio -> MinIO (browser presigned PUT route; CORS middleware here — ADR-024 §6).
+#
+# Traefik IngressRoute CANNOT filter by HTTP method, so this route also carries GET and DELETE
+# for whatever path the presigner produced. That is safe today because no bucket policy is ever
+# set on raw-media (the bucket-init Job creates private buckets), so an unsigned read or write is
+# rejected by MinIO itself, and a presigned URL requires a JWT to mint. The correction is to the
+# CLAIM: this is a PUT route in practice, not a PUT-only route by construction. Do not read this
+# comment as an access-control control.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:

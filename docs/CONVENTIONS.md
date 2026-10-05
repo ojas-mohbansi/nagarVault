@@ -74,9 +74,10 @@ Rules:
 | 5432 | PostgreSQL | namespace + nagar-app only |
 | 6333 / 6334 | Qdrant HTTP / gRPC | namespace + nagar-app (6333) only |
 | 6379 | Redis | nagar-platform + ingestion only |
-| 9000 | MinIO S3 API | namespace + edge upload route (browser PUT) |
+| 9000 | MinIO S3 API | namespace + edge `/minio` route (browser presigned PUT; the route is not method-restricted — see `deploy/phases/08-edge/ingressroutes.yaml`) |
 | 11434 | Ollama | namespace + nagar-app only |
 | 29092 | Kafka listeners | namespace + nagar-app only |
+| 9418 | git-repo-mirror (`git daemon`) | nagar-system only — Argo CD repo transport, never at the edge (ADR-031) |
 
 Observability tier (Phase 9; all cluster-internal, none exposed at the edge — ADR-026 §4):
 

@@ -4486,3 +4486,119 @@ tests green, and the image is **built, pushed, digest-pinned and pull-verified i
 to the git mirror and Argo reconciles, so the cluster does not yet execute the new prompt. Gaps 2, 3,
 5, 7 and 8 keep the status G11 assigned them; gap 4 remains the SECURITY §7 target state. No
 accepted-by-design decision was rewritten and no ADR was added.
+
+
+---
+
+## G13 — Independent audit pass: the PII denylist had a whole-row hole (2026-10-05)
+
+Requested scope: review, audit and fix. Every finding below was reproduced with a command
+before any code changed; nothing here is asserted from reading.
+
+### G13.1 Baseline audit — what was already sound
+
+| Check | Command | Result |
+|---|---|---|
+| I-12 kustomize | `kustomize build --load-restrictor LoadRestrictionsNone` over every tracked tree | **41/41 build, 0 failures** |
+| I-5 digest pins | grep of rendered `image:` for `@sha256`, all trees | **0 unpinned** (`deploy/third_party/**` excluded: upstream manifests) |
+| I-3 secrets | grep for literal secret material | SealedSecret ciphertext + test fixtures only |
+| I-4 shape | rendered probes/resources/PDB vs replicas | no violations (Jobs and vendored controllers excluded; enrich-worker's startup+liveness-only consumer pattern is a documented exception) |
+| I-6 ports | rendered Service/containerPort census vs CONVENTIONS §4 | **1 first-party gap: 9418**; the rest are vendored controllers (Kyverno, cert-manager, Argo CD, CNPG) |
+| Tests | pytest x5, `node --test` x3 | **142 pass, 0 fail** |
+
+So the platform was structurally clean. The defects were logical, not structural — which is
+exactly what a static audit misses and a behavioural probe finds.
+
+### G13.2 The finding: whole-row reference defeated the PII denylist
+
+`queryService`'s denylist (SECURITY §3 layer 4) matched denylisted **column names**. A query
+that references the PII table itself contains no denylisted identifier, so it passed:
+
+```
+$ cd deploy/phases/07-app-query/query && python -   # probe against the shipped gate
+SELECT c FROM nmc_complaints c            -> ALLOWED   # returns name/phone/email/address/aadhaar
+SELECT nmc_complaints FROM nmc_complaints -> ALLOWED
+SELECT to_jsonb(c) FROM nmc_complaints c  -> ALLOWED
+SELECT row_to_json(c) FROM nmc_complaints c-> ALLOWED
+SELECT to_jsonb(c.*) FROM nmc_complaints c -> ALLOWED
+SELECT json_agg(c) / array_agg(c)          -> ALLOWED
+SELECT name FROM nmc_complaints           -> BLOCKED(pii-column)   # the only shape that was caught
+```
+
+**There was no second line of defence.** Migration 001 grants `SELECT` at *table* level:
+
+```
+$ grep -n "GRANT SELECT" deploy/phases/05-postgres/migrations/001_create_tables.sql
+229:GRANT SELECT ON nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry
+```
+
+so under `SET ROLE nmc_officer` the database would return every column. One application-layer
+name-matcher stood between an `nmc_officer` JWT and citizen PII.
+
+### G13.3 Also found
+
+- **CTE handling (F2).** `find_all(exp.Table)` counted CTE *aliases* as tables. Legitimate
+  queries were falsely blocked (`WITH recent AS (SELECT ward FROM nmc_complaints) SELECT
+  count(*) FROM recent` -> `blocked(table-rbac)`), while a CTE named after an allowlisted
+  table smuggled a data-modifying statement past the gate.
+- **Upload-intent IDOR (F3).** `GET /api/v1/uploads/:id` returned the intent — bucket,
+  objectKey and the minting `subject` — to any authenticated caller.
+- **No query cost bound (F4).** `SELECT pg_sleep(60)` passed the gate; nothing stopped a
+  legal-but-expensive query pinning a connection.
+- **Port 9418 unregistered (F5)** and **`edge-minio` commented "PUT route ONLY"** when a
+  Traefik IngressRoute cannot filter by method (F6) — an aspiration stated as fact.
+- **schemaIndexer had no tests (F7)** — the only first-party component with none.
+
+### G13.4 The fix, and proof that it fixes something
+
+Layer 1 (shape gate): the projection must now be *proven column-by-column*. A reference to a
+PII table or any alias of it is blocked, as is any `*` over a PII table anywhere; the only
+exemption is an argument of a scalar-collapsing aggregate (`count`, `sum`, `avg`, ...), which
+preserves the `COUNT(*)` carve-out the Phase-7d E2E needed. Serialising wrappers are
+deliberately not exempt.
+
+Layer 2 (backstop): `002_pii_column_grants.sql` revokes the table-level grant and grants
+`SELECT (<every non-PII column>)`, derived from `information_schema` so it cannot drift.
+An `InsufficientPrivilege` denial is now an audited `403 db-wall`, not a `503`.
+
+**A regression test that passes on the broken code is worthless, so each was run against the
+old gate** (restored from `HEAD` with the new tests left in place):
+
+```
+$ git show HEAD:…/query/app.py > app.py && python -m pytest tests -q
+FAILED test_whole_row_reference_over_pii_table_is_blocked[SELECT c FROM nmc_complaints c]
+FAILED …[SELECT to_jsonb(c) …] …[row_to_json(c) …] …[to_jsonb(c.*) …] …[json_agg(c) …]
+FAILED …[array_agg(c) …] …[string_agg(c::text, ',') …] …[c.* …] …[(nmc_complaints).name …]
+FAILED test_legitimate_queries_still_pass_the_gate[WITH recent AS …]
+FAILED test_dml_hidden_in_a_cte_is_blocked
+FAILED test_insufficient_privilege_is_reported_as_a_block
+FAILED test_statement_timeout_is_reported_as_a_block
+FAILED test_connections_carry_a_statement_timeout
+16 failed, 39 passed          # EXIT=1
+```
+
+and the IDOR test against the old ingestion backend:
+
+```
+$ node --test tests/ingestion.test.js
+not ok 8 - HTTP: an upload intent is readable only by the officer who minted it
+# pass 7  # fail 1
+```
+
+With the fix in place: queryService **55 passed** (was 29), ingestion **12 passed** (was 11),
+schemaIndexer **10 passed** (was 0 — none existed).
+
+One audit finding was my error, not the code's: 11 documents in `schema_docs.json` have
+`table: null`, which looked like missing attribution. They are the overview/sql-style docs
+that slmService deliberately renders as `[schema overview]`. The test now asserts the real
+contract — the key exists, and may be null — rather than a truthiness check that would have
+"fixed" correct behaviour.
+
+### G13.5 Not done in this pass
+
+- **The ship step did not run.** The Docker daemon is down and the k3d cluster is
+  unreachable, so no image was rebuilt, no digest pinned, nothing pushed, and Argo did not
+  reconcile. The `002_pii_column_grants.sql` backstop and the corrected gate are in git but
+  **not yet running anywhere**; the running Deployment still executes the old gate. Reported,
+  not simulated (MISSION §4.3).
+- No push to `origin`.

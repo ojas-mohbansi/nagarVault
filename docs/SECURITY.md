@@ -36,6 +36,11 @@
 Enforcement is layered:
 1. queryService parses SQL with **sqlglot**, rejects non-SELECT, injects role filters, enforces the
    table-role matrix and the PII column denylist (`name, phone, email, address, aadhaar`).
+   **Two independent layers, per ADR-030:** the AST gate proves the projection column-by-column
+   (a whole-row reference or a `*` over a PII table is refused, not just a denylisted name), and
+   the database independently refuses to return a denylisted column at all — migration
+   `002_pii_column_grants.sql` grants the officer roles `SELECT` per non-PII column rather than
+   on the table. A denial from either layer is an audited `blocked` verdict, never a 5xx.
 2. Every attempt (allowed or blocked, with reason) is written to `audit_logs`.
 3. Postgres-level grants exist as a second wall (target state, Phase 5): the app role keeps only
    SELECT on its allowed tables.

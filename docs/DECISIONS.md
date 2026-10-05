@@ -965,3 +965,53 @@ deviation.
   `nmc.complaints.raw.restricted.v1` LAG stuck at 1) and re-proved after shipping `phase7c-3`
   (`-> db-error`, restarts 0, LAG 0, the message in the DLQ). This ADR's decision is unchanged; the
   deferred consequence is now closed.
+
+
+## ADR-030 — PII is enforced at two independent layers: a shape gate and column-level grants
+
+- **Context:** an audit of `queryService` found the PII denylist (SECURITY §3 layer 4) matched
+  denylisted *column names* only. A `nmc_officer` could therefore reference the PII table itself
+  and receive every column, PII included: `SELECT c FROM nmc_complaints c`,
+  `SELECT to_jsonb(c) …`, `row_to_json`, `json_agg`, `array_agg`, `to_jsonb(c.*)`. None of these
+  contains a denylisted identifier, so all of them passed the gate. There was no second line of
+  defence: migration 001 granted `SELECT` at **table** level, so the database would have returned
+  `name`, `phone`, `email`, `address` and `aadhaar` to any role holding that grant. A single
+  application-layer matcher stood between an officer and citizen PII.
+- **Decision:** two independent layers, and neither is trusted alone.
+  1. **Shape gate (primary).** The denylist is no longer a name blacklist; the projection must be
+     *proven column-by-column*. A reference to a PII table or any alias of it (in any subquery) is
+     a whole-row reference and is blocked, as is any `*` over a PII table wherever it appears. The
+     sole exemption is an argument of a scalar-collapsing aggregate (`count`, `sum`, `avg`, `min`,
+     `max`, …), which cannot emit a column — this preserves the `COUNT(*)` carve-out the Phase-7d
+     E2E needed. Serialising wrappers (`to_json`, `json_agg`, `array_agg`, `string_agg`, …) are
+     deliberately **not** exempt.
+  2. **Column grants (backstop).** New migration `002_pii_column_grants.sql` revokes the
+     table-level grant and grants `SELECT (<every non-PII column>)` to `nmc_officer` and
+     `health_officer`. The column list is derived from `information_schema` minus the denylisted
+     names, so it cannot drift when the DDL changes.
+- **Consequences:** a query that slips past the gate can no longer return PII. A database denial
+  is therefore a normal control outcome, not an outage: `InsufficientPrivilege` is caught and
+  reported as an audited `403 db-wall` (it previously fell through to `503 database unreachable`,
+  which would have mislabelled a security decision as a readiness failure). Separately, this
+  pass found the RBAC table set counted CTE **aliases** as tables — blocking legitimate CTE
+  queries while a CTE named after an allowlisted table could smuggle a data-modifying statement
+  past the gate; DML nodes are now rejected anywhere in the AST and aliases are subtracted.
+  **Deliberate I-9 exception:** a Phase 7b fix landed in the Phase 5 subtree, approved by the
+  owner. Recorded here so the isolation rule is not silently broken.
+- **Not decided here:** whether the denylist list itself should move into configuration, and
+  whether `health_camp_records` needs the same treatment once it carries identifiable columns.
+
+## ADR-031 — Port 9418 (git transport) is registered, closing an I-6 registry drift
+
+- **Context:** the port registry (CONVENTIONS §4, frozen under invariant I-6) had no row for the
+  git transport the Phase-2 Argo CD install actually publishes. `git-repo-mirror` serves `9418`
+  (`git daemon`) in `nagar-system`, so the platform shipped a first-party port that the contract
+  did not know about. Every other unregistered port in the tree belongs to a vendored third-party
+  controller (Kyverno 8000/9443, cert-manager 6080/9403/10250, Argo CD 5556-5558/7000/8083/8084,
+  CNPG 9443) and is out of scope by design.
+- **Decision:** register `9418 | git-repo-mirror (git daemon) | nagar-system only — Argo CD's
+  repo transport, never exposed at the edge` in CONVENTIONS §4.
+- **Consequences:** the registry is whole again. Changing this port remains an ADR. The audit
+  that produced this entry ran as a rendered-manifest census of every `Service` and
+  `containerPort` in all 41 trees against §4, which is now the check to re-run whenever a
+  manifest adds a Service.
