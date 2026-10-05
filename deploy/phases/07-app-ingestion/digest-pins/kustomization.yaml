@@ -14,7 +14,11 @@ kind: Component
 #   mission/nagar-ingestion:phase7e-4  (browser presigned PUTs on the public edge origin:
 #     PRESIGN_PUBLIC_URL + /minio route prefix; ADR-025, Phase-8 charter closure)
 #     sha256:d8d681f5b823faa59d0fb5a5ebe92cb1e22041fe33793901890b21f8b0494229
+#   mission/nagar-ingestion:phase7e-5  (Step-2 sweep: upload intents are shortened only after a
+#     successful publish, so a rejected event no longer consumes the 600s upload window; and a
+#     real `npm test` in package.json)
+#     sha256:d43961d6443c48533b52698529c77a97bdb74a4e7afb26b303dc389c9b303671
 images:
   - name: registry.nagar.internal:5000/nagar-ingestion
     newName: k3d-nagar.localhost:5000/mission/nagar-ingestion
-    digest: sha256:d8d681f5b823faa59d0fb5a5ebe92cb1e22041fe33793901890b21f8b0494229
+    digest: sha256:d43961d6443c48533b52698529c77a97bdb74a4e7afb26b303dc389c9b303671

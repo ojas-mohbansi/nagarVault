@@ -11,10 +11,14 @@ kind: Component
 #     sha256:8648c4ea0bf81fb5e4a251a53a61582ac53475deb142912cf84472110be3bb04
 #   mission/nagar-frontend:phase7g-2  (+/api/whoami route, structured gate-verdict pass-through)
 #     sha256:2239a6181583d7ea2687b08a2117eb39288a2c17825414e168dc889fc1a54e4b
+#   mission/nagar-frontend:phase7g-3  (Step-2 sweep: relay the upstream Secure/SameSite cookie
+#     attributes on login, and add the DELETE /api/login handler the dashboard's Sign out calls —
+#     it previously 405'd, leaving the session unrevoked)
+#     sha256:695088c2a0050537ddf4cb1ac8990ee59ec743734692ab694e98c86c6e14160b
 images:
   - name: registry.nagar.internal:5000/nagar-frontend
     newName: k3d-nagar.localhost:5000/mission/nagar-frontend
-    digest: sha256:2239a6181583d7ea2687b08a2117eb39288a2c17825414e168dc889fc1a54e4b
+    digest: sha256:695088c2a0050537ddf4cb1ac8990ee59ec743734692ab694e98c86c6e14160b
   - name: registry.nagar.internal:5000/nagar-vault-ui
     newName: k3d-nagar.localhost:5000/mission/nagar-vault-ui
     digest: sha256:8648c4ea0bf81fb5e4a251a53a61582ac53475deb142912cf84472110be3bb04
