@@ -95,14 +95,15 @@ function buildApp() {
     try { topic = routeFor(body.department); } catch { return res.status(400).json({ detail: 'unknown department' }); }
 
     const attachments = [];
+    const consumedIntents = [];
     for (const a of body.attachments || []) {
       const raw = await d.redisGet(`upload-intent:${a.attachmentId}`);
       if (!raw) return res.status(409).json({ detail: `unknown or expired upload intent: ${a.attachmentId}` });
       const intent = JSON.parse(raw);
       try {
         const stat = await d.statObject({ bucket: intent.bucket, objectKey: intent.objectKey });
-        await d.redisExpire(`upload-intent:${a.attachmentId}`, 60); // consumed; brief grace for retries
         attachments.push({ bucket: intent.bucket, objectKey: intent.objectKey, size: stat.size });
+        consumedIntents.push(a.attachmentId); // consumed only once the event is published
       } catch {
         return res.status(409).json({ detail: `attachment not verifiable in object store: ${a.attachmentId}` });
       }
@@ -137,6 +138,12 @@ function buildApp() {
     await d.kafkaSend(topic, envelope.eventId, JSON.stringify(envelope));
     await d.redisSet(dupKey, envelope.eventId, UPLOAD_TTL_S);
     await d.redisSet(`event:${envelope.eventId}`, JSON.stringify({ topic, dedupKey: dedupKey(body.sourceSystem, body.sourceRecordId), publishedAt: Date.now() }), UPLOAD_TTL_S);
+    // The intents are shortened only now: a request refused above (validation, dedup,
+    // unverifiable attachment) must leave the 600s upload window untouched so the
+    // operator can correct the body and retry without re-uploading media.
+    for (const attachmentId of consumedIntents) {
+      await d.redisExpire(`upload-intent:${attachmentId}`, 60); // consumed; brief grace for retries
+    }
     return res.status(202).json({ eventId: envelope.eventId, topic });
   });
 

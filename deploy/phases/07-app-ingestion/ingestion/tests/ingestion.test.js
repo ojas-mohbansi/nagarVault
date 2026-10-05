@@ -200,6 +200,7 @@ test('HTTP: presign -> verify -> commit -> duplicate, end to end', async (t) => 
   assert.equal(r.status, 202);
   assert.ok(r.body.eventId);
   assert.equal(env.published.length, 1);
+  assert.equal(env.store[`upload-intent:${upload.attachmentId}`].ttl, 60); // consumed on success
   assert.equal(env.published[0].topic, 'nmc.complaints.raw.restricted.v1');
   const sent = JSON.parse(env.published[0].value);
   assert.equal(sent.sourceRecordId, 'REC-77'); // the 7c envelope on the wire
@@ -265,4 +266,47 @@ test('HTTP: intent TTL is 600s and expired intent rejects commit', async (t) => 
   });
   assert.equal(r.status, 409); // unknown/expired intent
   assert.equal(env.published.length, 0);
+});
+
+test('HTTP: a REJECTED event does not consume the referenced upload intent', async (t) => {
+  // Ordering contract: validation must precede the intent's TTL shortening, so a
+  // request that is refused after its attachments were stat'd leaves the operator's
+  // 600s upload window intact (they can fix the body and retry without re-uploading).
+  const env = { store: {}, published: [] };
+  const port = await startServer(env, t);
+  const base = `http://127.0.0.1:${port}`;
+  const req = (path, opts = {}) =>
+    new Promise((resolve, reject) => {
+      const r = http.request(`${base}${path}`, { method: opts.method || 'GET', headers: opts.headers || {} }, (res) => {
+        let b = '';
+        res.on('data', (c) => (b += c));
+        res.on('end', () => resolve({ status: res.statusCode, body: b ? JSON.parse(b) : null }));
+      });
+      r.on('error', reject);
+      if (opts.body) r.write(opts.body);
+      r.end();
+    });
+  let r = await req('/api/v1/uploads/presign', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${officer()}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ files: [{ filename: 'c.jpg', contentType: 'image/jpeg' }] }),
+  });
+  const upload = r.body.uploads[0];
+  assert.equal(env.store[`upload-intent:${upload.attachmentId}`].ttl, 600);
+
+  // occurredAt is missing: the body is refused AFTER the attachment was verified.
+  r = await req('/api/v1/events', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${officer()}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      department: 'complaints',
+      sourceSystem: 'crm',
+      sourceRecordId: 'REC-99',
+      payload: { ward: '1', category: 'sanitation', status: 'open', description: 'x' },
+      attachments: [{ attachmentId: upload.attachmentId }],
+    }),
+  });
+  assert.equal(r.status, 400);
+  assert.equal(env.published.length, 0);
+  assert.equal(env.store[`upload-intent:${upload.attachmentId}`].ttl, 600); // untouched by the rejection
 });

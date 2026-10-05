@@ -30,15 +30,24 @@ export function loginBody(raw) {
 }
 
 export function cookiePairsFromSetCookie(setCookie) {
-  if (!setCookie) return { cookie: null, maxAge: null };
+  if (!setCookie) return { cookie: null, maxAge: null, secure: false, sameSite: null };
   const parts = setCookie.split(';').map((p) => p.trim());
   const [nameValue, ...attrs] = parts;
   const maxAge = attrs.find((a) => /^max-age=/i.test(a));
-  // Re-emit the cookie host-only (no Domain), httponly, path=/ — SameSite/Secure stay
-  // as upstream sent them (COOKIE_SECURE flips with Phase 8 edge TLS).
+  // SameSite/Secure are relayed as upstream sent them (COOKIE_SECURE flips with Phase 8
+  // edge TLS). They are reported separately so the login route re-issues the browser
+  // cookie with the same attributes rather than silently dropping Secure.
+  const sameSite = attrs.find((a) => /^samesite=/i.test(a));
+  const secure = attrs.some((a) => /^secure$/i.test(a));
+  // Re-emit the cookie host-only (no Domain), httponly, path=/.
   const keep = attrs.filter((a) => /^samesite=/i.test(a) || /^secure$/i.test(a));
   const cookie = [nameValue, 'Path=/', 'HttpOnly', ...keep].join('; ');
-  return { cookie, maxAge: maxAge ? maxAge.split('=')[1] : null };
+  return {
+    cookie,
+    maxAge: maxAge ? maxAge.split('=')[1] : null,
+    secure,
+    sameSite: sameSite ? sameSite.split('=')[1] : null,
+  };
 }
 
 const ASK_FIELDS = ['sql', 'rows', 'row_count', 'role'];
@@ -47,6 +56,29 @@ export function askResponseWhitelist(payload) {
   const out = {};
   for (const f of ASK_FIELDS) if (payload && payload[f] !== undefined) out[f] = payload[f];
   return out;
+}
+
+// Logout relay (the dashboard's Sign out → DELETE /api/login). Revocation is recorded in
+// authService (POST /logout, cookie relayed as Bearer) and the host-only session cookie is
+// cleared. A failed upstream call still clears the local cookie — the officer must always be
+// able to sign out of this browser; the server-side revocation is retried by the next logout.
+export async function logout(cookieHeader, env, fetchImpl = fetch) {
+  const bearer = bearerFromCookie(cookieHeader || '');
+  const upstream = upstreamFromEnv(env);
+  if (bearer) {
+    try {
+      await fetchImpl(`${upstream.auth}/logout`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${bearer}` },
+      });
+    } catch {
+      // best-effort: the local cookie is cleared regardless
+    }
+  }
+  return {
+    body: { status: 'ok' },
+    cookie: { name: COOKIE_NAME, value: '', maxAge: 0, path: '/', httpOnly: true, sameSite: 'lax' },
+  };
 }
 
 export function upstreamFromEnv(env) {

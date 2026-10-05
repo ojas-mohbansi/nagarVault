@@ -213,13 +213,24 @@ def upsert_batch(upserts: list) -> int:
     return executed
 
 
-def record_to_dlq(entries: list, original_topic: str) -> None:
-    """Publish malformed messages to the DLQ (produced by this worker, consumed by 7f)."""
-    if not entries:
-        return
+def _dlq_producer():
+    """Producer factory (a seam so the delivery guarantee is hermetically testable)."""
     from confluent_kafka import Producer
 
-    producer = Producer({"bootstrap.servers": BOOTSTRAP})
+    return Producer({"bootstrap.servers": BOOTSTRAP})
+
+
+def record_to_dlq(entries: list, original_topic: str) -> None:
+    """Publish malformed messages to the DLQ (produced by this worker, consumed by 7f).
+
+    Raises when any message is still undelivered after the flush: the consumer commits the
+    offset right after process_message returns, so swallowing a failed publish would silently
+    lose the malformed event. Raising leaves the offset uncommitted so it is redelivered once
+    the DLQ is reachable again (the same readiness contract as a DB connection failure).
+    """
+    if not entries:
+        return
+    producer = _dlq_producer()
     for reason, detail, raw in entries:
         wrapper = json.dumps({
             "dlqReason": reason,
@@ -228,7 +239,9 @@ def record_to_dlq(entries: list, original_topic: str) -> None:
             "raw": raw.decode("utf-8", "replace"),
         }).encode()
         producer.produce(DLQ_TOPIC, value=wrapper)
-    producer.flush(30)
+    undelivered = producer.flush(30)
+    if undelivered:
+        raise RuntimeError(f"DLQ publish incomplete: {undelivered} message(s) undelivered")
 
 
 def _now_iso() -> str:

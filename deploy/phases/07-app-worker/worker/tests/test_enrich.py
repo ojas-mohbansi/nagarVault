@@ -237,3 +237,45 @@ def test_snake_case_mapping():
     assert ew.snake("vehicleCount") == "vehicle_count"
     assert ew.snake("stateOfCharge") == "state_of_charge"
     assert ew.snake("ward") == "ward"
+
+
+# --------------------------------------------------------------------------- DLQ delivery
+
+
+class _FakeProducer:
+    def __init__(self, undelivered):
+        self.undelivered = undelivered
+        self.produced = []
+
+    def produce(self, topic, value=None):
+        self.produced.append((topic, value))
+
+    def flush(self, timeout):
+        return self.undelivered
+
+
+def test_record_to_dlq_completes_when_broker_accepts(monkeypatch):
+    fake = _FakeProducer(0)
+    monkeypatch.setattr(ew, "_dlq_producer", lambda: fake)
+    ew.record_to_dlq([("invalid-json", "bad body", b"junk")], "traffic.events.raw.v1")
+    assert len(fake.produced) == 1
+    assert fake.produced[0][0] == ew.DLQ_TOPIC
+
+
+def test_record_to_dlq_raises_when_the_broker_drops_the_message(monkeypatch):
+    """A DLQ publish that never lands must NOT be reported as success.
+
+    The consumer commits the offset right after process_message returns, so an ignored
+    flush failure would silently lose the malformed event — the docstring promises no
+    silent loss. Raising leaves the offset uncommitted so the message is redelivered
+    once the DLQ is reachable again (same contract as a DB connection failure).
+    """
+    monkeypatch.setattr(ew, "_dlq_producer", lambda: _FakeProducer(1))
+    with pytest.raises(RuntimeError):
+        ew.record_to_dlq([("invalid-json", "bad body", b"junk")], "traffic.events.raw.v1")
+
+
+def test_process_message_does_not_claim_success_when_dlq_delivery_fails(monkeypatch):
+    monkeypatch.setattr(ew, "_dlq_producer", lambda: _FakeProducer(1))
+    with pytest.raises(RuntimeError):
+        ew.process_message("traffic.events.raw.v1", b"junk")
