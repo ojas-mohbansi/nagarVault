@@ -4784,3 +4784,70 @@ kafka_brokers 1
 
 **All 16 Applications now report Synced + Healthy** — first time in this mission — and all
 7 observability pods are 1/1 Running.
+
+### G13.9 A TTL on an Argo-managed Job was a re-run trigger, not retention
+
+Resumed after a host restart (Docker daemon down, so the k3d cluster was down). Everything
+converged on its own: node Ready, CNPG `postgres` 2/2 healthy with `postgres-1` primary, every pod
+Running or Completed. The kafka-exporter was crash-looping again, but only because its last
+attempt (05:10:33) predated the broker finishing its own startup — its backoff had already grown
+past the point where Kafka was listening. Cleared the pod; it came up 1/1 and Prometheus reports
+the target up with `kafka_brokers 1`. G13.8's fix is intact at the live surface.
+
+Then `nagar-phase6-vector-llm` reported `OutOfSync` with its Job missing, and the cause was not
+what the record said. Watched directly:
+
+```
+[05:13:46] app=OutOfSync/Healthy  job=nagar-ollama-models NotFound
+[05:14:32] app=OutOfSync/Healthy  job=nagar-ollama-models NotFound
+[05:14:47] app=Synced/Progressing job=nagar-ollama-models Running 5s
+```
+
+Argo re-created the Job **at an unchanged revision**, and it re-ran end to end — checksum
+verification of all nine model blobs, then `restoring into the shared PVC`: a multi-GB write into
+the claim the live Ollama server reads. `ttlSecondsAfterFinished` deletes the completed Job
+**object**; the desired object is then absent, which is drift Argo *can* see; `selfHeal: true`
+recreates it; the Job re-runs. Five Argo-managed Jobs carried a TTL (bucket-init and
+nagar-kafka-topics 24 h, nagar-db-migrate 1 h, nagar-ollama-models and nagar-schema-index 2 h), so
+the loop was platform-wide and its period was simply the TTL. Corroborated by orphaned `Completed`
+pods whose owning Job is gone (`nagar-ollama-models-lb6kx` 14 h, `nagar-db-migrate-fxt4k` 13 h,
+`nagar-schema-index-xgf2d` 14 h). Argo's auto-sync backoff is what makes this look intermittent
+rather than clockwork — which is also why a single `Synced` snapshot had looked fine before.
+
+This **supersedes ADR-016 §1** ("is not re-run on syncs where the spec is unchanged … does not
+churn (I-2)") and **re-attributes** the Phase-4 open item that blamed `Replace=true`: TTL alone is
+sufficient, and it was the live cause. Removed from all five (ADR-032); `restore-drill/` keeps its
+TTLs because that tree is deliberately not Argo-managed.
+
+One more thing the ship exposed, worth having on the record:
+
+```
+$ kubectl get applications -n nagar-system            # after the mirror advanced to b6bab49
+nagar-phase3-object-cache  Synced  Healthy            # …all four affected apps Synced
+$ kubectl get jobs -n nagar-platform -o json | … 'ttlSecondsAfterFinished' in .spec
+jobs with a live TTL: 5                                # …every live Job still carried one
+```
+
+Argo's differ does not compare `ttlSecondsAfterFinished`, so a git-side removal **never converges
+on a Job that already exists** — the controller logged `Skipping auto-sync: application status is
+Synced` while git and the cluster disagreed. Live state was brought to git state with the
+sanctioned §8 pattern (delete the Job, let Argo recreate it): all five came back from the TTL-free
+revision, re-ran idempotently (`INDEX-SYNC-OK`, 40 points), and now report the field absent.
+
+```
+$ kubectl get jobs -n nagar-platform -o json | … ttl per job
+  bucket-init              ttl=ABSENT
+  nagar-db-migrate         ttl=ABSENT
+  nagar-kafka-topics       ttl=ABSENT
+  nagar-ollama-models      ttl=ABSENT
+  nagar-schema-index       ttl=ABSENT
+  ---> jobs still carrying a TTL: 0
+$ kubectl get applications -n nagar-system --no-headers | awk '{print $2"/"$3}' | sort | uniq -c
+     16 Synced/Healthy
+```
+
+`OutOfSync` is a drift signal again rather than a timer artefact, and the heavy init work stops
+repeating. Shipped the sanctioned way: `b6bab49` (fix + ADR-032 + §12.37) → mirror `phase13-5`
+(`sha256:3e7ccca8…`, payload at a byte-identical HEAD) → transport advanced server-side → Argo.
+The three orphaned pods from the old cycles are left in place as the evidence trail; §12.37
+explains how to read them.

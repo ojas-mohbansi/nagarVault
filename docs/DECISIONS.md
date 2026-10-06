@@ -1064,6 +1064,14 @@ deviation.
   and **re-attributes** the open item the Phase-4 record raised (mission log, "Honest correction to
   the Phase 3 record"), which blamed `Replace=true`: TTL alone is sufficient, and it was the live
   cause.
+- **Convergence caveat, found while shipping this.** Argo's differ does not compare
+  `ttlSecondsAfterFinished`. After the mirror advanced to the fixed revision, all four affected
+  Applications reported `Synced` while all five live Jobs still carried the old TTL, and the
+  controller logged `Skipping auto-sync: application status is Synced`. So a git-side removal
+  alone never converges on a Job that already exists. Live state was brought to git state with the
+  §8 pattern (delete the Job; Argo recreates it from the TTL-free revision) — the sanctioned
+  exception, not a hand-edit — after which all five live Jobs report the field `ABSENT`. Same class
+  of normalization as ADR-016 §2(b): the differ is not the source of truth, the manifest is.
 - **Still open:** whether `Replace=true` *additionally* re-runs a Job whose spec is unchanged is
   not separated by this evidence — that question remains open in the Phase-4 record. If periodic
   re-indexing is ever wanted as a feature, it belongs in an explicit `CronJob`, never in a TTL
