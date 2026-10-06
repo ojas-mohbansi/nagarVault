@@ -1088,10 +1088,13 @@ deviation.
   immutable (ADR-016 §2) and a legitimate spec change still has to land somehow; a *changed* spec
   re-running the Job is the intended semantic, not drift. Re-running remains a deliberate act:
   change the spec, or delete the Job per OPERATIONS §8.
-- **The former TTL periods were crossed with no side effect.** The window was carried past the 1 h
-  period `nagar-db-migrate` used to be deleted on (created 05:29:55, former TTL expiry 06:29:55),
-  and continued on toward the 2 h periods of `nagar-ollama-models` and `nagar-schema-index`, with
-  the Jobs in place and `Completed` throughout. This is the empirical half of the structural
-  argument: it is not only that the TTL controller now has nothing to act on, but that the clock
-  passed the instants at which it used to fire, and nothing happened. Raw samples: mission log
-  G13.10.
+- **The former TTL periods were crossed with no side effect.** The window ran past the exact
+  instants the deleted TTLs used to fire at, for three of the five Jobs: `nagar-db-migrate`
+  (3600 s, former expiry 06:29:55), `nagar-ollama-models` (7200 s, 07:29:53) and
+  `nagar-schema-index` (7200 s, 07:34:53). Samples either side of each instant show the same `uid`,
+  the same `creationTimestamp` and the same single `Succeeded` pod throughout the 76-minute window.
+  This is the empirical half of the structural argument: it is not only that the TTL controller now
+  has nothing to act on, but that the clock passed the moments at which it previously acted, and
+  nothing happened. The remaining two Jobs carried 86400 s periods, a day long, which no observation
+  window can cover; for those the argument is the absence of the field itself. Raw samples: mission
+  log G13.10.
