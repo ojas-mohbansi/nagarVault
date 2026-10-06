@@ -28,8 +28,8 @@
 # The Job carries `Force=true,Replace=true` because its pod template embeds a kustomize
 # content hash of the SQL: when the migration text changes, the Job template changes, and a Job
 # template is immutable. This is the repository's established pattern for init Jobs
-# (ADR-016 §2; the Phase-4 record flags the resulting per-sync recreation as an open item that
-# applies equally to all three init Jobs).
+# (ADR-016 §2; the Phase-4 open item on per-sync recreation is resolved by ADR-032 — the
+# observed churn came from ttlSecondsAfterFinished, now removed from every Argo-managed Job).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -46,7 +46,8 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   backoffLimit: 3
-  ttlSecondsAfterFinished: 3600
+  # No `ttlSecondsAfterFinished` (ADR-032): the completed migration Job is retained so the app
+  # stays Synced; a TTL would re-run the migration on a timer.
   template:
     metadata:
       labels:

@@ -24,7 +24,8 @@ metadata:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   backoffLimit: 3
-  ttlSecondsAfterFinished: 7200
+  # No `ttlSecondsAfterFinished` (ADR-032): a TTL-deleted Job pins the app OutOfSync and makes
+  # self-heal re-run this re-embed on a timer.
   template:
     metadata:
       labels:

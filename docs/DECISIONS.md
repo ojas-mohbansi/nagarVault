@@ -1026,3 +1026,45 @@ deviation.
   that produced this entry ran as a rendered-manifest census of every `Service` and
   `containerPort` in all 41 trees against §4, which is now the check to re-run whenever a
   manifest adds a Service.
+
+---
+
+## ADR-032 — `ttlSecondsAfterFinished` is prohibited on Argo-managed Jobs
+
+- **Context:** every Argo-managed init Job set `ttlSecondsAfterFinished` (`bucket-init` 86400,
+  `nagar-kafka-topics` 86400, `nagar-db-migrate` 3600, `nagar-ollama-models` 7200,
+  `nagar-schema-index` 7200) for retention "without clogging the namespace". The TTL controller
+  deletes the completed Job **object**. Argo then compares desired against live, finds the desired
+  Job absent, and reports the app `OutOfSync` **at an unchanged revision** — the very revision it
+  had already synced. Every app runs `automated.selfHeal: true` with `prune: true`, so Argo
+  re-creates the Job and it **re-runs**. The TTL is therefore not retention hygiene; it is a
+  re-run trigger on a timer.
+- **Evidence (2026-10-06, live).** `nagar-phase6-vector-llm` was `OutOfSync` with
+  `nagar-ollama-models` absent; Argo re-created it inside the observed window and the Job re-ran
+  end-to-end — checksum verification of all nine model blobs, then `restoring into the shared PVC`,
+  a multi-GB write into the claim the live Ollama server reads. Orphaned `Completed` pods with no
+  owning Job corroborate earlier cycles (`nagar-ollama-models-lb6kx` 14 h, `nagar-db-migrate-fxt4k`
+  13 h, `nagar-schema-index-xgf2d` 14 h). Argo's own auto-sync backoff (`Skipping auto-sync: already
+  attempted sync to [<rev>] … retrying in …`) spaces the cycles irregularly, so a single `Synced`
+  snapshot can look healthy — the drift is only visible if you watch.
+- **Decision:** `ttlSecondsAfterFinished` must not be set on a Job that Argo CD manages. Removed
+  from the five Jobs above. The completed Job object is retained indefinitely: it *is* the durable
+  evidence, and its absence is what created the loop. Object count is not a concern at this scale.
+  Re-running stays a deliberate act — change the spec (which lands through the Job's existing
+  `Force=true,Replace=true`) or delete the Job per OPERATIONS §8.
+  **Scope:** `deploy/phases/05-postgres/restore-drill/` keeps its TTLs, because that tree is
+  deliberately **not** Argo-managed (an operator procedure applied by hand, per its kustomization
+  header); there a TTL is genuine cleanup.
+- **Consequences:** apps stop flapping `OutOfSync`, which restores `OutOfSync` as a real drift
+  signal — the loop had been masking it. Repetition of heavy work stops: the TTL period bounded how
+  soon each Job could re-run, so the migration could re-run as often as hourly, the model copy and
+  the schema re-embed every 2 h, and the bucket and topic init daily. Idempotency (I-2) is
+  unchanged: still required, just no longer exercised on a schedule. This **supersedes ADR-016 §1's**
+  claim that the Job "is not re-run on syncs where the spec is unchanged … does not churn (I-2)",
+  and **re-attributes** the open item the Phase-4 record raised (mission log, "Honest correction to
+  the Phase 3 record"), which blamed `Replace=true`: TTL alone is sufficient, and it was the live
+  cause.
+- **Still open:** whether `Replace=true` *additionally* re-runs a Job whose spec is unchanged is
+  not separated by this evidence — that question remains open in the Phase-4 record. If periodic
+  re-indexing is ever wanted as a feature, it belongs in an explicit `CronJob`, never in a TTL
+  side effect.

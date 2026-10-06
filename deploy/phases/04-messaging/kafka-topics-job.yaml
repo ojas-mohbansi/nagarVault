@@ -35,8 +35,8 @@ metadata:
     nagar.io/tier: "3"
 spec:
   backoffLimit: 6
-  # Evidence retention: a completed Job stays visible for the nightly review window.
-  ttlSecondsAfterFinished: 86400
+  # No `ttlSecondsAfterFinished` (ADR-032): the completed Job is retained as evidence, and a
+  # TTL-deleted Job would pin the app OutOfSync and re-run this Job on a timer.
   template:
     metadata:
       labels:

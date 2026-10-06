@@ -30,7 +30,8 @@ metadata:
     nagar.io/models-payload-digest: sha256:335d043acd8d3c6296d600498ee2a17774b113ab3b429c5641115df04efc7fdc
 spec:
   backoffLimit: 3
-  ttlSecondsAfterFinished: 7200
+  # No `ttlSecondsAfterFinished` (ADR-032): a TTL-deleted Job pins the app OutOfSync and makes
+  # self-heal re-run this multi-GB model copy into the PVC the live server reads from.
   template:
     metadata:
       labels:
