@@ -1063,7 +1063,8 @@ deviation.
   claim that the Job "is not re-run on syncs where the spec is unchanged … does not churn (I-2)",
   and **re-attributes** the open item the Phase-4 record raised (mission log, "Honest correction to
   the Phase 3 record"), which blamed `Replace=true`: TTL alone is sufficient, and it was the live
-  cause.
+  cause. If periodic re-indexing is ever wanted as a feature, it belongs in an explicit `CronJob`,
+  never in a TTL side effect.
 - **Convergence caveat, found while shipping this.** Argo's differ does not compare
   `ttlSecondsAfterFinished`. After the mirror advanced to the fixed revision, all four affected
   Applications reported `Synced` while all five live Jobs still carried the old TTL, and the
@@ -1072,7 +1073,25 @@ deviation.
   §8 pattern (delete the Job; Argo recreates it from the TTL-free revision) — the sanctioned
   exception, not a hand-edit — after which all five live Jobs report the field `ABSENT`. Same class
   of normalization as ADR-016 §2(b): the differ is not the source of truth, the manifest is.
-- **Still open:** whether `Replace=true` *additionally* re-runs a Job whose spec is unchanged is
-  not separated by this evidence — that question remains open in the Phase-4 record. If periodic
-  re-indexing is ever wanted as a feature, it belongs in an explicit `CronJob`, never in a TTL
-  side effect.
+- **Closed — `Replace=true` does not re-run a Job whose spec is unchanged (observed live,
+  2026-10-06).** This was the item the Phase-4 record left open, and it is now separated from the
+  TTL question by an observation window rather than by argument. Watching the live cluster at the
+  synced revision `b6bab49` from 06:23Z at 20 s resolution, not one of the five Jobs changed
+  identity: `uid`, `creationTimestamp` and `resourceVersion` were constant in every sample, no pod
+  was re-created, and no Application left `Synced`/`Healthy`. The reason is mechanical, not lucky:
+  `Replace` is a **sync option** — it chooses *how* Argo writes a resource it has already decided to
+  sync — so it is read only when a sync actually runs. Every reconciliation in the window logged
+  `sync_ms: 0`, `auto_sync_ms: 0` and `Skipping auto-sync: application status is Synced` (323 of the
+  latter in one hour across the sixteen Applications): the differ ran (comparison expiry is 2 m),
+  found nothing to do, and no sync was attempted, so the option was never evaluated. `Replace=true`
+  therefore cannot by itself re-run a Job. It stays on these Jobs because the Job pod template is
+  immutable (ADR-016 §2) and a legitimate spec change still has to land somehow; a *changed* spec
+  re-running the Job is the intended semantic, not drift. Re-running remains a deliberate act:
+  change the spec, or delete the Job per OPERATIONS §8.
+- **The former TTL periods were crossed with no side effect.** The window was carried past the 1 h
+  period `nagar-db-migrate` used to be deleted on (created 05:29:55, former TTL expiry 06:29:55),
+  and continued on toward the 2 h periods of `nagar-ollama-models` and `nagar-schema-index`, with
+  the Jobs in place and `Completed` throughout. This is the empirical half of the structural
+  argument: it is not only that the TTL controller now has nothing to act on, but that the clock
+  passed the instants at which it used to fire, and nothing happened. Raw samples: mission log
+  G13.10.

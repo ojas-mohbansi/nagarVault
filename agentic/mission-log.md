@@ -4851,3 +4851,74 @@ repeating. Shipped the sanctioned way: `b6bab49` (fix + ADR-032 + §12.37) → m
 (`sha256:3e7ccca8…`, payload at a byte-identical HEAD) → transport advanced server-side → Argo.
 The three orphaned pods from the old cycles are left in place as the evidence trail; §12.37
 explains how to read them.
+
+### G13.10 `Replace=true` was never the trigger: 21 comparisons, 0 syncs, 62 minutes
+
+G13.9 removed one of the two things that could make an init Job re-run itself. The other was left
+explicitly open in ADR-032: all five Jobs also carry
+`argocd.argoproj.io/sync-options: Force=true,Replace=true`, and whether *that* re-runs a Job whose
+spec has not changed was never separated from the TTL evidence. The Phase-4 record had blamed
+`Replace=true` for the churn, so the honest state was "unknown", not "fixed".
+
+Reasoning alone cannot settle it, for the same reason the TTL loop survived two phases of review: a
+snapshot shows `Synced`, and the loop only exists *between* snapshots. So it was settled by
+watching. Live state was sampled every 20 s (every 60 s after the first 20 minutes) at the synced
+revision `b6bab49`, recording per Job the identity fields (`uid`, `creationTimestamp`,
+`resourceVersion`, `completionTime`), the pod name and start time, and per Application
+`sync.status`, `health.status`, `reconciledAt` and `operationState.finishedAt`.
+
+```
+window 2026-10-06T06:23:13Z .. open        5 Jobs, 20 s resolution
+  bucket-init          STABLE   uid=1 created=1 rv=1 podRuns=1
+  nagar-db-migrate     STABLE   uid=1 created=1 rv=1 podRuns=1
+  nagar-kafka-topics   STABLE   uid=1 created=1 rv=1 podRuns=1
+  nagar-ollama-models  STABLE   uid=1 created=1 rv=1 podRuns=1
+  nagar-schema-index   STABLE   uid=1 created=1 rv=1 podRuns=1
+  ---> job recreations: 0     non-Synced app samples: 0
+```
+
+A recreate changes `uid` *and* `creationTimestamp`; a re-run starts a new pod. Neither happened to
+any of the five, and no Application left `Synced`/`Healthy` for the whole window — so
+`nagar-phase6-vector-llm`, the app that was flapping on the TTL, did not flap once.
+
+The controller log says why, and it is mechanical rather than lucky:
+
+```
+$ kubectl -n nagar-system logs statefulset/argocd-application-controller --since=120m | …
+nagar-phase3-object-cache  last sync op = 05:29:53Z
+    after it: comparisons=21  auto-sync-declined(Synced)=21  sync-ops-started=0   reaches 06:32:26Z
+nagar-phase4-messaging     last sync op = 05:29:53Z
+    after it: comparisons=21  auto-sync-declined(Synced)=22  sync-ops-started=0   reaches 06:32:59Z
+nagar-phase5-postgres      last sync op = 05:29:55Z
+    after it: comparisons=21  auto-sync-declined(Synced)=21  sync-ops-started=0   reaches 06:30:28Z
+nagar-phase6-vector-llm    last sync op = 05:34:53Z
+    after it: comparisons=21  auto-sync-declined(Synced)=21  sync-ops-started=0   reaches 06:32:28Z
+```
+
+`Replace` is a **sync option**: it selects *how* Argo writes a resource it has already decided to
+sync, so it is read only inside a sync operation. Every one of those reconciliations logged
+`Skipping auto-sync: application status is Synced` with `sync_ms: 0` and `auto_sync_ms: 0` — the
+auto-sync path was entered, found nothing to do and declined. Not one `Syncing`, `Initialized new
+operation` or `Updated sync status: OutOfSync -> Synced` appears after the last legitimate sync, so
+the option was never read. The same stream holds the *before* case for comparison: at 05:14:42
+`nagar-phase6-vector-llm` went `Synced -> OutOfSync`, `Initiated automated sync to '5129ea37…'`,
+`Syncing` — the TTL re-run, live. One log, one app, both behaviours, and the difference is a field
+that no longer exists.
+
+The clock was also carried past the periods the deleted TTLs used to enforce. `nagar-db-migrate`
+was created 05:29:55 with a 3600 s TTL, so it used to be deleted at 06:29:55; samples either side of
+that instant (`06:29:16Z`, `06:29:19Z`, and on) show the same `uid` and no new pod. The remaining
+question this entry raises is only about coverage, not mechanism: `bucket-init` and
+`nagar-kafka-topics` had 86400 s periods, far outside any window that can be held open here, so for
+those two the argument stays arithmetical — the field is absent, so the TTL controller has nothing
+to act on — while three of the five had their former periods genuinely run out with the Job
+untouched.
+
+**Outcome: no manifest change was required.** `Replace=true` does not re-run an unchanged Job, so
+there was nothing to remove and no transport advance to make. ADR-032's "Still open" bullet is
+replaced with the closed finding plus this boundary evidence.
+
+Limitations, stated rather than implied: the 24 h periods were not observed to elapse; the window
+confirms the option is inert when the spec is unchanged, and says nothing about whether a *changed*
+spec should re-run the Job — it should, and still does. What it does settle is that periodic
+re-indexing is not a side effect of how these Jobs are synced.
