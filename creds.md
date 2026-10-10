@@ -20,6 +20,15 @@
 **Grafana, Loki, Prometheus, Alertmanager (HTTP).** Open the `http://127.0.0.1:PORT` URLs directly.
 No TLS, no flags, no resolve needed.
 
+**Loki path note.** Loki serves plain at root with **no path prefix** here. The `/ready` probe
+(used by the deployment's readiness/liveness checks) returns `ready` + HTTP 200, and `/metrics`
+serves the TSDB counters. If you open any non-root path — `/loki/ready`, `/loki/api/v1/status`,
+`/api/v1/status`, `/gorilla/ready` — you get HTTP 404; those are not valid endpoints in this
+config (Loki would only serve them under a mounted `/loki` prefix, which this Deployment does not
+use). The correct browser entry point is the base URL `http://127.0.0.1:36002` itself, which opens
+Grafana's Loki explorer. *(This note exists so a 404 in a browser is recognized as a wrong-path
+mistake, not a Loki fault — the service and its deployment are healthy.)*
+
 ---
 
 ## Links (sequential ports 36000–36004)
@@ -28,7 +37,7 @@ No TLS, no flags, no resolve needed.
 |---|---|---|---|---|
 | 0 | 0 | Edge / Officer Console (frontend) | `https://k3d-nagar.localhost:36000/` | Login page → dashboard → NL chatbot. Title: "NagarVault — Officer Console". |
 | 1 | 1 | Grafana | `http://127.0.0.1:36001` | Dashboards console (login required). `/api/health` → `{"database":"ok"}`. |
-| 2 | 2 | Loki | `http://127.0.0.1:36002` | Log query UI. `/ready` → 200. |
+| 2 | 2 | Loki | `http://127.0.0.1:36002` | Log query UI. `/ready` & `/metrics` both → 200; Loki serves plain at root, no `/loki` prefix — non-root paths return 404. |
 | 3 | 3 | Prometheus | `http://127.0.0.1:36003` | Metrics console. `/-/ready` → 200. |
 | 4 | 4 | Alertmanager | `http://127.0.0.1:36004` | Alert console. `/api/v2/alerts` → 200 (empty array = no alerts firing). |
 
@@ -94,8 +103,10 @@ kubectl -n nagar-observability port-forward --address 127.0.0.1 svc/nagar-promet
 kubectl -n nagar-observability port-forward --address 127.0.0.1 svc/nagar-alertmanager 36004:9093 &
 ```
 
-Kill them when done: `taskkill //F //IM kubectl.exe` (Windows) or kill the kubectl PIDs.
-Leak check per OPERATIONS §12.34: `tasklist //FI "IMAGENAME eq kubectl.exe"`.
+Kill Loki's forward when done: the port-forward for `nagar-loki` is per-shell and dies with its
+parent. To free the port specifically: `taskkill //F //IM kubectl.exe` (Windows) or kill that
+kubectl PID; a leak check per OPERATIONS §12.34 is `tasklist //FI "IMAGENAME eq kubectl.exe"`.
+(One kubectl process per forward; killing all clears every 3600x port at once.)
 
 ---
 
