@@ -44,8 +44,10 @@ These exist in the running Postgres, not in git (users are data, not manifests �
 
 | Username | Password | Role | Notes |
 |---|---|---|---|
-| `admin-smoke` | `nagar-smoke-878bf78f` | admin | Admin JWT; `/ask` is blocked by table-rbac (admin has no warehouse tables — correct). Can create other users via `POST /auth/create`. |
-| `officer-ask` | `nagar-officer-ask-123` | nmc_officer | Can `/ask` against warehouse tables (nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry). Verified: `/ask "how many complaints?"` → `{"sql":"SELECT COUNT(event_id) FROM nmc_complaints","rows":[{"count":15}],"row_count":1}`. |
+| `admin-smoke` | `nagar-smoke-878bf78f` | admin | Admin JWT; `/ask` blocked by table-rbac (admin has no warehouse tables — correct). Can create users via `POST /auth/create`. |
+| `officer-ask` | `nagar-officer-ask-123` | nmc_officer | Can `/ask` against warehouse tables (nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry). |
+
+- officer-ask verified: `/ask "how many complaints?"` → `{"sql":"SELECT COUNT(event_id) FROM nmc_complaints","rows":[{"count":15}],"row_count":1}`.
 
 **Login flow (browser):** open `https://k3d-nagar.localhost:36000/`, enter username + password.
 The session cookie (`session_token`, HttpOnly, Secure, SameSite=lax, 1h) is set by authService

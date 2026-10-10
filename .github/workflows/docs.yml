@@ -1,0 +1,56 @@
+name: Docs CI
+
+# Minimal verification gate for docs-only changes (creds.md, README, AGENTS.md, etc.).
+# Green = this job ran and passed. No automated checks can be "green" unless a job exists
+# and reports success; this is the smallest job that does that for a docs change.
+#
+# Departure conditions / reviewer notes:
+# - on: push + pull_request (no path filter). A docs-only change is not required to match a
+#   file pattern to run; the job runs regardless of which files changed. If you add a path
+#   filter later, a skipped workflow leaves a required PR check pending rather than passing.
+# - permissions: contents: read only (least privilege for checkout + lint).
+# - runs-on: ubuntu-latest (GitHub-hosted; no self-host/external secrets needed).
+# - This repo has no test suite; the gate is "file present + non-empty + markdown lints clean",
+#   not "tests pass". Mark this job required in branch protection only if you want docs changes
+#   to be gated by it.
+# - If markdownlint is unavailable or misconfigured, the lint step fails the job (intentional:
+#   a linter failure is a failed check, not a pass). Remove the lint step if you only want the
+#   existence/non-empty gate.
+# - merge_group trigger omitted: add it if the repo uses a merge queue and you want the check to
+#   run on merge-group events too.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Require creds.md and README.md to exist and be non-empty
+        # test -s: file exists AND size > 0. Fails for missing or zero-byte file.
+        run: |
+          for f in creds.md README.md AGENTS.md; do
+            if [ ! -s "$f" ]; then
+              echo "FAIL: $f is missing or empty"
+              exit 1
+            fi
+          done
+          echo "OK: creds.md, README.md, AGENTS.md all present and non-empty"
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v24
+        with:
+          globs: "**/*.md"
+          config: |
+            default: true
+            MD013: {line-length: 180}   # allow longer lines in docs tables/links
+            MD033: false                 # allow inline HTML (table cells, badges)
+            MD041: false                 # first-line-h1: many docs files already open with # title
