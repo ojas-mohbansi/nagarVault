@@ -38,6 +38,11 @@ configMapGenerator:
       # edit here, which was false — kustomize does not expand a directory here, so an
       # unlisted file would silently never be applied and the backstop would never run.
       - migrations/002_pii_column_grants.sql
+      # 003 creates municipal_assets, the registry table the Phase-7g officer console ledger
+      # renders (ADR-034). Listed here explicitly for the same reason 002 is — see the note
+      # above: an unlisted file is never applied, and the console would then render a table
+      # that does not exist.
+      - migrations/003_municipal_assets.sql
     options:
       labels:
         app.kubernetes.io/part-of: nagarvault

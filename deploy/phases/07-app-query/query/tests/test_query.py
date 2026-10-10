@@ -3,8 +3,10 @@
 # CONTRACT UNDER TEST (ARCHITECTURE §4.1 `POST /query` JWT + role RBAC; ARCHITECTURE §3.4
 # guardrails; SECURITY §3 layered authorization; Phase-5 DDL audit_logs + officer grant roles):
 #   * SELECT-only AST gate via sqlglot (multi-statement, DML/DDL all rejected)
-#   * per-role table RBAC: nmc_officer -> 4 civic tables; ROLE_HEALTH_OFFICER -> +health;
-#     admin -> NO warehouse tables (admin path is adminService only)
+#   * per-role table RBAC: nmc_officer -> 4 civic tables + municipal_assets (migration 003,
+#     ADR-034 — the table the Phase-7g console ledger reads); ROLE_HEALTH_OFFICER -> the 4
+#     civic tables + health, and NOT the asset registry; admin -> NO warehouse tables
+#     (admin path is adminService only)
 #   * PII column denylist (name, phone, email, address, aadhaar) even for permitted tables
 #   * SET ROLE wall before execution + RESET after (Phase-5 grants, ADR-019/§3.3)
 #   * audit row for EVERY attempt — allowed and blocked, with reason (SECURITY §9)
@@ -163,6 +165,45 @@ def test_admin_has_no_warehouse_tables(client):
     r = client.post("/query", json={"sql": "SELECT count(*) FROM nmc_complaints"},
                     headers=auth_header(token(role="admin")))
     assert r.status_code == 403
+    assert r.json()["detail"]["reason"] == "table-rbac"
+
+
+# ------------------------------------------------- the asset registry (migration 003, ADR-034)
+# The Phase-7g officer console renders a "Municipal Asset Ledger" from this table. The table
+# exists now (before 003 it did not, and the console's columns were invented), and the role
+# matrix was narrowed on purpose: nmc_officer only, which is also what the Phase-5 GRANT says.
+
+
+def test_nmc_officer_allowed_municipal_assets(client, db):
+    r = client.post("/query",
+                    json={"sql": "SELECT asset_id, ward, status FROM municipal_assets "
+                                 "WHERE ward = 'W-07' AND status <> 'INSPECTED'"},
+                    headers=auth_header(token(role="nmc_officer")))
+    assert r.status_code == 200, r.text
+    assert db.wall == [("SET ROLE", "nmc_officer")]  # the wall still applies to the new table
+
+
+def test_health_officer_denied_the_asset_registry(client):
+    """ADR-034 narrowed the registry to nmc_officer: no health workflow reads assets."""
+    r = client.post("/query", json={"sql": "SELECT asset_id FROM municipal_assets"},
+                    headers=auth_header(token(role="ROLE_HEALTH_OFFICER")))
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["reason"] == "table-rbac"
+
+
+def test_admin_denied_the_asset_registry(client):
+    r = client.post("/query", json={"sql": "SELECT asset_id FROM municipal_assets"},
+                    headers=auth_header(token(role="admin")))
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["reason"] == "table-rbac"
+
+
+def test_asset_registry_is_not_a_way_into_the_auth_tables(client):
+    """Joining a newly-granted table must not widen what the role can reach."""
+    r = client.post("/query",
+                    json={"sql": "SELECT count(*) FROM municipal_assets a JOIN users u ON true"},
+                    headers=auth_header(token(role="nmc_officer")))
+    assert r.status_code == 403, r.text
     assert r.json()["detail"]["reason"] == "table-rbac"
 
 

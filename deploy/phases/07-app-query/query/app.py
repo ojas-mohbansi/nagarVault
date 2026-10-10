@@ -11,10 +11,11 @@
 #      (same nagar-jwt secret and sessions table as authService).
 #   2. sqlglot AST gate — parse (postgres dialect), exactly ONE statement, SELECT-shaped
 #      only; everything else is `non-select` (403) or `parse-error` (400).
-#   3. Table RBAC — nmc_officer: the four civic tables; ROLE_HEALTH_OFFICER: + health
-#      camp records; admin: NO warehouse tables (SECURITY §3: admin acts via adminService
-#      only); unknown roles: nothing (fail closed). users/sessions/audit_logs are never
-#      queryable through this service.
+#   3. Table RBAC — nmc_officer: the four civic tables + the municipal asset registry;
+#      ROLE_HEALTH_OFFICER: the four civic tables + health camp records (NOT the asset
+#      registry — ADR-034 narrowed that grant deliberately); admin: NO warehouse tables
+#      (SECURITY §3: admin acts via adminService only); unknown roles: nothing (fail
+#      closed). users/sessions/audit_logs are never queryable through this service.
 #   4. PII column denylist — name, phone, email, address, aadhaar (ARCHITECTURE §3.4)
 #      anywhere in the AST; star-expansion over a PII-bearing table is blocked too.
 #   5. SET ROLE wall — the Phase-5 grants make the service role a member of nmc_officer /
@@ -53,7 +54,15 @@ STATEMENT_TIMEOUT_MS = 15000
 # SECURITY §3 matrix -> Phase-5 DDL grant roles. The JWT wire constant ROLE_HEALTH_OFFICER
 # maps to the PostgreSQL role health_officer (migration 001 header note).
 ROLE_TABLES = {
-    "nmc_officer": {"nmc_complaints", "traffic_events", "water_sensor_readings", "ev_bus_telemetry"},
+    # municipal_assets (migration 003, ADR-034) is the registry table the officer console's
+    # ledger reads. It is granted to nmc_officer only: no health workflow reads the asset
+    # registry, and the Phase-5 migration 003 grants SELECT to exactly that role, so the
+    # application gate and the database wall agree on the same set. Every table named here is
+    # read by a Phase-7g console view; a table granted to no role is dead weight.
+    "nmc_officer": {
+        "nmc_complaints", "traffic_events", "water_sensor_readings", "ev_bus_telemetry",
+        "municipal_assets",
+    },
     "ROLE_HEALTH_OFFICER": {
         "nmc_complaints", "traffic_events", "water_sensor_readings", "ev_bus_telemetry",
         "health_camp_records",

@@ -4938,3 +4938,36 @@ Limitations, stated rather than implied: the 24 h periods were not observed to e
 confirms the option is inert when the spec is unchanged, and says nothing about whether a *changed*
 spec should re-run the Job — it should, and still does. What it does settle is that periodic
 re-indexing is not a side effect of how these Jobs are synced.
+
+### G14.1 The asset registry is real, reachable, and denied to everyone else (2026-10-11)
+
+The approved officer-console plan led with its data foundation, on the argument that a console
+rendering asset columns against a table that does not exist only has to be redone. Migration
+`003_municipal_assets.sql` therefore lands first, with the role matrix, the schema corpus and the
+four doc enumerations moved in the same change (ADR-034).
+
+What was exercised, in the order the evidence was produced:
+
+| Claim | Command shape | Observed |
+|---|---|---|
+| the migration replays idempotently | the Job's own loop (`psql -X -v ON_ERROR_STOP=1 -f <file>`) run **twice** against the live primary, all three migrations each pass | pass 1 `INSERT 0 8`, pass 2 `INSERT 0 0`, `exit=0`, zero `ERROR` lines in six runs |
+| the table is real and owned correctly | `information_schema.columns` / `pg_tables` / `role_table_grants` | 12 columns as designed, owner `nagar`, `nmc_officer=SELECT`, no `health_officer` row, 8 rows, 3 indexes |
+| the role wall is real | `SET ROLE nmc_officer` then the ward/status filter; `SET ROLE health_officer` then `count(*)` | officer: `current_user=nmc_officer`, 8 visible rows, 6 assets returned; health_officer: `ERROR: permission denied for table municipal_assets`, exit 3 |
+| a real officer reaches it through the service | updated `app.py` staged into a query-service pod, uvicorn on loopback, **real** `nmc_officer` session minted at the live authService | `/query` → `200`, `row_count=6`, real rows (`VALV-702 W-07 SEC-3A Sluice Gate A UNVERIFIED` …); aggregate shape → `[{"ward":"W-07","assets":6},{"ward":"W-12","assets":2}]` |
+| non-officer roles are denied | same SQL, real `admin` session; officer against `users`; no token | `admin` → `403 {"reason":"table-rbac","verdict":"blocked"}`; `users` → `403 table-rbac`; no token → `401` |
+| the gate logic holds under the pinned deps | `pytest -q` in a container built from `query/requirements.txt` | `61 passed`, `PYTEST_RC=0` (4 new tests named and passing) |
+| the enumerations agree | `grep -rln municipal_assets` over the tree | exactly 10 files (migration, 05 kustomization, restore-drill, schema corpus, `app.py`, tests, SECURITY §3, ARCHITECTURE §3.3, DECISIONS, creds.md) — and `enrich.py`/worker tests correctly do **not** list it |
+
+**Two limitations, stated rather than implied.** First, the deployed pods still run the previous
+images: `/api/ask` as the officer returned `503 database unreachable` (the model has no corpus
+document for the table, so it guesses a shape the database rejects) and the *same* `municipal_assets`
+SQL that the updated code answers with `200` is `403 table-rbac` against the running
+`query-service:phase7b-3`. Closing that is the plan's build/pin/deploy step — two image rebuilds
+(`nagar-query-service`, `schema-indexer`) plus the mirror cycle (`git clone --bare` → build → push →
+`newTag` bump → §12.16 apply), not a code change. Second, the rows are fixtures: no topic in the
+frozen registry maps to the table and `enrichWorker` has no department for it, so its only writer is
+the migration itself, and `ON CONFLICT DO NOTHING` reasserts them on every replay.
+
+The live database already carries 003 (applied with the migration's own SQL during this
+verification); the Argo sync will re-run the Job and converge to `INSERT 0 0`, which the replay
+above proves is a no-op.

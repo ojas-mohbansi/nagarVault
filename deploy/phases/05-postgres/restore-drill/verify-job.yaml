@@ -83,7 +83,8 @@ spec:
               echo "--- restored tables ---"
               fail=0
               for t in users sessions audit_logs nmc_complaints traffic_events \
-                       water_sensor_readings health_camp_records ev_bus_telemetry; do
+                       water_sensor_readings health_camp_records ev_bus_telemetry \
+                       municipal_assets; do
                 n=$(psql -X -tAc "SELECT count(*) FROM $t" "$DATABASE_URL" || echo MISSING)
                 echo "  $t rows=$n"
                 [ "$n" = "MISSING" ] && fail=1

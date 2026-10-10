@@ -5,12 +5,12 @@
     {
       "id": "overview-01",
       "table": null,
-      "text": "The NagarVault warehouse is a PostgreSQL 15 database named nagardb in schema public, owned by the role nagar. It stores enriched civic events from five source systems in five department tables (nmc_complaints, traffic_events, water_sensor_readings, health_camp_records, ev_bus_telemetry), plus three support tables: users (login accounts), sessions (JWT jti revocation), and audit_logs (every SQL attempt, allowed or blocked)."
+      "text": "The NagarVault warehouse is a PostgreSQL 15 database named nagardb in schema public, owned by the role nagar. It stores enriched civic events from five source systems in five department tables (nmc_complaints, traffic_events, water_sensor_readings, health_camp_records, ev_bus_telemetry), plus the municipal_assets asset registry (one row per physical asset, current state only), plus three support tables: users (login accounts), sessions (JWT jti revocation), and audit_logs (every SQL attempt, allowed or blocked)."
     },
     {
       "id": "overview-02",
       "table": null,
-      "text": "Every department table shares an event envelope: event_id (ingestion-assigned, globally unique), source_system plus source_record_id (unique together; the deduplication key), occurred_at (when the event happened at the source, timestamptz), ingested_at (when the warehouse row was written, timestamptz, defaults to now()), and payload (jsonb holding the normalized event as received)."
+      "text": "Every event table shares an event envelope: event_id (ingestion-assigned, globally unique), source_system plus source_record_id (unique together; the deduplication key), occurred_at (when the event happened at the source, timestamptz), ingested_at (when the warehouse row was written, timestamptz, defaults to now()), and payload (jsonb holding the normalized event as received). municipal_assets is the one exception: it is registry state rather than an event stream, so it carries none of those columns."
     },
     {
       "id": "overview-03",
@@ -20,7 +20,7 @@
     {
       "id": "overview-04",
       "table": null,
-      "text": "Access control is enforced twice: queryService checks role-to-table permissions in application code, and PostgreSQL grants mirror it. Role nmc_officer may SELECT nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry. Role health_officer may additionally SELECT health_camp_records. No officer role may SELECT users, sessions, or audit_logs."
+      "text": "Access control is enforced twice: queryService checks role-to-table permissions in application code, and PostgreSQL grants mirror it. Role nmc_officer may SELECT nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry and municipal_assets. Role health_officer may SELECT nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry and health_camp_records, but NOT municipal_assets. No officer role may SELECT users, sessions, or audit_logs."
     },
     {
       "id": "overview-05",
@@ -123,6 +123,21 @@
       "text": "ev_bus_telemetry.route_id examples: 'R-1', 'R-12', 'Airport express'. Fleet utilization questions: count(DISTINCT bus_id) per route_id, or count(DISTINCT bus_id) where occurred_at falls in the requested window. The covering index is (bus_id, occurred_at DESC)."
     },
     {
+      "id": "table-municipal_assets-01",
+      "table": "municipal_assets",
+      "text": "Table municipal_assets: the municipal asset registry, one row per physical water asset (sluice gates, valves, pumps, filter beds, drain off-takes). It is a REGISTRY table, not an event table: it has no event envelope columns and no occurred_at, so it cannot be filtered by date range. Columns: asset_id text primary key (examples 'VALV-702', 'PMP-118', 'FLTR-052'), ward text not null (free text codes like 'W-07', 'W-12'), sector text (e.g. 'SEC-3A'), component_type text not null (e.g. 'Sluice Gate A', 'Butterfly Valve', 'Booster Pump'), component_detail text (model line, e.g. 'DN-400 high-pressure main'), grid_lat numeric(9,6), grid_lon numeric(9,6), status text not null, last_inspected_at timestamptz (NULL when no crew has inspected the asset), installed_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now()."
+    },
+    {
+      "id": "table-municipal_assets-02",
+      "table": "municipal_assets",
+      "text": "municipal_assets.status values: 'UNVERIFIED' (never inspected), 'FLAGGED_TRIAGE' (an inspection raised a defect), 'PENDING_CREW' (queued for a crew), 'INSPECTED' (verified sound). A question about 'uninspected' or 'not yet inspected' assets means status <> 'INSPECTED'. Recency questions use updated_at (when the row was last written) or last_inspected_at (when a crew last visited, NULL if never)."
+    },
+    {
+      "id": "table-municipal_assets-03",
+      "table": "municipal_assets",
+      "text": "municipal_assets holds CURRENT REGISTRY STATE, not history: there is no time series here and no way to ask what an asset's status was last month. Every other warehouse table is an event stream with occurred_at; this one is not, so a generated query that filters municipal_assets by occurred_at will fail. Filter asset questions by ward, sector, component_type or status."
+    },
+    {
       "id": "table-users-01",
       "table": "users",
       "text": "Table users: officer login accounts. Columns: user_id text primary key, username text unique not null, password_hash text not null (argon2id, never plaintext), role text not null (values nmc_officer, ROLE_HEALTH_OFFICER, admin), is_active boolean not null default true, created_at and updated_at timestamptz not null default now(). OFF LIMITS: no officer role may SELECT this table; the query gate blocks it. Never generate SQL against users."
@@ -171,6 +186,11 @@
       "id": "column-ev_bus_telemetry-01",
       "table": "ev_bus_telemetry",
       "text": "Typical questions answered from ev_bus_telemetry: 'buses on route R-12 now' (count distinct bus_id where route_id='R-12' and occurred_at >= now() - interval '15 minutes'), 'lowest battery bus' (order by state_of_charge asc limit 1 with occurred_at >= now() - interval '1 hour'), 'average fleet speed' (avg(speed_kph))."
+    },
+    {
+      "id": "column-municipal_assets-01",
+      "table": "municipal_assets",
+      "text": "Typical questions answered from municipal_assets: 'uninspected valves in Ward 7' (WHERE ward = 'W-07' AND status <> 'INSPECTED'), 'assets flagged for triage' (WHERE status = 'FLAGGED_TRIAGE'), 'what is pending crew by component type' (SELECT component_type, count(*) ... WHERE status = 'PENDING_CREW' GROUP BY component_type), 'when was VALV-702 last inspected' (SELECT asset_id, last_inspected_at WHERE asset_id = 'VALV-702'), 'how many assets sit in each ward' (GROUP BY ward)."
     },
     {
       "id": "sql-style-01",

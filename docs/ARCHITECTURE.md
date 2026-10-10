@@ -113,6 +113,11 @@ upserts into `nmc_complaints`, `traffic_events`, `water_sensor_readings`, `healt
 idempotent `IF NOT EXISTS`, applied by that phase's migration Job; the path was corrected from
 `enrichWorker/migrations/` in Phase 5 — see ADR-019 §9). Malformed events go to `nmc.complaints.dlq.v1` for inspection via adminService.
 
+One warehouse table is **not** an enrichment target: `municipal_assets`, the asset registry the
+officer console's ledger reads (migration `003_municipal_assets.sql`, ADR-034). It holds current
+registry state rather than an event stream, so it carries none of the envelope columns above and
+nothing in this pipeline writes it — its rows are fixtures until an ingestion path exists.
+
 ### 3.4 Natural-language query (NL → SQL)
 
 ```mermaid
@@ -207,7 +212,7 @@ Creation is idempotent (`--if-not-exists`) via a Job (exemplar: [manifests/exemp
 | PostgreSQL | `nagardb` (+ `users`, `sessions`, 5 dept tables, `audit_logs`) | owned by CloudNativePG; tables by idempotent migration Job |
 | MinIO | `raw-media`, `raw-sensitive-media`, `pg-backups` | buckets via idempotent init Job (`deploy/phases/03-object-cache/bucket-init-job.yaml`, matching `docs/manifests/exemplars/minio-statefulset.yaml` and the MISSION.md §3 gate; `pg-backups` is CNPG's backup target, OPERATIONS §7); CORS handled at edge in K8s (no per-origin bucket config) |
 | Redis | `upload-intent:*`, `event:id:*`, `event:src:*` | TTL-based; no persistence required |
-| Qdrant | collection `nagar_schema` | rebuilt by schemaIndexer; 40 chunks from `schema_docs.json` |
+| Qdrant | collection `nagar_schema` | rebuilt by schemaIndexer from `schema_docs.json` (44 chunks as of ADR-034) |
 | Ollama | models `bge-m3`, `qwen3:1.7b` | provisioned by checksum-pinned model Job onto PVC |
 
 ### 4.4 Dependency graph (startup order — target state)

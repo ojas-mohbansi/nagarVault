@@ -29,8 +29,8 @@
 
 | Role | Tables | Notes |
 |---|---|---|
-| `nmc_officer` | nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry | no health data |
-| `ROLE_HEALTH_OFFICER` | + `health_camp_records` | only role that may touch health records |
+| `nmc_officer` | nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry, `municipal_assets` | no health data; the asset registry (migration 003, ADR-034) backs the officer console's ledger |
+| `ROLE_HEALTH_OFFICER` | nmc_complaints, traffic_events, water_sensor_readings, ev_bus_telemetry, + `health_camp_records` | only role that may touch health records; deliberately **not** the asset registry (ADR-034) |
 | admin | users, audit logs, DLQ, resync | via adminService endpoints only |
 
 Enforcement is layered:

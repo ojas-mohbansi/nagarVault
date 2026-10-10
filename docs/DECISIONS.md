@@ -1098,3 +1098,51 @@ deviation.
   nothing happened. The remaining two Jobs carried 86400 s periods, a day long, which no observation
   window can cover; for those the argument is the absence of the field itself. Raw samples: mission
   log G13.10.
+
+---
+
+## ADR-034 — The officer console's asset ledger reads a real `municipal_assets` registry table
+
+- **Context:** the approved Phase-7g console design draws a "Municipal Asset Ledger" whose columns
+  (asset id, ward/sector, component type, grid reference, status manifest, last epoch) and whose
+  rows (`VALV-702`, `WARD-07`) came from the design mock. Before this ADR, `municipal_assets`
+  appeared in exactly one place in the tree — the design document — and in no migration. Two
+  positions were open: make the console render whatever columns a query happens to return, or give
+  the ledger a table. The first is generic and leaves the specified design unimplemented; the second
+  was the owner's choice when the port was planned. A console that prints confident asset columns
+  must have assets behind them, or it is the screen-level version of the failure AGENTS §6.3 names.
+- **Decision:** `migrations/003_municipal_assets.sql` creates `municipal_assets` as a **registry**
+  table, not an event table — one row per physical asset, keyed by `asset_id text` (the same
+  natural-key shape `users.user_id` already uses in 001), deliberately **without** the ingestion
+  envelope the five department tables share, because an asset is not an event and has no
+  `occurred_at`. It follows the house conventions: `snake_case` plural (CONVENTIONS §5), owned by
+  `nagar`, no PII columns at all, and registered **explicitly** in `05-postgres/kustomization.yaml`
+  (that ConfigMap lists files rather than globbing, the trap 002 hit). Eight fixture rows make the
+  ledger real rather than empty.
+  - **Reachability is narrowed to `nmc_officer`.** `ROLE_TABLES` in queryService names
+    `municipal_assets` for `nmc_officer` only, and the SQL `GRANT` names only that role: no health
+    workflow reads the asset registry, and least privilege per role is SECURITY §3's posture. The
+    narrowing is written down here so a later reader does not "fix" it as an oversight — widening it
+    is one grant plus one set entry, and the suite fails loudly if the application gate and the
+    database wall drift apart (`test_health_officer_denied_the_asset_registry`,
+    `test_admin_denied_the_asset_registry`).
+  - The schema corpus gains four documents (table shape, the `status` vocabulary, the
+    registry-is-not-a-time-series warning, and typical questions) and the two overview documents
+    that enumerate the table set are corrected — including 002's implicit claim that every
+    department table carries the event envelope. `schema_docs.json` is baked into the schemaIndexer
+    image, so the collection is rebuilt by the ordinary image-digest change: **40 → 44 chunks**.
+  - **Deliberate I-9 exception.** A Phase-7g deliverable lands in two phase subtrees it does not own:
+    the migration in Phase 5 (its Job is the only sanctioned path for schema to reach `nagardb`,
+    ADR-019 §6) and the RBAC map plus tests in Phase 7b. ADR-030 set this precedent when a Phase-7b
+    security fix landed in Phase 5; the owner approved this one as part of the console port, which
+    is what makes the exception deliberate rather than quiet.
+- **Consequences:** the console renders real rows from a real table, and the four enumerations of the
+  warehouse table set — SECURITY §3, ARCHITECTURE §3.3, `schema_docs.json`, and the operator
+  credential sheet — all name it, so none of them disagrees with the DDL. **The honest limitation,
+  recorded rather than implied:** nothing in the ingestion path writes this table. No topic in the
+  frozen registry maps to it and `enrichWorker` has no department for it, so its rows are fixtures,
+  and `INSERT ... ON CONFLICT (asset_id) DO NOTHING` reasserts them on every migration replay —
+  deleting one by hand brings it back on the next sync. That is correct for demonstration data and
+  would be wrong for real rows: closing the gap means an ingestion path for registry updates (a
+  topic plus a worker change plus its own ADR), not a longer fixture list. Until then the ledger
+  demonstrates an officer query over a real table; it is not yet a live asset register.
