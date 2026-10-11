@@ -1,88 +1,762 @@
+/* =====================================================================
+   NagarVault officer console — global stylesheet (Phase 7g)
+
+   The console reads as a dense municipal terminal: dark charcoal base, green accent for
+   "operational / verified", amber for pending, red for flagged/unverified, and muted
+   green-grey for secondary text. No webfonts — the console is air-gapped (I-10 / I-11),
+   so type falls back to system stacks and every glyph is either system-provided or an
+   inline SVG. There is no preprocessor: Windi/PostCSS imports are frozen (CONVENTIONS §8).
+   ===================================================================== */
+
 :root {
-  --bg: #0b0f0e;
-  --panel: #131a18;
-  --line: #22302c;
-  --text: #e7efe9;
-  --muted: #93a59c;
+  --bg: #070b0a;
+  --bg-2: #0c1210;
+  --panel: #111816;
+  --panel-2: #151e1b;
+  --line: #23302b;
+  --line-2: #2c3b35;
+  --text: #eef4ef;
+  --muted: #8aa097;
+  --muted-2: #66786f;
   --accent: #34d399;
+  --accent-2: #23a87a;
+  --warn: #eab308;
+  --danger: #f87171;
+  --danger-2: #b91c1c;
+  --amber: #f59e0b;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-* { box-sizing: border-box; }
+/* ------------------------------------------------------------- reset / base */
 
+* {
+  box-sizing: border-box;
+}
+
+html,
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  height: 100%;
+}
+
+body {
+  font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-main { max-width: 46rem; margin: 3rem auto; padding: 0 1rem; }
-
-h1 { font-size: 1.25rem; font-weight: 600; }
-h2 { font-size: 1rem; font-weight: 600; color: var(--muted); }
-
-input, textarea, button {
-  display: block;
-  width: 100%;
-  padding: 0.55rem;
-  margin: 0.35rem 0 0.9rem;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--text);
-  font: inherit;
+/* Monospace terminal text: identifiers, status strings, compiled SQL, chrome labels. */
+.term {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
 }
 
-button { background: #0a7d33; border: 0; cursor: pointer; }
-button:disabled { opacity: 0.55; cursor: default; }
+.muted { color: var(--muted); }
+.ok { color: var(--accent); }
 
-:focus-visible {
-  outline: 2px solid #34d399;
+/* ------------------------------------------------------------- a11y
+   Two non-negotiables:
+   1. Reduced motion is honoured — the console animates a busy spinner and status dots, and
+      those must not spin forever or flash for motion-sensitive users.
+   2. Focus is always visible (WCAG 2.4.7) — keyboard officers must be able to see where they
+      are, including on ghost/secondary buttons and nav anchors. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+button:focus-visible,
+.btn:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* WCAG 2.4.7: every interactive control must show a visible focus indicator.
-   The brand accent #34d399 on the dark panel #131a18 is ~5.4:1, above the
-   3:1 UI-component minimum, so the outline itself is legible. */
-:-moz-focusring { outline: 2px solid #34d399; outline-offset: 2px; }
+/* Screen-reader-only text: used for table captions and other context that is visually
+   redundant but required for assistive tech. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
-/* WCAG 3.3.2: an explicit label is associated with the textarea.
-   The label text is visible above the field; the hint is linked via
-   aria-describedby so screen readers read it before input. */
-.field-label {
-  display: block;
+/* ------------------------------------------------------------- layout chrome
+   The app shell is a fixed top status bar plus a sub-header nav, with page content scrolling
+   beneath them. */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text);
   font-weight: 600;
-  margin-bottom: 0.25rem;
+  font-size: 0.95rem;
+  text-decoration: none;
+}
+.topbar .brand small {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-/* WCAG 1.4.1 + 4.1.3: don't rely on color alone for status.
-   The error paragraph now carries role=alert + a warning glyph +
-   a leading "Error:" word, so it's announced semantically and
-   not only by its red color. */
-.err {
-  color: #f87171;
+.topbar .status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
-.err::before {
-  content: "\26A0  ";
+.topbar .status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.18);
+}
+.topbar .status .dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.18);
+}
+.topbar .status .dot.off {
+  background: var(--muted-2);
+  box-shadow: none;
 }
 
-/* WCAG 1.4.1: keep the "signed in as" marker readable even when
-   color is stripped — it's already real text, not color-only. */
-.ok { color: var(--accent); }
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.4rem 1rem;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
 
-pre {
+.nav a,
+.nav .seg {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.4rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.nav a:hover,
+.nav .seg:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+.nav .seg.active {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--accent);
+}
+
+.main {
+  flex: 1 1 auto;
+  padding: 1.6rem 1rem 3rem;
+}
+
+.container {
+  max-width: 92rem;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------------------- headings */
+
+.section-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+}
+.section-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0.1rem 0 0.6rem;
+}
+.section-sub {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-family: var(--mono);
+}
+
+/* ------------------------------------------------------------- panels
+   Consoles are built from panels, not cards: a hairline border, a slight inner background,
+   and a small uppercase header strip. */
+
+.panel {
   background: var(--panel);
   border: 1px solid var(--line);
-  padding: 0.8rem;
   border-radius: 6px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 0.8rem;
+  overflow: hidden;
 }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
-th { color: var(--muted); font-weight: 500; }
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
 
-.muted { color: var(--muted); }
+.panel-body {
+  padding: 0.75rem;
+}
+
+/* ------------------------------------------------------------- inputs
+   Dense and legible. Status is never encoded by colour alone. */
+
+label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+input[type="text"],
+input[type="password"],
+textarea,
+select {
+  font: inherit;
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input[type="text"]:focus,
+input[type="password"]:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.22);
+}
+input:disabled,
+textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 4.2rem;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+/* ------------------------------------------------------------- buttons
+   Primary is green (operational), secondary is outlined, ghost is chrome-level, danger is red. */
+
+button,
+.btn {
+  font: inherit;
+  appearance: none;
+  cursor: pointer;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.5rem 0.8rem;
+  font-weight: 500;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+button:disabled,
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #0a7d33;
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #0e8f3c;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line-2);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--muted-2);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--muted);
+  padding: 0.35rem 0.5rem;
+}
+.btn-ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger-2);
+}
+.btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.btn-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------- status chips / badges
+   Status is text + colour, never colour alone (WCAG 1.4.1). */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+
+.chip.ok {
+  color: var(--accent);
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.08);
+}
+.chip.warn {
+  color: var(--warn);
+  border-color: rgba(234, 179, 8, 0.35);
+  background: rgba(234, 179, 8, 0.08);
+}
+.chip.bad {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.badge.ok {
+  color: var(--accent);
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.08);
+}
+.badge.warn {
+  color: var(--warn);
+  border-color: rgba(234, 179, 8, 0.3);
+  background: rgba(234, 179, 8, 0.08);
+}
+.badge.bad {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+/* ------------------------------------------------------------- readouts / code
+   Compiled SQL and audit lines render in a monospace panel and wrap rather than scroll away. */
+
+.readout {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.7rem 0.8rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  overflow-x: auto;
+  margin: 0;
+}
+.readout .meta {
+  color: var(--muted);
+  display: block;
+  font-size: 0.7rem;
+  margin-bottom: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ------------------------------------------------------------- tables */
+
+.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.ledger th,
+.ledger td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+.ledger th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  background: var(--panel-2);
+}
+.ledger tr:last-child td {
+  border-bottom: 0;
+}
+.ledger td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.ledger .col-id {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-weight: 500;
+}
+.ledger td small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.72rem;
+  margin-top: 0.1rem;
+}
+.ledger .actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.empty-state {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ------------------------------------------------------------- errors / alerts
+   Errors carry role="alert", a leading glyph, and visible text (WCAG 3.3.1 + 1.4.1). */
+
+.alert {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  padding: 0.6rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.alert.error {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+}
+.alert.ok {
+  color: var(--accent);
+  background: rgba(52, 211, 153, 0.06);
+  border: 1px solid rgba(52, 211, 153, 0.2);
+}
+
+.alert .ico {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 0.1rem;
+}
+
+/* ------------------------------------------------------------- forms */
+
+.form-group {
+  margin-bottom: 0.9rem;
+}
+
+.field-hint {
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--muted-2);
+}
+
+.form-error {
+  margin-top: 0.75rem;
+}
+
+/* ------------------------------------------------------------- misc utilities */
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+.grid-2-narrow {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 1rem;
+}
+
+.divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0.75rem 0;
+}
+
+.kv {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.kv strong {
+  color: var(--text);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+  min-width: 7.5rem;
+}
+
+.footer-bar {
+  margin-top: 1.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+}
+
+/* ------------------------------------------------------------- login page
+   A single centered card on the dark base — the "classified municipal terminal" assertion
+   screen, reached only when there is no valid session. */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 38rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.login-card .card-head {
+  padding: 0.9rem 1rem 0.7rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.login-card .card-body {
+  padding: 1.2rem 1rem;
+}
+.login-card .card-foot {
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.auth-id {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.auth-id small {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.eye-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 3px;
+}
+.eye-toggle:hover {
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------- dashboard */
+
+.identity-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+}
+
+.dash-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.compile-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.compile-bar .ok {
+  color: var(--accent);
+}
+
+/* Busy-state glyph. Rotation is disabled under prefers-reduced-motion above. */
+.spin {
+  display: inline-block;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------------------------------------------- print
+   Consoles are read live, but an officer may print or copy-paste a ledger to attach to an
+   offline field packet, so print strips the shell chrome and flattens panels to the page. */
+
+@media print {
+  .app-shell {
+    display: block;
+  }
+
+  .topbar,
+  .nav {
+    display: none !important;
+  }
+
+  .main {
+    padding: 0;
+    max-width: none;
+  }
+
+  .panel {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    border: 1px solid #333;
+    box-shadow: none;
+  }
+
+  .ledger {
+    font-size: 0.75rem;
+  }
+
+  .alert {
+    border: 1px solid #999;
+    background: #f5f5f5 !important;
+    color: #000 !important;
+  }
+
+  body {
+    color: #000;
+    background: #fff;
+  }
+}
