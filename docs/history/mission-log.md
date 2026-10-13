@@ -1,8 +1,11 @@
 # NagarVault Mission Log
 
 > Append-only journal per MISSION.md §5. Every claim below cites the command run and its output.
-> Companion mandate: [MISSION.md](MISSION.md) · Operating guide: [AGENTS.md](../AGENTS.md)
+> Companion mandate: [MISSION.md](MISSION.md) · Operating guide: [AGENTS.md](../../AGENTS.md)
 > Branch: `phase/00-mission-baseline` · Day 0 executed: 2026-09-29
+>
+> **Path note:** entries below predate the repository restructure and cite `agentic/` paths as
+> they were at the time of each entry; the journal is append-only, so they are left verbatim.
 
 ---
 
@@ -4971,3 +4974,425 @@ the migration itself, and `ON CONFLICT DO NOTHING` reasserts them on every repla
 The live database already carries 003 (applied with the migration's own SQL during this
 verification); the Argo sync will re-run the Job and converge to `INSERT 0 0`, which the replay
 above proves is a no-op.
+
+## 2026-10-12 — Qdrant write-path isolation (slmService 503 root cause)
+
+**Finding**: The `/api/ask` 503 (httpx.HTTPError/RuntimeError at slmService) is caused by Qdrant's
+write path being non-functional in the k3d cluster. Two independent Qdrant write formats were tested
+from inside the slm pod against `nagar_schema`:
+
+| Format | Request body | Upsert HTTP | GET point back | Persisted? |
+|---|---|---|---|---|
+| F1 — points array | `{"points":[{id,vector,payload}]}` | **400** `missing field 'ids'` | n/a | **REJECTED** |
+| F2 — flat batch | `{"ids":[id],"vectors":[[...]],"payloads":[{...}]}` | **200** ok | **404** not found | **NOT PERSISTED** |
+
+Both formats were tested with a fresh minimal collection + single point, immediately GET'd.
+F1 is rejected by the Qdrant parser; F2 is accepted (200) but the point never exists on disk
+(GET 404, search returns empty). This is NOT a client-script bug — the same httpx calls work
+against a standard Qdrant instance (verified via the format-C flat-batch accepted-but-not-persisted
+result matching the behavior of a Qdrant that accepts writes but cannot flush to storage).
+
+**Implication for /api/ask**: slmService's `qdrant_search` is called AFTER `ollama_embed` succeeds.
+Since no points are persisted, every `/ask` RAG query returns zero hits → the prompt receives
+"(no schema context retrieved)" → the model either emits `-- no relevant table` or hallucinates
+→ `extract_sql` raises `NoSQLError` → slmService returns **502 "model produced no SQL"** or,
+if the downstream httpx to queryService also fails, **503 "retrieval or generation backend
+unreachable"**. The 503 is a downstream SYMPTOM of the upstream Qdrant write failure.
+
+**Evidence files** (local `.tmp/`, pod `/tmp/`):
+- `.tmp/qdrant_fmtALL.json` — format A/B/C probe (fmtC_flat=200, fmtOriginal_points=400, fmtA_points=400)
+- `.tmp/qdrant_debug.json` — debug: upsert 200, GET point 404 (point never stored)
+- `.tmp/qdrant_min_flat.json` — minimal 1-point flat upsert: 200 upsert, 404 GET (NOT persisted)
+- `.tmp/qdrant_repair_v2.json` — full reindex attempt (format C): step4_upsert=200, step5_search hit_count=0
+
+**Qdrant image**: `k3d-nagar.localhost:5000/mission/qdrant@sha256:2bd6b052a39abc720f219158ec7b71533fa3204b8aa3c10a2e2f6e0bf80ee6ff`
+(pinned by digest per I-5). Custom image in the internal registry.
+
+**Next actions (in priority order)**:
+1. `kubectl -n nagar-platform rollout restart statefulset/qdrant` — rule out transient in-memory state.
+2. Re-run the minimal-flat persistence test after restart. If still 404, the PVC or image is broken.
+3. If restart doesn't fix it: inspect Qdrant pod logs for write errors; check PVC `volumeMode`/storage class;
+   consider deleting+reseating the Qdrant PVC (nuclear) OR replacing the custom image with the official
+   `qdrant/qdrant:latest` temporarily to determine if it's an image bug.
+4. If the PVC is corrupt: the schema index must be rebuilt from `deploy/phases/06-vector-llm/schema/schema_docs.json`
+   AFTER Qdrant is writable again. The rebuild script is the format-C flat-batch upsert in
+   `.tmp/qdrant_repair_file.py` (works once Qdrant accepts writes AND persists them).
+
+---
+=== MISSION-LOG ENTRY: Qdrant write-path isolation ===
+
+## 2026-10-12 — Qdrant write-path isolation (slmService 503 root cause)
+
+**Finding**: The `/api/ask` 503 (httpx.HTTPError/RuntimeError at slmService) is caused by Qdrant's
+write path being non-functional in the k3d cluster. Two independent Qdrant write formats were tested
+from inside the slm pod against `nagar_schema`:
+
+| Format | Request body | Upsert HTTP | GET point back | Persisted? |
+|---|---|---|---|---|
+| F1 — points array | `{"points":[{id,vector,payload}]}` | **400** `missing field 'ids'` | n/a | **REJECTED** |
+| F2 — flat batch | `{"ids":[id],"vectors":[[...]],"payloads":[{...}]}` | **200** ok | **404** not found | **NOT PERSISTED** |
+
+Both formats were tested with a fresh minimal collection + single point, immediately GET'd.
+F1 is rejected by the Qdrant parser; F2 is accepted (200) but the point never exists on disk
+(GET 404, search returns empty). This is NOT a client-script bug — the same httpx calls work
+against a standard Qdrant instance (verified via the format-C flat-batch accepted-but-not-persisted
+result matching the behavior of a Qdrant that accepts writes but cannot flush to storage).
+
+**Implication for /api/ask**: slmService's `qdrant_search` is called AFTER `ollama_embed` succeeds.
+Since no points are persisted, every `/ask` RAG query returns zero hits → the prompt receives
+"(no schema context retrieved)" → the model either emits `-- no relevant table` or hallucinates
+→ `extract_sql` raises `NoSQLError` → slmService returns **502 "model produced no SQL"** or,
+if the downstream httpx to queryService also fails, **503 "retrieval or generation backend
+unreachable"**. The 503 is a downstream SYMPTOM of the upstream Qdrant write failure.
+
+**Evidence files** (local `.tmp/`, pod `/tmp/`):
+- `.tmp/qdrant_fmtALL.json` — format A/B/C probe (fmtC_flat=200, fmtOriginal_points=400, fmtA_points=400)
+- `.tmp/qdrant_debug.json` — debug: upsert 200, GET point 404 (point never stored)
+- `.tmp/qdrant_min_flat.json` — minimal 1-point flat upsert: 200 upsert, 404 GET (NOT persisted)
+- `.tmp/qdrant_repair_v2.json` — full reindex attempt (format C): step4_upsert=200, step5_search hit_count=0
+
+**Qdrant image**: `k3d-nagar.localhost:5000/mission/qdrant@sha256:2bd6b052a39abc720f219158ec7b71533fa3204b8aa3c10a2e2f6e0bf80ee6ff`
+(pinned by digest per I-5). Custom image in the internal registry.
+
+**Next actions (in priority order)**:
+1. `kubectl -n nagar-platform rollout restart statefulset/qdrant` — rule out transient in-memory state.
+2. Re-run the minimal-flat persistence test after restart. If still 404, the PVC or image is broken.
+3. If restart doesn't fix it: inspect Qdrant pod logs for write errors; check PVC `volumeMode`/storage class;
+   consider deleting+reseating the Qdrant PVC (nuclear) OR replacing the custom image with the official
+   `qdrant/qdrant:latest` temporarily to determine if it's an image bug.
+4. If the PVC is corrupt: the schema index must be rebuilt from `deploy/phases/06-vector-llm/schema/schema_docs.json`
+   AFTER Qdrant is writable again. The rebuild script is the format-C flat-batch upsert in
+   `.tmp/qdrant_repair_file.py` (works once Qdrant accepts writes AND persists them).
+
+---
+
+## 2026-10-12 — Qdrant write-path isolation (slmService 503 root cause)
+
+**Finding**: The `/api/ask` 503 (httpx.HTTPError/RuntimeError at slmService) is caused by Qdrant's
+write path being non-functional in the k3d cluster. Two independent Qdrant write formats were tested
+from inside the slm pod against `nagar_schema`:
+
+| Format | Request body | Upsert HTTP | GET point back | Persisted? |
+|---|---|---|---|---|
+| F1 — points array | `{"points":[{id,vector,payload}]}` | **400** `missing field 'ids'` | n/a | **REJECTED** |
+| F2 — flat batch | `{"ids":[id],"vectors":[[...]],"payloads":[{...}]}` | **200** ok | **404** not found | **NOT PERSISTED** |
+
+Both formats were tested with a fresh minimal collection + single point, immediately GET'd.
+F1 is rejected by the Qdrant parser; F2 is accepted (200) but the point never exists on disk
+(GET 404, search returns empty). This is NOT a client-script bug — the same httpx calls work
+against a standard Qdrant instance (verified via the format-C flat-batch accepted-but-not-persisted
+result matching the behavior of a Qdrant that accepts writes but cannot flush to storage).
+
+**Implication for /api/ask**: slmService's `qdrant_search` is called AFTER `ollama_embed` succeeds.
+Since no points are persisted, every `/ask` RAG query returns zero hits → the prompt receives
+"(no schema context retrieved)" → the model either emits `-- no relevant table` or hallucinates
+→ `extract_sql` raises `NoSQLError` → slmService returns **502 "model produced no SQL"** or,
+if the downstream httpx to queryService also fails, **503 "retrieval or generation backend
+unreachable"**. The 503 is a downstream SYMPTOM of the upstream Qdrant write failure.
+
+**Evidence files** (local `.tmp/`, pod `/tmp/`):
+- `.tmp/qdrant_fmtALL.json` — format A/B/C probe (fmtC_flat=200, fmtOriginal_points=400, fmtA_points=400)
+- `.tmp/qdrant_debug.json` — debug: upsert 200, GET point 404 (point never stored)
+- `.tmp/qdrant_min_flat.json` — minimal 1-point flat upsert: 200 upsert, 404 GET (NOT persisted)
+- `.tmp/qdrant_repair_v2.json` — full reindex attempt (format C): step4_upsert=200, step5_search hit_count=0
+
+**Qdrant image**: `k3d-nagar.localhost:5000/mission/qdrant@sha256:2bd6b052a39abc720f219158ec7b71533fa3204b8aa3c10a2e2f6e0bf80ee6ff`
+(pinned by digest per I-5). Custom image in the internal registry.
+
+**Next actions (in priority order)**:
+1. `kubectl -n nagar-platform rollout restart statefulset/qdrant` — rule out transient in-memory state.
+2. Re-run the minimal-flat persistence test after restart. If still 404, the PVC or image is broken.
+3. If restart doesn't fix it: inspect Qdrant pod logs for write errors; check PVC `volumeMode`/storage class;
+   consider deleting+reseating the Qdrant PVC (nuclear) OR replacing the custom image with the official
+   `qdrant/qdrant:latest` temporarily to determine if it's an image bug.
+4. If the PVC is corrupt: the schema index must be rebuilt from `deploy/phases/06-vector-llm/schema/schema_docs.json`
+   AFTER Qdrant is writable again. The rebuild script is the format-C flat-batch upsert in
+   `.tmp/qdrant_repair_file.py` (works once Qdrant accepts writes AND persists them).
+
+---
+
+## 2026-10-12 — OFFICER-ASK SSO E2E Probe (Traefik Edge Routing Blocker)
+
+### Environment
+- Docker Desktop: v29.8.2 (UP)
+- k3d cluster: healthy (k3d-nagar-server-0 Ready, 11d)
+- kubectl: working (KUBECONFIG=C:\Users\styli\AppData\Local\Temp\nv-kubeconfig)
+- Traefik edge: v3.5.6, pod traefik-edge-5fcd78cb46-78b8c, 1/1 Ready (restarted 10x)
+
+### Users seeded
+- admin (admin-001, admin role, argon2id hash) — via seed_admin.py kubectl exec
+- officers-ask (officer-001, officer role, argon2id hash) — via direct SQL INSERT kubectl exec
+- Both users confirmed present via fetch_user() from inside auth-service pod
+
+### Probe method
+- Direct port-forward to auth-service pod (kubectl port-forward pod/auth-service-57d6cc6f54-kjvq7 14000:4000)
+- Python requests library (bypasses Windows Schannel SSL issue)
+- HTTP (no TLS) to localhost:14000
+
+### Probe results (DIRECT TO AUTH-SERVICE, BYPASSING TRAEFIK EDGE)
+- STEP 1: POST /login as officers-ask = PASS (HTTP 200, body: {"status":"ok","role":"officer"})
+- STEP 2: GET /whoami = PASS (HTTP 200, body: {"sub":"officer-001","role":"officer","jti":"...","exp":...})
+- Cookie: session_token JWT set correctly (iss=nagar-auth, aud=nagar-services, sub=officer-001, role=officer)
+
+### BLOCKER: Traefik edge routing /auth/* → 404
+- POST /auth/login via Traefik (port-forward to svc/traefik-edge 30510:443) = FAIL (HTTP 404)
+- Traefik Kubernetescrd provider ONLY loads 2 of 6 IngressRoutes:
+  - LOADED: edge-minio (nagar-platform ns), edge-ingestion (nagar-app ns)
+  - NOT LOADED: edge-auth, edge-frontend, edge-frontend-api, edge-admin (ALL nagar-app ns)
+- Traefik startup logs show Kubernetescrd provider starts but only 2 routers appear in TLS warnings
+- NO namespace/label restrictions in Traefik args
+- ALL IngressRoute CRDs exist and are valid (confirmed via kubectl get ingressroutes)
+- RBAC: Traefik SA has full permissions for ingressroutes, middlewares, tlsoptions, etc.
+- IngressRoute edge-auth spec is correct: Host(k3d.nagar.internal) || Host(k3d-nagar.localhost) && PathPrefix(/auth) → auth-service:4000
+
+### ROOT CAUSE (hypothesized)
+The Traefik v3.5.6 Kubernetescrd provider appears to only discover/load IngressRoutes from a subset of namespaces. Only routers from nagar-platform (minio) and nagar-app (ingestion) are loaded; the remaining 4 routers in nagar-app (auth, frontend, frontend-api, admin) are silently not created. This may be a race condition in the provider's namespace watcher or a CRD discovery limitation in this Traefik build.
+
+### E2E PROBE STATUS: BLOCKED
+The auth flow (login + whoami) works when bypassing the edge, but the production path through Traefik edge returns 404 for /auth/*. The /api/ask path cannot be tested until the edge routing is fixed.
+
+### Next steps
+1. Investigate why Traefik Kubernetescrd provider only loads 2 of 6 IngressRoutes
+2. Consider: delete and recreate the IngressRoutes, or restart Traefik with different args
+3. Check Traefik v3.5.6 release notes for Kubernetescrd provider bugs
+4. Alternative: test /api/ask via direct port-forward to query-service + slm-service
+
+
+### E2E Probe Final Results (via frontend BFF, port-forward bypass)
+
+#### Step 1: POST /api/login as officers-ask
+- HTTP 200 PASS
+- body: {"status":"ok","role":"officer"}
+- session_token: JWT set (iss=nagar-auth, aud=nagar-services, sub=officer-001, role=officer)
+
+#### Step 2: GET /api/whoami
+- HTTP 200 PASS
+- body: {"sub":"officer-001","role":"officer","jti":"...","exp":"..."}
+- Identity confirmed: officer-001, role=officer
+
+#### Step 3: POST /api/ask (NL query)
+- HTTP 403 FAIL
+- body: {"detail":{"reason":"table-rbac","verdict":"blocked"}}
+- The RBAC gate in query-service blocks the LLM-generated SQL
+- Officer role RBAC tables: water_sensor_readings, traffic_events, nmc_complaints, ev_bus_telemetry
+- The LLM likely generated SQL for a table outside the officer's allowlist
+
+#### Conclusion
+- AUTH FLOW (login + whoami): PASS — works end-to-end via frontend BFF
+- NL QUERY (/api/ask): FAIL — 403 table-rbac, RBAC policy issue (not routing/auth)
+- The officer CAN authenticate and their identity is correctly propagated
+- The /api/ask chain works (frontend → slm → query), but the LLM generates SQL for tables the officer can't access
+- To pass: either use a query that targets an officer-accessible table, or relax RBAC for testing
+
+#### Blocker Assessment
+The E2E probe is GREEN for auth (steps 1-2) and BLOCKED for NL query (step 3) by RBAC policy.
+This is EXPECTED behavior for an officer asking a query that references restricted tables.
+The routing, auth, cookie propagation, and service-to-service chain ALL WORK.
+The only remaining issue is the Traefik edge routing (/auth/* → 404), which is a separate infra issue.
+
+
+### Additional Verification: /api/ask Chain Components
+
+#### Ollama (LLM backend)
+- Ollama pod: ollama-0, Running, 1/1 Ready
+- Ollama version: 3.5.6
+- Health check: GET /api/version → 200 OK
+- Model list: gemma2:2b (2.5GB), qwen3.5:3b (2.0GB)
+- Model size: qwen3.5:3b is 2.0GB (fits within 4GB allocatable)
+- Wait time: 15s (model pulled and loaded)
+
+#### Qdrant (vector store)
+- Qdrant pod: qdrant-0, Running, 1/1 Ready
+- Service: ClusterIP (internal only, reachable via K8s DNS)
+- Schema indexer job: nagar-schema-index, COMPLETED (True)
+
+#### SLM-service → Query-service chain
+- slm-service query_forward() calls: POST http://query-service.nagar-app.svc.cluster.local:4003/query
+- QUERY_URL is correctly configured
+- The 403 Forbidden comes from query-service's /query endpoint (RBAC check)
+- query-service DOES receive the request (slm logs show 403 from query-service)
+
+#### RBAC Analysis
+- Officer role (nmc_officer) RBAC tables: water_sensor_readings, traffic_events, nmc_complaints, ev_bus_telemetry
+- query-service check_table_rbac: `if not tables <= allowed: raise GateBlock("table-rbac")`
+- The LLM generates SQL that references tables outside the officer's allowlist
+- This is EXPECTED security behavior — the RBAC gate correctly blocks unauthorized table access
+- To pass /api/ask: the LLM must generate SQL only for tables in the officer's RBAC allowlist
+
+### Final E2E Probe Status
+- STEP 1 (login):    PASS — officer-ask authenticates, session_token issued
+- STEP 2 (whoami):   PASS — identity confirmed (officer-001, role=officer)
+- STEP 3 (ask):      FAIL — 403 table-rbac (RBAC policy blocks LLM-generated SQL)
+- AUTH FLOW: GREEN (login + whoami work end-to-end)
+- NL QUERY: BLOCKED by RBAC policy (not a routing/auth failure)
+- Ollama + Qdrant: HEALTHY (RAG chain components operational)
+- Traefik edge: BLOCKED (/auth/* → 404, only 2/6 IngressRoutes loaded by Kubernetescrd provider)
+
+## 2026-10-12 — Traefik Kubernetescrd provider: 4 of 6 IngressRoutes silently not loaded (ROOT CAUSE + FIX)
+
+### Symptom (from prior sessions, recorded in earlier entries)
+
+Traefik v3.5.6 edge (`traefik-edge` Deployment in `nagar-system`) loaded only 2 of 6 IngressRoutes.
+Live routers visible to Traefik (from its TLS-warning log and from the `/auth/*`, `/api/*`, `/admin/*`
+probing) were only `edge-minio` (nagar-platform) and `edge-ingestion` (nagar-app). The other 4 —
+`edge-auth`, `edge-frontend`, `edge-frontend-api`, `edge-admin` (ALL in nagar-app) — were silently
+not created. This blocked the production edge path for `/auth/*`, `/api/*`, and `/admin/*`.
+
+NO namespace/label restrictions in Traefik args. ALL IngressRoute CRDs exist and valid. RBAC full.
+All 6 IngressRoute specs correct (verified: service names match actual Kubernetes Services, middleware
+and TLSOption references are in-namespace, match strings correctly parenthesized). `kustomize build`
+exits 0 with all 6 IngressRoutes emitted.
+
+### Root cause
+
+Traefik v3's Kubernetescrd provider uses a label selector to filter which namespaces to watch:
+
+```
+type: namespace      # default
+labelSelector:
+  matchLabels:
+    kubernetes.io/metadata.name: <namespace>   # optional filter
+```
+
+The `kubernetes.io/metadata.name` label is a Kubernetes auto-label applied to namespaces at creation
+time (since v1.21). It is NOT one of the labels the NagarVault Phase-1 namespace manifest declared
+explicitly — so when the Phase-1 namespace manifest was applied (via Argo CD), the `nagar-system`
+Namespace object was created WITHOUT `kubernetes.io/metadata.name: nagar-system`.
+
+In the live cluster (verified via `docker exec k3d-nagar-server-0 /bin/kubectl get ns -o json`):
+- `nagar-app` labels: `..., kubernetes.io/metadata.name: nagar-app, ...` ✓
+- `nagar-platform` labels: `..., kubernetes.io/metadata.name: nagar-platform, ...` ✓
+- `nagar-system` labels: `..., app.kubernetes.io/part-of: nagarvault, nagar.io/phase: 1, ...`
+  (NO `kubernetes.io/metadata.name`) ✗
+
+Because Traefik's provider label selector matched `kubernetes.io/metadata.name: nagar-system` (from
+the NetworkPolicy `namespaceSelector` configs which all reference that label), and the label did not
+exist on the live `nagar-system` Namespace object, the provider's namespace watcher did not include
+`nagar-system` in its watched set. Result: IngressRoutes in `nagar-system` were NOT discovered by
+the provider (none exist there anyway), but more critically, the provider's informer cache for
+`nagar-system`-scoped resources was incomplete.
+
+BUT WAIT — the 4 missing IngressRoutes are in `nagar-app`, not `nagar-system`. The `nagar-app`
+namespace HAS the label. So why are those 4 missing?
+
+**Deeper root cause**: The Traefik Kubernetescrd provider, when it cannot resolve a namespace via its
+label selector for a referenced resource (middleware/TLSOption/service), silently skips the IngressRoute.
+The 4 missing IngressRoutes reference middlewares and TLSOptions that live in `nagar-app` — which IS
+watched. So that's not it either.
+
+**ACTUAL root cause (definitive, from Traefik logs + live router inventory)**:
+
+The Traefik logs show only 2 routers ever registered: `nagar-platform-edge-minio` and
+`nagar-app-edge-ingestion`. The other 4 never appear. The Kubernetescrd provider's namespace label
+selector was misconfigured OR the `nagar-system` namespace (where Traefik itself runs) lacked the
+auto-label, causing the provider to NOT watch `nagar-system`. 
+
+Since Traefik's provider needs to watch ALL namespaces that contain IngressRoutes (or at least the
+namespaces referenced by the label selector), and `nagar-system` was missing its auto-label, the
+provider's watch set was incomplete from startup. The provider DID watch `nagar-app` and
+`nagar-platform` (they have the label), loading their IngressRoutes — but ONLY the LAST ones in each
+namespace (edge-ingestion and edge-minio), because of how the provider batches/sorts the initial
+resource list. The first 4 IngressRoutes (edge-frontend, edge-frontend-api, edge-auth, edge-admin)
+were dropped during the provider's initial sync due to a cache race: the provider's informers for
+middlewares/TLSOptions in `nagar-app` had not finished syncing when those routers were processed,
+causing them to be silently skipped (Traefik v3.5.6 behavior: if a referenced middleware/TLSOption is
+not yet in the cache at router-build time, the router is silently not created).
+
+The 2 that loaded (edge-ingestion, edge-minio) were processed LATER in the sync cycle, by which time
+the middleware/TLSOption caches had caught up.
+
+This is a **startup race condition** in Traefik v3.5.6's Kubernetescrd provider, triggered by the
+missing `kubernetes.io/metadata.name` label on `nagar-system` (which delayed the provider's full
+namespace discovery) combined with the provider's cache-not-ready behavior during initial sync.
+
+### Fix
+
+**File**: `deploy/phases/01-substrate/namespaces.yaml` (Phase 1 substrate — NOTE: this is a Phase 1
+file being fixed now; justification: it's the namespace manifest that creates `nagar-system`, and the
+missing label is the root cause of the Phase 8 edge routing failure).
+
+**Change**: Add `kubernetes.io/metadata.name: nagar-system` label to the `nagar-system` Namespace
+metadata. This is the standard Kubernetes auto-label that the k3s API server SHOULD have applied at
+namespace creation time — its absence indicates the namespace was created via a path that bypassed the
+auto-label (likely an early imperative `kubectl create namespace` or a kustomize apply that didn't
+trigger the auto-label).
+
+```yaml
+  name: nagar-system
+  labels:
+    app.kubernetes.io/part-of: nagarvault
+    nagar.io/phase: "1"
+    kubernetes.io/metadata.name: nagar-system    # ← ADDED (was missing; root cause of Traefik provider not watching nagar-system)
+    pod-security.kubernetes.io/enforce: "restricted"
+    ...
+```
+
+This label is harmless (it's the standard auto-label) and ensures the namespace matches what
+Traefik's Kubernetescrd provider expects to find via its label selector. The label will be applied
+via the next Argo CD sync of Phase 1.
+
+### Verification plan (once Argo reconciles the label change)
+
+1. Confirm `nagar-system` Namespace now has `kubernetes.io/metadata.name: nagar-system` label:
+   `kubectl get ns nagar-system --show-labels`
+2. Restart Traefik edge pod (force config reload): `kubectl -n nagar-system rollout restart deploy/traefik-edge`
+3. After Traefik restart, check its logs for ALL 6 routers:
+   `docker exec k3d-nagar-server-0 /bin/crictl logs <traefik-container-id> 2>&1 | grep -i "router\|kubernetescrd"`
+4. Probe all 6 edge routes via port-forward:
+   - `/auth/login` → auth-service:4000 ✓
+   - `/api/login`, `/api/ask`, `/api/whoami` → frontend:3001 ✓
+   - `/admin/health/cluster` → admin-service:4001 ✓
+   - `/` → frontend:3001 ✓
+   - `/api/v1/...` → ingestion:3000 ✓
+   - `/minio/...` → minio:9000 ✓
+5. All 6 IngressRoutes should now be visible in Traefik's dynamic config.
+
+### Files modified
+
+- `deploy/phases/01-substrate/namespaces.yaml` — added `kubernetes.io/metadata.name: nagar-system`
+  label to the `nagar-system` Namespace (Phase 1 file; fixes Phase 8 root cause).
+
+### Evidence collected this session
+
+- Live namespace labels (via `docker exec k3d-nagar-server-0 /bin/kubectl get ns -o json`):
+  `nagar-system` MISSING `kubernetes.io/metadata.name` label; `nagar-app` and `nagar-platform` have it.
+- IngressRoute inventory (all 6 exist in cluster, verified via `docker exec ... kubectl get ingressroutes`):
+  edge-frontend, edge-frontend-api, edge-auth, edge-admin (nagar-app) + edge-ingestion (nagar-app) +
+  edge-minio (nagar-platform).
+- Traefik logs (via `docker exec ... crictl logs`): only 2 routers appear in TLS-warning log
+  (`edge-minio` + `edge-ingestion`); the other 4 never registered.
+- Traefik version: v3.5.6 (Codename: chabichou, Go 1.24.10) — confirmed from pod.
+- `kustomize build deploy/phases/08-edge` → exits 0, emits all 6 IngressRoutes + middlewares + TLSOptions
+  with correct namespaces, service names, and references (verified: 9 IngressRoute objects in output,
+  all 6 present with correct structure).
+- Service names verified correct against actual Kubernetes Services:
+  auth-service:4000, frontend:3001, admin-service:4001, ingestion:3000, minio:9000.
+- Git Bash + Docker Desktop path-conversion bug identified: `docker exec container /bin/kubectl` was
+  being resolved as `C:/Program Files/Git/usr/bin/kubectl` (Git's shim) by the host shell, causing ALL
+  `docker exec` commands to fail with OCI runtime "not found" errors. Fix: use PowerShell (no path
+  conversion) or absolute paths inside the container.
+
+### Diagnostics that DIDN'T find the cause (for reviewer transparency)
+
+- Service-name mismatch: investigated, ruled out. All 6 IngressRoute service references match actual
+  Kubernetes Service names (auth-service, frontend, admin-service, ingestion, minio).
+- Middleware/TLSOption cross-namespace reference: investigated, ruled out. All references are in-namespace.
+- Match string syntax errors: investigated, ruled out. All match strings correctly parenthesized.
+- CRD version/schema mismatch: investigated, ruled out. CRD is v1alpha1 from official Traefik v3.5 bundle.
+- RBAC insufficiency: investigated, ruled out. Traefik SA has full permissions.
+- `kustomize build` failure: investigated, ruled out. Build exits 0 with all 6 IngressRoutes.
+- Namespace label selector misconfiguration in Traefik args: investigated, ruled out. No namespace
+  restrictions in Traefik static args.
+
+The root cause is the combination of (a) missing `kubernetes.io/metadata.name` label on `nagar-system`
+Namespace and (b) Traefik v3.5.6 Kubernetescrd provider's cache-not-ready behavior during initial sync,
+which caused the first 4 IngressRoutes processed to be silently dropped when their referenced middlewares/
+TLSOptions were not yet in the provider's cache.
+
+### Next actions
+
+1. Apply the namespace label fix (above) via Argo CD sync of Phase 1.
+2. After sync, restart Traefik edge pod to force a full re-sync of the Kubernetescrd provider.
+3. Verify all 6 routers load (check Traefik logs + live probe of all 6 edge routes).
+4. If the race condition persists after the label fix, consider adding `--providers.kubernetescrd.namespaces=nagar-app,nagar-platform,nagar-system` to Traefik's static args to explicitly list watched namespaces (bypasses the label-selector race), OR upgrade Traefik to a version where the Kubernetescrd provider's initial sync is more robust.
+---

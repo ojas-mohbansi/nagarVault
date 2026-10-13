@@ -1,38 +1,17 @@
 # NagarVault
 
-An air-gapped, privacy-first civic data operating layer for municipal intelligence.
-Ingest → enrich → warehouse → ask. All on one cluster, no data leaves the server room.
+An air-gapped, privacy-first civic data operating layer for municipal intelligence —
+ingest → enrich → warehouse → ask, all on one cluster; no data leaves the server room.
+Start with [`AGENTS.md`](AGENTS.md), the authoritative operating guide (index for `docs/`).
 
-> **Start here: [`AGENTS.md`](AGENTS.md)** — the authoritative operating guide for engineers and
-> autonomous agents alike. This README is only the landing page.
-
-## What it is
-
-NagarVault ingests raw civic events (citizen complaints, traffic, water sensors, health camps, EV
-bus telemetry) through a Kafka backbone, enriches them into a PostgreSQL warehouse, and lets
-authorized municipal officers query it in natural language — answered by locally-hosted small
-language models with schema-aware RAG. Every SQL query passes AST validation, role-based access
-control, and a PII denylist before touching data, and every attempt is audited.
-
-## Documentation
-
-| Document | Purpose |
-|---|---|
-| [AGENTS.md](AGENTS.md) | Entry point: invariants, system map, agent protocol |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Flows, endpoint/topic/storage registries, topology |
-| [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | Layout, naming, config precedence, frozen port registry |
-| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, JWT chain, RBAC, secrets, network policy |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Bootstrap, deploy, seed, backup/restore, troubleshooting |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | Architecture decision record (ADR) log |
-| [docs/PHASES.md](docs/PHASES.md) | 11-phase implementation plan with isolation + rollback rules |
-| [docs/manifests/exemplars/](docs/manifests/exemplars/README.md) | Canonical Kubernetes reference manifests |
+Raw civic events (complaints, traffic, water sensors, health camps, EV bus telemetry) flow
+through Kafka into a PostgreSQL warehouse; officers query in natural language via locallyhosted small models with schema-aware RAG, behind AST validation, RBAC, and a PII denylist.
 
 ## Tech stack
 
-- **Runtime:** Kubernetes (k3s reference distribution) — declarative manifests, GitOps with
-  Argo CD, no Docker Compose in the deployment path (transition plan: [docs/PHASES.md](docs/PHASES.md))
+- **Runtime:** Kubernetes (k3s), GitOps with Argo CD — no Docker Compose in the deployment path
 - **Data plane:** PostgreSQL (CloudNativePG), Kafka (Strimzi, KRaft), MinIO, Redis, Qdrant, Ollama
-- **Backend services:** FastAPI (Python) ×5 + Express (Node) ingestion gateway
+- **Services:** FastAPI (Python) ×5 + Express (Node) ingestion gateway
 - **AI:** Qwen3 1.7B (NL → SQL) + BGE-M3 (embeddings), fully local via Ollama
 - **Frontends:** Next.js officer console; Vite mock-data injector (dev tool)
 
@@ -45,9 +24,5 @@ Files   → ingestion :3000 → MinIO presigned PUT → Kafka → enrichWorker �
 Ops     → adminService :4001 → health, audit logs, DLQ, vector re-sync
 ```
 
-## Deployment status
-
-Phase 0 (documentation suite) is complete. Cluster bring-up proceeds phase by phase per
-[docs/PHASES.md](docs/PHASES.md). All ten phases are complete and shipped through Argo CD on the k3d substrate; the parity
-cutover (Phase 10) verified the absence of any Compose remnant in this repository (ADR-013).
-There is no Docker Compose in the deployment path — every workload is reconciled from git.
+All ten phases are shipped through Argo CD on the k3d substrate (ADR-013); per-phase ledger:
+[`docs/PHASES.md`](docs/PHASES.md).

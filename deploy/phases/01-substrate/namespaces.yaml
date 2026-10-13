@@ -56,6 +56,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: nagarvault
     nagar.io/phase: "1"
+    kubernetes.io/metadata.name: nagar-system
     pod-security.kubernetes.io/enforce: "restricted"
     pod-security.kubernetes.io/enforce-version: v1.31
     pod-security.kubernetes.io/audit: "restricted"

@@ -6,23 +6,22 @@
 
 ```
 /                    repo root — AGENTS.md is the entry point; no code lives here
-agentic/             (reserved) agent-facing automation entrypoints
-adminService/        FastAPI admin API (ports 4001)
-authService/         FastAPI auth API (4000); includes seed_admin.py
-enrichWorker/        Python Kafka consumer; migrations/ holds idempotent SQL
-frontend/            Next.js officer console (3001)
-nagar-vault-backend/ Express ingestion API (3000) — tests: `npm test`, `npm run check`
-nagar-vault-ui/      Vite mock-data injector (5173) — dev tool
-queryService/        FastAPI SQL execution + RBAC (4003)
-schemaIndexer/       Qdrant schema indexer (4005); index.py + schema_docs.json
-slmService/          FastAPI NL→SQL service (4004)
-docs/                this documentation suite
-docs/manifests/exemplars/   canonical reference YAML (read-only in review; evolves via ADR)
-deploy/              (Phase 1+) live manifest tree — the only source of cluster truth
-  phases/NN-name/    one directory per phase; phase boundaries are directory boundaries
-docker-compose*.yml  FROZEN (AGENTS.md I-10). Delete in Phase 10.
-**/Dockerfile        FROZEN per-service images. Delete in Phase 10.
+  AGENTS.md            authoritative operating guide (invariants, protocol)
+  README.md            landing page
+  creds.md             browser-openable operational links (ports 36000–36004)
+docs/                documentation suite: ARCHITECTURE, CONVENTIONS, SECURITY, OPERATIONS,
+                       SUBSTRATE, DECISIONS, PHASES — start at AGENTS.md
+  manifests/exemplars/ canonical reference YAML (read-only in review; evolves via ADR)
+  history/             mission record: MISSION.md, mission-log.md, phase-c-tagmap.txt
+deploy/              live manifest tree — the only source of cluster truth
+  phases/NN-name/      one directory per phase; phase boundaries are directory boundaries
+  third_party/         vendored upstream install manifests (argo-cd, strimzi, cnpg, …)
+scripts/             operator scripts (docker-hygiene.ps1)
 ```
+
+Service source lives inside its own phase (e.g. `deploy/phases/07-app-slm/slm/`), not at the
+root. The legacy top-level service directories and Compose files were removed by the Phase 10
+parity cutover (ADR-013); Dockerfiles now live beside the code they build inside each phase.
 
 ## 2. Naming rules
 

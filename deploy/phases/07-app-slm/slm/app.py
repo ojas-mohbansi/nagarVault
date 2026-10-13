@@ -40,11 +40,24 @@ QUERY_URL = os.environ.get("QUERY_URL", "http://query-service.nagar-app.svc.clus
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")          # Phase 6: dim 1024, Cosine
 GENERATE_MODEL = os.environ.get("GENERATE_MODEL", "qwen3:1.7b")  # Phase 6 payload
 COLLECTION = os.environ.get("COLLECTION", "nagar_schema")
-# Recall over precision: the schema corpus is 40 docs, so a small k can omit the one table
-# a vague question actually needs, leaving the model to guess from partial context. 8 keeps
-# the target table's docs in context at a negligible prompt cost.
 TOP_K = 8
 EMBED_DIM = 1024
+
+# Role-to-table allowlist (mirror of queryService ROLE_TABLES, CONVENTIONS §4 frozen).
+# Defined here so the prompt can enumerate the caller's exact allowed set deterministically,
+# complementing (not replacing) the queryService AST gate which enforces it at execution.
+# These are the tables a role may SELECT through the NL path; if the matrix changes, both
+# files must be updated together (the contract is frozen — I-6).
+ROLE_ALLOWED_TABLES = {
+    "nmc_officer": {
+        "nmc_complaints", "traffic_events", "water_sensor_readings",
+        "ev_bus_telemetry", "municipal_assets",
+    },
+    "ROLE_HEALTH_OFFICER": {
+        "nmc_complaints", "traffic_events", "water_sensor_readings",
+        "ev_bus_telemetry", "health_camp_records",
+    },
+}
 
 app = FastAPI(title="slmService", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -148,8 +161,8 @@ def health_query() -> bool:
 
 
 PROMPT_TEMPLATE = """You are a SQL generator for a PostgreSQL civic-data warehouse.
-Using ONLY the schema context below, write ONE PostgreSQL SELECT statement answering the
-question.
+Using the schema context AND the caller's explicit allowed-table set below, write ONE
+PostgreSQL SELECT statement answering the question.
 
 Rules:
 - Output ONLY the SQL, no prose, no markdown.
@@ -157,12 +170,13 @@ Rules:
 - Never reference these PII columns ANYWHERE (not even inside COUNT or WHERE):
   name, phone, email, address, aadhaar.
 - For counts and totals use COUNT(event_id), never COUNT over a PII column.
-- Restrict yourself to tables named in the schema context.
-- Choose exactly ONE table to query, picked only from the tables named in the schema context
-  blocks above. Never query a table that does not appear there.
+- Choose exactly ONE table to query, and it MUST be one of the tables listed in the
+  caller's allowed-table set (if one was provided). That set is authoritative: it is the
+  complete list of tables this role may SELECT. The schema context below is for column-level
+  detail only — it does not add or remove tables from the allowed set.
+- If no table in the allowed set can answer the question, output exactly
+  `-- no relevant table` and nothing else. Do not guess a table. Do not invent a table.
 - Do not invent filter values that are not in the question; only filter on what is asked.
-- If no table in the schema context can answer the question, output exactly
-  `-- no relevant table` and nothing else. Do not guess a table.
 
 Schema context:
 {context}
@@ -179,9 +193,27 @@ def _context_block(c: dict) -> str:
     return f"- {tag} {c['text']}"
 
 
-def build_prompt(question: str, contexts: list[dict]) -> str:
+def build_prompt(question: str, contexts: list[dict], role: str | None = None) -> str:
+    """Build the generation prompt. The caller's `role` is used to inject an explicit,
+    deterministic table allowlist into the prompt so the small model does not have to
+    infer the RBAC matrix from prose (Gap 2: prompt lacks a concrete table allowlist).
+    The allowlist is a complement to the queryService AST gate, not a replacement."""
     ctx = "\n".join(_context_block(c) for c in contexts if c.get("text"))
-    return PROMPT_TEMPLATE.format(context=ctx or "(no schema context retrieved)", question=question)
+    allowed = ROLE_ALLOWED_TABLES.get(role) if role else None
+    allowed_clause = ""
+    if allowed:
+        allowed_clause = (
+            "\nThe caller's role is `" + role + "`. The ONLY tables this role may SELECT are:\n"
+            + " ".join(sorted(allowed)) + "\n"
+            "You MUST choose a table from that set only. The schema context below is provided\n"
+            "for column-level detail; it is NOT an additional table source — the allowed set above is\n"
+            "authoritative. If no table in the allowed set can answer the question, output exactly\n"
+            "`-- no relevant table` and nothing else."
+        )
+    return PROMPT_TEMPLATE.format(
+        context=(ctx + allowed_clause) if ctx else "(no schema context retrieved)" + allowed_clause,
+        question=question,
+    )
 
 
 FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -196,7 +228,10 @@ def extract_sql(response: str) -> str:
         raise NoSQLError()
     m = FENCE_RE.search(text)
     sql = m.group(1).strip() if m else text
-    return sql.strip().rstrip(";").strip() or (raise_nosql())
+    stripped = sql.strip().rstrip(";").strip()
+    if not stripped:
+        raise NoSQLError()
+    return stripped
 
 
 def raise_nosql():
@@ -267,7 +302,7 @@ def ask(body: AskBody, request: Request):
         if len(vectors[0]) != EMBED_DIM:
             raise HTTPException(status_code=502, detail="embed dimension mismatch")
         contexts = qdrant_search(vectors[0], TOP_K)
-        prompt = build_prompt(body.question, contexts)
+        prompt = build_prompt(body.question, contexts, role=claims.get("role"))
         response = ollama_generate(prompt)
         sql = extract_sql(response)
     except NoSQLError:

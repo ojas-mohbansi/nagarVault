@@ -32,7 +32,7 @@ Read in this exact order; do not skip or reorder:
    behavior: `authService/`, `adminService/`, `enrichWorker/` (+ `migrations/`), `queryService/`,
    `slmService/`, `schemaIndexer/`, `nagar-vault-backend/`, `frontend/`, `nagar-vault-ui/`.
 
-Then produce `agentic/mission-log.md` with: an onboarding summary (prove you understood the
+Then produce `mission-log.md` with: an onboarding summary (prove you understood the
 system in your own words), a phase-by-phase execution plan mapped to the Day grid below, an
 environment audit (what tooling exists where you run), and a risk list. **No implementation before
 this file exists.**
@@ -95,7 +95,7 @@ mission failure. Specifically:
 
 ## 5. Evidence & reporting protocol
 
-Maintain `agentic/mission-log.md` as an append-only journal:
+Maintain `mission-log.md` as an append-only journal:
 
 - **Per phase:** entry/exit checklist (quoting PHASES.md criteria), commands + outputs, deviations
   + ADRs written, rollback instructions tested or reviewed.

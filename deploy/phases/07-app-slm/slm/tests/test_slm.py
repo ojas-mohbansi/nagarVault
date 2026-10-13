@@ -138,6 +138,8 @@ def test_prompt_carries_context_rules_and_question(client, monkeypatch):
     assert "HOW-MANY-COMPLAINTS" in p          # the question
     assert "SELECT" in p                       # SELECT-only rule
     assert "name, phone, email, address, aadhaar" in p  # PII denylist surfaced to the model
+    assert "Choose exactly ONE table to query" in p            # table-selection rule
+    assert "allowed-table set" in p             # deterministic role allowlist present
 
 
 def test_prompt_labels_each_context_block_with_its_table(client, monkeypatch):
@@ -153,14 +155,16 @@ def test_prompt_labels_each_context_block_with_its_table(client, monkeypatch):
 
 
 def test_prompt_enforces_table_selection_and_no_guess_sentinel(client, monkeypatch):
-    """Gap 1: the prompt must (a) restrict the model to context tables, (b) forbid inventing
-    a table, and (c) offer a sentinel so a vague question yields no guess."""
+    """The prompt must (a) restrict the model to the caller's allowed-table set, (b) forbid
+    inventing a table outside that set, and (c) offer a sentinel so a vague question yields
+    no guess. The deterministic allowlist is injected at build_prompt time from the caller's
+    role (Gap 2 fix); the queryService AST gate still enforces the selection at execution."""
     p = _capture_prompt(client, monkeypatch, [{"text": "c", "table": "nmc_complaints", "score": 0.9}])
     assert "Choose exactly ONE table" in p
-    assert "Never query a table that does not appear" in p
-    assert "Restrict yourself to tables named in the schema context" in p
+    assert "MUST choose a table from that set only" in p
     assert "-- no relevant table" in p
     assert "Do not guess a table" in p
+    assert "authoritative" in p  # the allowed set is authoritative, not the prose context
 
 
 def test_context_table_sql_flows_through_gate_unchanged(client, monkeypatch):

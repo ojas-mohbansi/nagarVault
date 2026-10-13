@@ -9,6 +9,10 @@ jwt-secret*.yaml
 kubeseal-*.yaml
 *secret*plain*
 
+# --- local scratch (debug probes, command output; never staged) ---
+.tmp/
+tmp/
+
 # --- agent / tooling workspace ---
 .freebuff/
 agentic/tmp/

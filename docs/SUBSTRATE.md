@@ -8,7 +8,7 @@ week over week.
 **Audience:** the operator or agent who maintains this repo. Assumed: working
 `kubectl`/`docker`/`k3d`/`kustomize`/`kubeseal` muscle memory and familiarity with the
 invariants in [AGENTS.md](../AGENTS.md). The evidence narrative behind every command
-here lives in [agentic/mission-log.md](../agentic/mission-log.md) — this page is the
+here lives in [mission-log.md](history/mission-log.md) — this page is the
 recipe, not the story.
 
 **Run everything from the repo root.** Every command below was executed and verified on
@@ -401,14 +401,14 @@ Procedure:
 
 ## 6. How to run and schedule weekly hygiene
 
-`agentic/ops/docker-hygiene.ps1` prunes three things and nothing else: build cache
+`scripts/docker-hygiene.ps1` prunes three things and nothing else: build cache
 older than 7 days, dangling images, and exited **non-k3d** containers. It structurally
 cannot touch volumes (all mission state) and keeps any container whose name is
 `k3d`-prefixed even when exited.
 
 ```powershell
 # run now (writes %TEMP%\docker-hygiene.log before/after docker system df)
-powershell -NoProfile -ExecutionPolicy Bypass -File agentic\ops\docker-hygiene.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\docker-hygiene.ps1
 
 # registered task: 'NagarVault Docker Hygiene', Sundays 03:00, StartWhenAvailable
 powershell -Command "Start-ScheduledTask -TaskName 'NagarVault Docker Hygiene'; Start-Sleep 12; Get-ScheduledTaskInfo -TaskName 'NagarVault Docker Hygiene' | Select LastRunTime, LastTaskResult"

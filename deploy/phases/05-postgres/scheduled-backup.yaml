@@ -6,7 +6,7 @@
 # restorable base backup without waiting for the first 03:00 window. It is a create-time trigger,
 # not a per-sync one: the operator fires it only while the object has no recorded schedule time, so
 # Argo re-applying the same resource does not produce backup churn (verified live, see the phase
-# entry in agentic/mission-log.md).
+# entry in docs/history/mission-log.md).
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
 metadata:

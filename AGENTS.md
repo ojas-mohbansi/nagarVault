@@ -139,37 +139,24 @@ Reading order is enforced by review. If your change touches data plane, read §4
 
 ## 7. Current state of the world
 
-**Phase 0 (this documentation suite) is complete. All ten phases (1–10) are implemented and
-verified on the disposable k3d substrate (see `docs/PHASES.md` for the ledger and
-`agentic/mission-log.md` for gate evidence). The parity cutover (Phase 10) verified the
-absence of any Compose remnant (ADR-013) — the repository is fully GitOps-shipped with no
-Compose in the deployment path.**
-
-- The runtime substrate today is **the k3d cluster reconciled by Argo CD** (Phases 1–10). The
-  manifests in `docs/manifests/exemplars/` remain canonical reference shapes for review, not the
-  reconciled source — `deploy/phases/` is.
-- `docs/PHASES.md` §1 defines each phase's charter, exit criteria, rollback, and skip-consequence.
-- The 2026-09-29 rebuild (ADR-013) is the **shipped state**, not a transition: the frozen legacy
-  stack is gone, the parity cutover checklist is signed, and the README describes the GitOps path
-  only.
+All ten phases (1–10) are implemented and verified on the disposable k3d substrate; the runtime
+is the k3d cluster reconciled by Argo CD, and `deploy/phases/` is the reconciled source
+(`docs/manifests/exemplars/` are review reference shapes only). Per-phase charters, exit
+criteria, rollback, and skip-consequence live in `docs/PHASES.md` §1; gate evidence lives in
+`docs/history/mission-log.md`. The Phase 10 parity cutover verified there is no Compose remnant
+(ADR-013) — the repository is fully GitOps-shipped.
 
 ---
 
 ## 8. Quick reference
 
-- Doc index: §4 above and the table below.
-- Port registry: [CONVENTIONS.md §4](docs/CONVENTIONS.md).
-- Label schema: [CONVENTIONS.md §5](docs/CONVENTIONS.md).
-- Secret handling: [SECURITY.md §6](docs/SECURITY.md).
-- Rollback: [PHASES.md §3](docs/PHASES.md).
-
 | Document | Purpose |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Flows, contracts, topology, dependency graph |
-| [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | Layout, naming, ports, labels, config precedence |
-| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, JWT chain, RBAC, secrets, policies |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Install, deploy, seed, backup, restore, troubleshoot |
-| [docs/SUBSTRATE.md](docs/SUBSTRATE.md) | k3d substrate lifecycle how-tos: backup, space reclaim, rebuild, restore, reseal, hygiene |
+| [docs/CONVENTIONS.md](docs/CONVENTIONS.md) | Layout (§1), naming, ports (§4), labels (§5), config precedence |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, JWT chain, RBAC, secrets (§6), policies |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Install, deploy, seed, backup, restore, troubleshoot (§12 matrix) |
+| [docs/SUBSTRATE.md](docs/SUBSTRATE.md) | k3d substrate lifecycle: backup, reclaim, rebuild, restore, reseal, hygiene |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | ADR log |
-| [docs/PHASES.md](docs/PHASES.md) | 11-phase implementation plan with isolation rules |
+| [docs/PHASES.md](docs/PHASES.md) | Phase charters, exit criteria, rollback (§3), isolation rules |
 | [docs/manifests/exemplars/](docs/manifests/exemplars/README.md) | Canonical reference YAML per workload |

@@ -1146,3 +1146,42 @@ deviation.
   would be wrong for real rows: closing the gap means an ingestion path for registry updates (a
   topic plus a worker change plus its own ADR), not a longer fixture list. Until then the ledger
   demonstrates an officer query over a real table; it is not yet a live asset register.
+
+## ADR-035 — The repository top level is reorganized; CONVENTIONS §1 is rewritten to the post-Phase-10 tree
+
+- **Context:** after the Phase 10 parity cutover the tracked tree is root files + `docs/` +
+  `deploy/` + `agentic/`, but three things still described the old world. `CONVENTIONS §1`
+  (normative, review-enforced) listed nine top-level service directories (`adminService/`,
+  `authService/`, `frontend/`, …) that no longer exist, plus `docker-compose*` lines for files
+  the cutover deleted — the exact failure AGENTS §6.3 forbids (documenting an aspiration as
+  reality). The mission record lived in a top-level `agentic/` directory whose name advertises
+  how the repository was built. The README's status paragraph contradicted itself ("Phase 0 is
+  complete… cluster bring-up proceeds phase by phase" next to "all ten phases are complete"),
+  and two accidental root artifacts from broken shell redirects sat untracked at the root.
+- **Decision:** fold the mission record into the documentation tree —
+  `agentic/MISSION.md`, `agentic/mission-log.md`, and `agentic/phase-c-tagmap.txt` move to
+  `docs/history/`, and `agentic/ops/docker-hygiene.ps1` moves to `scripts/`. Rewrite
+  `CONVENTIONS §1` to enumerate the tree that exists (root entry files, `docs/`,
+  `docs/manifests/exemplars/`, `docs/history/`, `deploy/phases/NN-name/`,
+  `deploy/third_party/`, `scripts/`) and state where service source now lives (inside its
+  phase). Streamline `README.md` and `AGENTS.md` §7–§8 to remove the duplicated doc indexes and
+  the contradictory status paragraph. Remove the stray root artifacts and ignore `.tmp/` and
+  `tmp/` as local scratch.
+  - **The journal stays append-only.** Its body is not rewritten; a header note records that
+    entries predate the restructure and cite `agentic/` paths as they were. Filenames are
+    unchanged, so the ~15 textual `MISSION.md §N` citations across this log and the mission
+    record keep resolving.
+  - **`agentic/tmp/` is deliberately not moved.** It is gitignored local build cache, so it
+    never appeared in the tracked tree, and its path is cited by image-build comments
+    (`deploy/phases/03-object-cache/images/*.Dockerfile`) and by recipe text in this log's
+    ADRs; moving it would break those references for no tracked-tree benefit.
+  - **Nothing under `deploy/phases/` moves.** Argo CD `Application`s hardcode
+    `path: deploy/phases/NN-name` (I-1, I-9); the only manifest touched is a comment in
+    `05-postgres/scheduled-backup.yaml` that cited the old log path. No port, topic, bucket, or
+    table name changes (I-6), and git history is untouched.
+- **Consequences:** `git ls-files` shows no `agentic/`; the mission record is discoverable with
+  the rest of the documentation, and `docs/SUBSTRATE.md`, `AGENTS.md`, and the
+  `CONVENTIONS §1` layout block all point at the new paths. Grep for `agentic/` now hits only
+  historical journal entries (covered by the header note) and the still-valid `agentic/tmp/`
+  references. Reviewers reading `CONVENTIONS §1` see the tree they are actually reviewing.
+  Future evidence references should cite `docs/history/mission-log.md`.
